@@ -33,13 +33,13 @@ def example_create_driver_job():
     # Create orchestration engine
     engine = OrchestrationEngine()
 
-    # Create a Dell driver update job
+    # Create a Lenovo driver update job
     job = engine.create_job(
         job_type=JobType.DRIVER_UPDATE,
-        software_title="Dell Latitude 7490 Chipset Driver",
-        vendor="dell",
+        software_title="Lenovo ThinkPad X1 Carbon Gen 9 Chipset Driver",
+        vendor="lenovo",
         current_version="1.0.0",
-        hardware_model="Latitude 7490",
+        hardware_model="ThinkPad X1 Carbon Gen 9",
         driver_type="chipset",
         metadata={
             "created_by": "example_script",

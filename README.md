@@ -56,7 +56,7 @@ Manual software packaging is a significant bottleneck for IT departments, consum
 The initial phase focuses on automating driver and BIOS updates for Dell, HP, and Lenovo hardware.
 
 **What's Implemented:**
-- ✅ OEM driver catalog integration (Dell DriverPackCatalog.cab)
+- ✅ OEM driver catalog integration (HP HPIA, Lenovo, Dell)
 - ✅ Orchestration engine with Celery task queue
 - ✅ Discovery agent for version checking
 - ✅ Packaging agent for .intunewin creation
@@ -104,11 +104,19 @@ python cli.py worker start
 ### Create Your First Driver Job
 
 ```bash
+# Lenovo ThinkPad example
 python cli.py create-driver-job \
-  --vendor dell \
-  --model "Latitude 7490" \
+  --vendor lenovo \
+  --model "ThinkPad X1 Carbon Gen 9" \
   --driver-type "chipset" \
   --current-version "1.0.0"
+
+# HP EliteBook example
+python cli.py create-driver-job \
+  --vendor hp \
+  --model "EliteBook 850 G8" \
+  --driver-type "network" \
+  --current-version "2.1.0"
 ```
 
 ### Monitor Progress

@@ -16,7 +16,7 @@ This guide will help you set up AutoPackager for automated driver management and
 ### Required Tools
 - IntuneWinAppUtil.exe (for creating .intunewin packages)
 - Git
-- cabextract (Linux) or expand.exe (Windows) for Dell catalog extraction
+- cabextract (Linux) or expand.exe (Windows) for OEM catalog extraction
 
 ## Installation Steps
 
@@ -187,12 +187,19 @@ In another terminal:
 ```bash
 source venv/bin/activate
 
-# Example: Create Dell driver job
+# Example: Create Lenovo driver job
 python cli.py create-driver-job \
-  --vendor dell \
-  --model "Latitude 7490" \
+  --vendor lenovo \
+  --model "ThinkPad X1 Carbon Gen 9" \
   --driver-type "chipset" \
   --current-version "1.0.0"
+
+# Example: Create HP driver job
+python cli.py create-driver-job \
+  --vendor hp \
+  --model "EliteBook 850 G8" \
+  --driver-type "network" \
+  --current-version "2.1.0"
 ```
 
 ### Monitor Jobs
@@ -238,13 +245,19 @@ DriverSearchandDeploy/
 pytest autopackager/tests/
 ```
 
-### Test Dell Catalog Discovery
+### Test OEM Catalog Discovery
 
 ```bash
-# Create a test job
+# Test Lenovo discovery
 python cli.py create-driver-job \
-  --vendor dell \
-  --model "Latitude 5420" \
+  --vendor lenovo \
+  --model "ThinkPad T14 Gen 2" \
+  --current-version "1.0"
+
+# Test HP discovery
+python cli.py create-driver-job \
+  --vendor hp \
+  --model "ProBook 450 G8" \
   --current-version "1.0"
 ```
 

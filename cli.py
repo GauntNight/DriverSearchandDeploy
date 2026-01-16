@@ -42,8 +42,8 @@ def init():
 
 
 @cli.command()
-@click.option('--vendor', required=True, type=click.Choice(['dell', 'hp', 'lenovo'], case_sensitive=False), help='OEM vendor')
-@click.option('--model', required=True, help='Hardware model (e.g., "Latitude 7490")')
+@click.option('--vendor', required=True, type=click.Choice(['hp', 'lenovo', 'dell'], case_sensitive=False), help='OEM vendor')
+@click.option('--model', required=True, help='Hardware model (e.g., "ThinkPad X1 Carbon Gen 9" or "EliteBook 850 G8")')
 @click.option('--driver-type', help='Driver type (e.g., chipset, network, graphics)')
 @click.option('--current-version', help='Current driver version')
 def create_driver_job(vendor, model, driver_type, current_version):
