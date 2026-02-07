@@ -1,0 +1,262 @@
+"""Celery Tasks for Job Processing"""
+
+from celery import chain
+from autopackager.orchestration.celery_app import celery_app
+from autopackager.orchestration.engine import OrchestrationEngine
+from autopackager.models.job import JobState, JobType
+from autopackager.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+@celery_app.task(bind=True, name='autopackager.create_packaging_job')
+def create_packaging_job(
+    self,
+    job_type: str,
+    software_title: str,
+    vendor: str,
+    current_version: str = None,
+    hardware_model: str = None,
+    driver_type: str = None,
+    metadata: dict = None
+):
+    """Create a new packaging job and start processing"""
+    logger.info("Creating packaging job", software_title=software_title, vendor=vendor)
+
+    engine = OrchestrationEngine()
+
+    # Create the job
+    job = engine.create_job(
+        job_type=JobType(job_type),
+        software_title=software_title,
+        vendor=vendor,
+        current_version=current_version,
+        hardware_model=hardware_model,
+        driver_type=driver_type,
+        metadata=metadata
+    )
+
+    # Start the processing pipeline
+    process_job.delay(job.id)
+
+    return {"job_id": job.id, "status": "created"}
+
+
+@celery_app.task(bind=True, name='autopackager.process_job')
+def process_job(self, job_id: int):
+    """Main job processing pipeline"""
+    logger.info("Processing job", job_id=job_id)
+
+    engine = OrchestrationEngine()
+    job = engine.get_job(job_id)
+
+    if not job:
+        logger.error("Job not found", job_id=job_id)
+        return {"error": "Job not found"}
+
+    try:
+        # Create a pipeline: Discovery -> Packaging -> Testing -> Deployment
+        pipeline = chain(
+            discovery_task.s(job_id),
+            packaging_task.s(job_id),
+            testing_task.s(job_id),
+            deployment_task.s(job_id)
+        )
+
+        # Execute the pipeline
+        result = pipeline.apply_async()
+
+        return {"job_id": job_id, "pipeline_id": result.id}
+
+    except Exception as e:
+        logger.error("Failed to start job pipeline", job_id=job_id, error=str(e))
+        engine.mark_job_failed(job_id, str(e))
+        raise
+
+
+@celery_app.task(bind=True, name='autopackager.discovery_task')
+def discovery_task(self, job_id: int):
+    """Discovery phase - find new versions"""
+    logger.info("Starting discovery phase", job_id=job_id)
+
+    engine = OrchestrationEngine()
+    engine.update_job_state(job_id, JobState.DISCOVERING)
+
+    try:
+        # Import here to avoid circular dependencies
+        from autopackager.agents.discovery import DiscoveryAgent
+
+        agent = DiscoveryAgent()
+        job = engine.get_job(job_id)
+
+        # Execute discovery
+        result = agent.discover(job)
+
+        if result.get('update_available'):
+            # Update job with discovered information
+            engine.update_job_state(
+                job_id,
+                JobState.PENDING,
+                metadata_update={
+                    'target_version': result.get('latest_version'),
+                    'download_url': result.get('download_url'),
+                    'release_notes': result.get('release_notes')
+                }
+            )
+            logger.info("Discovery completed - update available", job_id=job_id)
+            return {"job_id": job_id, "update_available": True}
+        else:
+            # No update needed, mark as completed
+            engine.mark_job_completed(job_id, metadata_update={'no_update_needed': True})
+            logger.info("Discovery completed - no update needed", job_id=job_id)
+            return {"job_id": job_id, "update_available": False, "completed": True}
+
+    except Exception as e:
+        logger.error("Discovery failed", job_id=job_id, error=str(e))
+
+        if engine.can_retry_job(job_id):
+            retry_count = engine.increment_retry_count(job_id)
+            logger.info("Retrying discovery", job_id=job_id, retry_count=retry_count)
+            raise self.retry(exc=e, countdown=engine.retry_delay)
+        else:
+            engine.mark_job_failed(job_id, f"Discovery failed: {str(e)}")
+            raise
+
+
+@celery_app.task(bind=True, name='autopackager.packaging_task')
+def packaging_task(self, previous_result, job_id: int):
+    """Packaging phase - create .intunewin package"""
+    # If previous task indicated no update needed, skip
+    if previous_result and previous_result.get('completed'):
+        logger.info("Skipping packaging - no update needed", job_id=job_id)
+        return previous_result
+
+    logger.info("Starting packaging phase", job_id=job_id)
+
+    engine = OrchestrationEngine()
+    engine.update_job_state(job_id, JobState.PACKAGING)
+
+    try:
+        # Import here to avoid circular dependencies
+        from autopackager.agents.packaging import PackagingAgent
+
+        agent = PackagingAgent()
+        job = engine.get_job(job_id)
+
+        # Execute packaging
+        result = agent.package(job)
+
+        # Update job with package information
+        engine.update_job_state(
+            job_id,
+            JobState.PENDING,
+            metadata_update={
+                'package_id': result.get('package_id'),
+                'intunewin_path': result.get('intunewin_path')
+            }
+        )
+
+        logger.info("Packaging completed", job_id=job_id, package_id=result.get('package_id'))
+        return {"job_id": job_id, "package_id": result.get('package_id')}
+
+    except Exception as e:
+        logger.error("Packaging failed", job_id=job_id, error=str(e))
+
+        if engine.can_retry_job(job_id):
+            retry_count = engine.increment_retry_count(job_id)
+            logger.info("Retrying packaging", job_id=job_id, retry_count=retry_count)
+            raise self.retry(exc=e, countdown=engine.retry_delay)
+        else:
+            engine.mark_job_failed(job_id, f"Packaging failed: {str(e)}")
+            raise
+
+
+@celery_app.task(bind=True, name='autopackager.testing_task')
+def testing_task(self, previous_result, job_id: int):
+    """Testing phase - validate package"""
+    # If previous task indicated completion, skip
+    if previous_result and previous_result.get('completed'):
+        logger.info("Skipping testing - no update needed", job_id=job_id)
+        return previous_result
+
+    logger.info("Starting testing phase", job_id=job_id)
+
+    engine = OrchestrationEngine()
+    engine.update_job_state(job_id, JobState.TESTING)
+
+    try:
+        # Import here to avoid circular dependencies
+        from autopackager.agents.testing import TestingAgent
+
+        agent = TestingAgent()
+        job = engine.get_job(job_id)
+
+        # Execute testing
+        result = agent.test(job)
+
+        if result.get('test_passed'):
+            logger.info("Testing passed", job_id=job_id)
+            return {"job_id": job_id, "test_passed": True}
+        else:
+            error_msg = f"Testing failed: {result.get('error_message')}"
+            logger.error("Testing failed", job_id=job_id, error=error_msg)
+            engine.mark_job_failed(job_id, error_msg)
+            raise Exception(error_msg)
+
+    except Exception as e:
+        logger.error("Testing phase error", job_id=job_id, error=str(e))
+
+        if engine.can_retry_job(job_id):
+            retry_count = engine.increment_retry_count(job_id)
+            logger.info("Retrying testing", job_id=job_id, retry_count=retry_count)
+            raise self.retry(exc=e, countdown=engine.retry_delay)
+        else:
+            engine.mark_job_failed(job_id, f"Testing failed: {str(e)}")
+            raise
+
+
+@celery_app.task(bind=True, name='autopackager.deployment_task')
+def deployment_task(self, previous_result, job_id: int):
+    """Deployment phase - publish to Intune"""
+    # If previous task indicated completion, skip
+    if previous_result and previous_result.get('completed'):
+        logger.info("Skipping deployment - no update needed", job_id=job_id)
+        return previous_result
+
+    logger.info("Starting deployment phase", job_id=job_id)
+
+    engine = OrchestrationEngine()
+    engine.update_job_state(job_id, JobState.DEPLOYING)
+
+    try:
+        # Import here to avoid circular dependencies
+        from autopackager.agents.deployment import DeploymentAgent
+
+        agent = DeploymentAgent()
+        job = engine.get_job(job_id)
+
+        # Execute deployment
+        result = agent.deploy(job)
+
+        # Mark job as completed
+        engine.mark_job_completed(
+            job_id,
+            metadata_update={
+                'intune_app_id': result.get('intune_app_id'),
+                'deployment_status': result.get('status')
+            }
+        )
+
+        logger.info("Deployment completed", job_id=job_id, intune_app_id=result.get('intune_app_id'))
+        return {"job_id": job_id, "intune_app_id": result.get('intune_app_id'), "completed": True}
+
+    except Exception as e:
+        logger.error("Deployment failed", job_id=job_id, error=str(e))
+
+        if engine.can_retry_job(job_id):
+            retry_count = engine.increment_retry_count(job_id)
+            logger.info("Retrying deployment", job_id=job_id, retry_count=retry_count)
+            raise self.retry(exc=e, countdown=engine.retry_delay)
+        else:
+            engine.mark_job_failed(job_id, f"Deployment failed: {str(e)}")
+            raise

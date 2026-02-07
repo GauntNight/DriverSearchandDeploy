@@ -1,0 +1,51 @@
+# AutoPackager - Phase 1: Driver Management Automation
+# Core Dependencies
+
+# Orchestration & Task Queue
+celery==5.3.4
+redis==5.0.1
+kombu==5.3.4
+
+# Database
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+alembic==1.13.1
+
+# Microsoft Graph API & Intune
+requests==2.31.0
+msal==1.26.0
+msgraph-core==1.0.0
+
+# LLM Integration
+openai==1.6.1
+anthropic==0.8.1
+
+# XML/Data Parsing
+lxml==4.9.4
+xmltodict==0.13.0
+beautifulsoup4==4.12.2
+
+# Utilities
+python-dotenv==1.0.0
+pyyaml==6.0.1
+click==8.1.7
+rich==13.7.0
+tenacity==8.2.3
+python-dateutil==2.8.2
+
+# Logging & Monitoring
+structlog==23.3.0
+python-json-logger==2.0.7
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+responses==0.24.1
+
+# File handling
+pathlib==1.0.1
+py7zr==0.20.8
+
+# VM/Testing automation (for future phases)
+pywinauto==0.6.8
