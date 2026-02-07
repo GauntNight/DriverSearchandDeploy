@@ -3,9 +3,8 @@
 from datetime import datetime
 from enum import Enum
 from sqlalchemy import Column, Integer, String, DateTime, JSON, Enum as SQLEnum, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
+from .base import Base
 
-Base = declarative_base()
 
 
 class DeploymentStatus(str, Enum):
@@ -54,7 +53,7 @@ class Deployment(Base):
     error_message = Column(String(2048))
 
     # Metadata
-    metadata = Column(JSON, default={})
+    deployment_metadata = Column('metadata', JSON, default={})
 
     def __repr__(self):
         return f"<Deployment {self.id}: Ring {self.ring_id} ({self.status})>"
@@ -77,5 +76,5 @@ class Deployment(Base):
             'deployed_at': self.deployed_at.isoformat() if self.deployed_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
             'error_message': self.error_message,
-            'metadata': self.metadata
+            'metadata': self.deployment_metadata
         }

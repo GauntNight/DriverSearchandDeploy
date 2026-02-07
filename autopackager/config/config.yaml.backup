@@ -2,8 +2,12 @@
 
 # Database Configuration
 database:
-  type: "sqlite"
-  path: "data/autopackager.db"
+  type: "postgresql"
+  host: "localhost"
+  port: 5432
+  name: "autopackager"
+  user: "autopackager_user"
+  password: "${DB_PASSWORD}"
 
 # Redis Configuration (for Celery)
 redis:

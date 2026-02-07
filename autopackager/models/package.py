@@ -2,9 +2,8 @@
 
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, JSON, Boolean
-from sqlalchemy.ext.declarative import declarative_base
+from .base import Base
 
-Base = declarative_base()
 
 
 class Package(Base):
@@ -47,7 +46,7 @@ class Package(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Metadata
-    metadata = Column(JSON, default={})
+    package_metadata = Column('metadata', JSON, default={})
 
     def __repr__(self):
         return f"<Package {self.id}: {self.name} v{self.version}>"
@@ -69,5 +68,5 @@ class Package(Base):
             'deployed': self.deployed,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
-            'metadata': self.metadata
+            'metadata': self.package_metadata
         }

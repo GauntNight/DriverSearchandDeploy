@@ -34,7 +34,7 @@ class TestingAgent:
             }
 
         # Get package from job metadata
-        package_id = job.metadata.get('package_id')
+        package_id = job.job_metadata.get('package_id')
         if not package_id:
             raise ValueError("No package ID in job metadata")
 
