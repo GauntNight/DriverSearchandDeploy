@@ -48,4 +48,6 @@ pathlib==1.0.1
 py7zr==0.20.8
 
 # VM/Testing automation (for future phases)
-pywinauto==0.6.8
+# Note: pywinauto requires Windows. Install manually on Windows if needed:
+# pip install pywinauto
+# pywinauto==0.6.8

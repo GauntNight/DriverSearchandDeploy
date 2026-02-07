@@ -154,17 +154,22 @@ if ($UseSQLite) {
     $configFile = ".\autopackager\config\config.yaml"
     $config = Get-Content $configFile -Raw
 
-    # Simple replacement for database config
+    # Backup original config
+    Copy-Item $configFile "$configFile.backup" -Force
+
+    # Replace database configuration using regex
     $sqliteConfig = @"
 database:
   type: "sqlite"
   path: "data/autopackager.db"
 "@
 
-    # Backup original config
-    Copy-Item $configFile "$configFile.backup" -Force
+    # Replace the database section (from 'database:' to the next top-level key)
+    $config = $config -replace '(?s)database:.*?(?=\n[a-z_]+:)', $sqliteConfig
 
-    # This is a simplified approach - in production, you'd want proper YAML parsing
+    # Write updated config
+    $config | Set-Content -Path $configFile -Force
+
     Write-Host "  SQLite configuration set" -ForegroundColor Green
     Write-Host "  Note: Original config backed up to config.yaml.backup" -ForegroundColor Yellow
 } else {
