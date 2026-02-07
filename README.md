@@ -205,7 +205,12 @@ DriverSearchandDeploy/
 
 ## Documentation
 
-- **Setup Guide**: [SETUP.md](SETUP.md)
+### Getting Started
+- **🚀 Implementation Guide**: [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) - **START HERE for deployment**
+- **✅ Quick Start Checklist**: [QUICKSTART_CHECKLIST.md](QUICKSTART_CHECKLIST.md) - Track your progress
+
+### Reference Documentation
+- **Setup Guide**: [SETUP.md](SETUP.md) - Detailed installation instructions
 - **Technical Whitepaper**: [automated_software_packaging_whitepaper.md](automated_software_packaging_whitepaper.md)
 - **PR/FAQ**: [PRFAQ_ Project AutoPackager.md](PRFAQ_%20Project%20AutoPackager.md)
 
