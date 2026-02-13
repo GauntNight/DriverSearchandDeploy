@@ -41,7 +41,7 @@ class PackagingAgent:
         )
 
         # Get download URL from job metadata
-        download_url = job.metadata.get('download_url') or job.download_url
+        download_url = job.job_metadata.get('download_url') or job.download_url
 
         if not download_url:
             raise ValueError("No download URL provided")
@@ -95,7 +95,7 @@ class PackagingAgent:
         if not filename or '.' not in filename:
             # Generate filename based on job info
             ext = self._guess_file_extension(url)
-            filename = f"{job.software_title.replace(' ', '_')}_{job.metadata.get('target_version', 'latest')}{ext}"
+            filename = f"{job.software_title.replace(' ', '_')}_{job.job_metadata.get('target_version', 'latest')}{ext}"
 
         download_path = self.downloads_path / filename
 
@@ -144,7 +144,7 @@ class PackagingAgent:
     def _create_package_name(self, job: Job) -> str:
         """Create package directory name"""
         safe_title = job.software_title.replace(' ', '_').replace('/', '_')
-        version = job.metadata.get('target_version', 'unknown')
+        version = job.job_metadata.get('target_version', 'unknown')
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         return f"{safe_title}_{version}_{timestamp}"
 
@@ -247,7 +247,7 @@ class PackagingAgent:
         with db_session_scope() as session:
             package = Package(
                 name=job.software_title,
-                version=job.metadata.get('target_version', 'unknown'),
+                version=job.job_metadata.get('target_version', 'unknown'),
                 vendor=job.vendor,
                 intunewin_path=str(intunewin_path),
                 installer_path=str(installer_path),
@@ -256,8 +256,8 @@ class PackagingAgent:
                 detection_rules=detection_rules,
                 metadata={
                     'job_id': job.id,
-                    'download_url': job.metadata.get('download_url'),
-                    'release_notes': job.metadata.get('release_notes')
+                    'download_url': job.job_metadata.get('download_url'),
+                    'release_notes': job.job_metadata.get('release_notes')
                 }
             )
 

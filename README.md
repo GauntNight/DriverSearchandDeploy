@@ -68,16 +68,42 @@ The initial phase focuses on automating driver and BIOS updates for Dell, HP, an
 
 ## Quick Start
 
-### Prerequisites
+### 🚀 Automated Setup (Recommended)
 
+**Windows (PowerShell):**
+```powershell
+.\setup.ps1 -UseSQLite
+```
+
+**Linux/WSL/Mac:**
+```bash
+chmod +x setup.sh
+./setup.sh --sqlite
+```
+
+The automated setup will:
+- ✅ Check prerequisites and install dependencies
+- ✅ Create Python virtual environment
+- ✅ Install Redis (Windows: automatic download)
+- ✅ Configure database (SQLite for testing)
+- ✅ Initialize database and create directories
+- ✅ Create helper scripts for easy operation
+
+**See [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) for details**
+
+### Manual Installation (Alternative)
+
+<details>
+<summary>Click to expand manual installation steps</summary>
+
+**Prerequisites:**
 - Python 3.9+
 - PostgreSQL 12+ or SQLite
 - Redis 6.0+
 - Microsoft Azure subscription with Intune
 - IntuneWinAppUtil.exe
 
-### Installation
-
+**Steps:**
 ```bash
 # Clone repository
 git clone <repository-url>
@@ -100,6 +126,8 @@ python cli.py init
 # Start worker
 python cli.py worker start
 ```
+
+</details>
 
 ### Create Your First Driver Job
 

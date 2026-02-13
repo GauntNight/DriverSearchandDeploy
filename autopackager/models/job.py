@@ -3,9 +3,7 @@
 from datetime import datetime
 from enum import Enum
 from sqlalchemy import Column, Integer, String, DateTime, JSON, Enum as SQLEnum
-from sqlalchemy.ext.declarative import declarative_base
-
-Base = declarative_base()
+from .base import Base
 
 
 class JobState(str, Enum):
@@ -65,7 +63,7 @@ class Job(Base):
     error_message = Column(String(2048))
 
     # Metadata (flexible JSON field for agent-specific data)
-    metadata = Column(JSON, default={})
+    job_metadata = Column('metadata', JSON, default={})
 
     def __repr__(self):
         return f"<Job {self.id}: {self.software_title} ({self.state})>"
@@ -88,5 +86,5 @@ class Job(Base):
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
             'retry_count': self.retry_count,
             'error_message': self.error_message,
-            'metadata': self.metadata
+            'metadata': self.job_metadata
         }

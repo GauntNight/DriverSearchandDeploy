@@ -93,9 +93,9 @@ class OrchestrationEngine:
                 job.completed_at = datetime.utcnow()
 
             if metadata_update:
-                current_metadata = job.metadata or {}
+                current_metadata = job.job_metadata or {}
                 current_metadata.update(metadata_update)
-                job.metadata = current_metadata
+                job.job_metadata = current_metadata
 
             session.flush()
             session.expunge(job)
