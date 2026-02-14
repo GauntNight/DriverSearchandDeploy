@@ -66,13 +66,17 @@ Write-Host "[3/8] Installing Python dependencies..." -ForegroundColor Yellow
 # Activate venv
 & .\venv\Scripts\Activate.ps1
 
-# Upgrade pip
+# Upgrade pip quietly
 python -m pip install --upgrade pip --quiet
 
-# Install requirements
-pip install -r requirements.txt --quiet
+# Install requirements (no PostgreSQL driver - using SQLite for testing)
+# Show progress so user can see it working
+pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: Failed to install dependencies" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "ERROR: Failed to install one or more dependencies" -ForegroundColor Red
+    Write-Host "Try running manually to see the full error:" -ForegroundColor Yellow
+    Write-Host "  pip install -r requirements.txt" -ForegroundColor Cyan
     exit 1
 }
 
