@@ -6,15 +6,16 @@ celery==5.3.4
 redis==5.0.1
 kombu==5.3.4
 
-# Database
+# Database (SQLAlchemy core - works with both SQLite and PostgreSQL)
 sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
 alembic==1.13.1
+# NOTE: psycopg2 is only needed if using PostgreSQL instead of SQLite.
+# Install separately when needed: pip install psycopg2-binary
+# See requirements-postgres.txt
 
 # Microsoft Graph API & Intune
 requests==2.31.0
 msal==1.26.0
-msgraph-core==1.0.0
 
 # LLM Integration
 openai==1.6.1
@@ -43,11 +44,9 @@ pytest-asyncio==0.21.1
 pytest-cov==4.1.0
 responses==0.24.1
 
-# File handling
-pathlib==1.0.1
+# File handling (pathlib is built into Python 3.4+, no install needed)
 py7zr==0.20.8
 
-# VM/Testing automation (for future phases)
-# Note: pywinauto requires Windows. Install manually on Windows if needed:
-# pip install pywinauto
+# VM/Testing automation (for future phases, Windows only)
+# Install manually if needed: pip install pywinauto
 # pywinauto==0.6.8

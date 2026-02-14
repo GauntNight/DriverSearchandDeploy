@@ -1,0 +1,12 @@
+# PostgreSQL dependencies - only needed if using PostgreSQL instead of SQLite
+# Install with: pip install -r requirements-postgres.txt
+#
+# Prerequisites for psycopg2-binary on Windows:
+#   - PostgreSQL must be installed first
+#   - Download from: https://www.postgresql.org/download/windows/
+#   - After install, pg_config must be on your PATH
+#
+# Alternatively, use the pre-compiled binary wheel:
+#   pip install psycopg2-binary --only-binary :all:
+
+psycopg2-binary==2.9.9

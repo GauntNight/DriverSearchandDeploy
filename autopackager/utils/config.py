@@ -20,10 +20,7 @@ def substitute_env_vars(config_dict):
         # Replace ${VAR_NAME} with environment variable value
         if '${' in config_dict:
             template = Template(config_dict)
-            try:
-                return template.substitute(os.environ)
-            except KeyError as e:
-                raise ValueError(f"Missing environment variable: {e}")
+            return template.safe_substitute(os.environ)
         return config_dict
     else:
         return config_dict
