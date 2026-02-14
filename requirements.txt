@@ -22,9 +22,8 @@ openai==1.6.1
 anthropic==0.8.1
 
 # XML/Data Parsing
-lxml==4.9.4
 xmltodict==0.13.0
-beautifulsoup4==4.12.2
+# NOTE: lxml and beautifulsoup4 not needed for current phase (pure xmltodict)
 
 # Utilities
 python-dotenv==1.0.0
@@ -45,7 +44,9 @@ pytest-cov==4.1.0
 responses==0.24.1
 
 # File handling (pathlib is built into Python 3.4+, no install needed)
-py7zr==0.20.8
+# NOTE: py7zr (7zip extraction) requires C build tools on Python 3.14+
+# Install manually if needed for 7z archives: pip install py7zr
+# CAB extraction uses built-in Windows expand.exe (no extra package needed)
 
 # VM/Testing automation (for future phases, Windows only)
 # Install manually if needed: pip install pywinauto
