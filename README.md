@@ -241,6 +241,7 @@ DriverSearchandDeploy/
 - **Setup Guide**: [SETUP.md](SETUP.md) - Detailed installation instructions
 - **Technical Whitepaper**: [automated_software_packaging_whitepaper.md](automated_software_packaging_whitepaper.md)
 - **PR/FAQ**: [PRFAQ_ Project AutoPackager.md](PRFAQ_%20Project%20AutoPackager.md)
+- **Windows App Packaging**: [ch11-windows-app-packaging-reference.md](ch11-windows-app-packaging-reference.md) - Win32 app packaging patterns and best practices
 
 ## License
 
