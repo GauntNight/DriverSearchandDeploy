@@ -169,22 +169,118 @@ class TestingAgent:
 
     def run_vm_test(self, package: Package) -> Dict[str, Any]:
         """
-        Run full VM-based test (for future implementation)
-        This would provision a VM, install the package, and verify functionality
+        Run full VM-based test
+        Provisions a VM, installs the package, validates installation, and cleans up
+
+        Steps:
+        1. Load VM provider from config
+        2. Provision VM (restore snapshot, start VM, wait for boot)
+        3. Copy package to VM
+        4. Install package using install command
+        5. Run validators (Device Manager, Event Log, detection rules, system stability)
+        6. Collect logs
+        7. Clean up VM
+        8. Return test results dict
+
+        Args:
+            package: Package model instance to test
+
+        Returns:
+            Dict containing:
+                - test_passed: bool
+                - vm_provider: str (provider type used)
+                - test_duration: float (seconds)
+                - provision_result: Dict
+                - install_result: Dict
+                - validation_result: Dict
+                - cleanup_result: Dict
+                - error: Optional[str]
         """
-        logger.info("VM testing not yet implemented (future feature)")
+        logger.info("Starting VM-based testing", package_id=package.id)
 
-        # TODO: Implement VM-based testing
-        # 1. Provision clean Windows VM from snapshot
-        # 2. Copy .intunewin package to VM
-        # 3. Simulate Intune Management Extension deployment
-        # 4. Run installation
-        # 5. Verify detection rules
-        # 6. Test basic functionality
-        # 7. Run uninstallation
-        # 8. Restore VM snapshot
+        # Step 1: Load VM provider from config
+        vm_provider_type = self.test_config.get('vm_provider', 'local')
+        vm_config = self.test_config.get('vm_config', {})
 
-        return {
-            'test_passed': True,
-            'note': 'VM testing not yet implemented'
-        }
+        logger.info(
+            "Loading VM provider",
+            provider_type=vm_provider_type,
+            package_id=package.id
+        )
+
+        try:
+            # Step 2: Instantiate the appropriate VM provider
+            if vm_provider_type == 'local':
+                # Use Hyper-V provider for local testing
+                from autopackager.agents.testing.vm_providers.hyperv_provider import HyperVProvider
+
+                hyperv_config = vm_config.get('hyperv', {})
+                if not hyperv_config:
+                    logger.error("Hyper-V configuration not found in config")
+                    return {
+                        'test_passed': False,
+                        'error': 'Hyper-V configuration not found in config'
+                    }
+
+                # Add timeout from parent config
+                hyperv_config['timeout_minutes'] = self.test_config.get('timeout_minutes', 30)
+
+                provider = HyperVProvider(hyperv_config)
+
+            elif vm_provider_type == 'azure':
+                # Use Azure provider for cloud-based testing
+                logger.error("Azure VM provider not yet implemented")
+                return {
+                    'test_passed': False,
+                    'error': 'Azure VM provider not yet implemented'
+                }
+
+            else:
+                logger.error(
+                    "Unknown VM provider type",
+                    provider_type=vm_provider_type
+                )
+                return {
+                    'test_passed': False,
+                    'error': f'Unknown VM provider type: {vm_provider_type}'
+                }
+
+            # Step 3-8: Run complete test workflow via provider
+            # The provider's run_test() method handles:
+            # - VM provisioning (restore snapshot, start, wait for boot)
+            # - Package installation (copy files, execute install command)
+            # - Validation (Device Manager, Event Log, detection rules, stability)
+            # - Cleanup (stop VM, restore snapshot)
+            logger.info("Executing VM test workflow", package_id=package.id)
+
+            test_result = provider.run_test(package)
+
+            # Log test completion
+            if test_result.get('test_passed'):
+                logger.info(
+                    "VM test completed successfully",
+                    package_id=package.id,
+                    duration=test_result.get('test_duration')
+                )
+            else:
+                logger.error(
+                    "VM test failed",
+                    package_id=package.id,
+                    error=test_result.get('error'),
+                    duration=test_result.get('test_duration')
+                )
+
+            return test_result
+
+        except Exception as e:
+            logger.error(
+                "VM test failed with exception",
+                package_id=package.id,
+                error=str(e)
+            )
+            return {
+                'test_passed': False,
+                'error': f'VM test exception: {str(e)}',
+                'vm_provider': vm_provider_type,
+                'test_duration': 0.0
+            }
