@@ -17,8 +17,8 @@
       - Helper .bat scripts for daily use
 
     AZURE SETUP (requires 1 browser login):
-      - Option A: You already created the App Registration → provide 3 values → done
-      - Option B: Script creates the App Registration too → provide 0 values → done
+      - Option A: You already created the App Registration ->provide 3 values ->done
+      - Option B: Script creates the App Registration too ->provide 0 values ->done
       - Creates 4 deployment ring security groups in Entra ID
       - Configures all Microsoft Graph API permissions
       - Grants tenant-wide admin consent
@@ -535,9 +535,16 @@ if (-not $SkipAzure) {
     $runAzure = Read-Host "  Run Azure setup now? (Y/N)"
 
     if ($runAzure -match "^[Yy]") {
-        $azureArgs = @("-OutputEnvFile", "-EnvFilePath", ".\.env")
-        if ($TenantId)                { $azureArgs += @("-TenantId", $TenantId) }
-        if ($CreateAppRegistration)   { $azureArgs += "-CreateAppRegistration" }
+        # Use hashtable splatting, not array splatting.
+        # Array splatting @("-SwitchName") does not reliably bind switch parameters
+        # by name - PowerShell may treat elements as positional arguments, causing
+        # the first string ("-OutputEnvFile") to be bound to $TenantId.
+        $azureArgs = @{
+            OutputEnvFile = $true
+            EnvFilePath   = (Join-Path $scriptDir ".env")
+        }
+        if ($TenantId)              { $azureArgs["TenantId"]              = $TenantId }
+        if ($CreateAppRegistration) { $azureArgs["CreateAppRegistration"] = $true }
 
         try {
             $azureResult = & "$scriptDir\azure-setup.ps1" @azureArgs
@@ -657,11 +664,11 @@ Write-Host "|                Installation Complete!                    |" -Foreg
 Write-Host "+----------------------------------------------------------+" -ForegroundColor Green
 Write-Host ""
 Write-Host " What was installed:" -ForegroundColor White
-Write-Host "   Python virtual environment  → .\venv" -ForegroundColor Gray
-Write-Host "   Redis for Windows           → .\tools\redis\" -ForegroundColor Gray
-Write-Host "   IntuneWinAppUtil.exe        → .\tools\" -ForegroundColor Gray
-Write-Host "   SQLite database             → .\data\autopackager.db" -ForegroundColor Gray
-Write-Host "   Configuration               → .\.env  and  autopackager\config\config.yaml" -ForegroundColor Gray
+Write-Host "   Python virtual environment  ->.\venv" -ForegroundColor Gray
+Write-Host "   Redis for Windows           ->.\tools\redis\" -ForegroundColor Gray
+Write-Host "   IntuneWinAppUtil.exe        ->.\tools\" -ForegroundColor Gray
+Write-Host "   SQLite database             ->.\data\autopackager.db" -ForegroundColor Gray
+Write-Host "   Configuration               ->.\.env  and  autopackager\config\config.yaml" -ForegroundColor Gray
 Write-Host ""
 
 if ($SkipAzure) {
