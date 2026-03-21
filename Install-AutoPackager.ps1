@@ -452,9 +452,20 @@ if ($UseSQLite) {
 }
 
 # Initialise database
+# Suppress EAP during this call: cli.py writes JSON structured logs to stderr
+# (via structlog/python-json-logger), which PowerShell treats as NativeCommandError
+# under $ErrorActionPreference="Stop" even when the command succeeds.
 Write-Info "Initialising database schema..."
-& $venvPython cli.py init 2>&1
-if ($LASTEXITCODE -eq 0) {
+$savedEAP = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
+$initOutput = & $venvPython cli.py init 2>&1
+$initExit = $LASTEXITCODE
+$ErrorActionPreference = $savedEAP
+
+# Print any non-JSON output lines (the human-readable status messages)
+$initOutput | Where-Object { $_ -notmatch '^\s*\{' } | ForEach-Object { Write-Info $_ }
+
+if ($initExit -eq 0) {
     Write-OK "Database initialised"
 } else {
     Write-Warn "Database init had issues - may need Azure credentials first (run again after .env is set)"
