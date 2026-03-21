@@ -25,7 +25,9 @@ That's it. The installer handles Python, Redis, IntuneWinAppUtil, the virtual en
 
 ### Step 1: Run the installer
 
-Right-click PowerShell and select **Run as Administrator**, then:
+**Easiest:** double-click `Install-AutoPackager.bat` in File Explorer — it requests Administrator rights automatically via a UAC prompt.
+
+**Or from an existing PowerShell (Run as Administrator):**
 
 ```powershell
 .\Install-AutoPackager.ps1

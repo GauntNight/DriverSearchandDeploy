@@ -19,8 +19,8 @@ The items marked **[AUTO]** require no manual action.
 
 ### Run the Installer
 
-- [ ] Opened PowerShell as Administrator
-- [ ] Ran `.\Install-AutoPackager.ps1`
+- [ ] Double-clicked `Install-AutoPackager.bat` (handles elevation automatically)
+  - OR opened PowerShell as Administrator and ran `.\Install-AutoPackager.ps1`
 - [ ] **[AUTO]** Python 3.12 installed
 - [ ] **[AUTO]** Git installed
 - [ ] **[AUTO]** Python virtual environment created (`.\venv`)

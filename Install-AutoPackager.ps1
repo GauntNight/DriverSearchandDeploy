@@ -85,16 +85,16 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 function Write-Banner {
     param([string]$Title, [ConsoleColor]$Color = "Cyan")
     Write-Host ""
-    Write-Host ("─" * 60) -ForegroundColor $Color
+    Write-Host ("-" * 60) -ForegroundColor $Color
     Write-Host "  $Title" -ForegroundColor $Color
-    Write-Host ("─" * 60) -ForegroundColor $Color
+    Write-Host ("-" * 60) -ForegroundColor $Color
     Write-Host ""
 }
 
@@ -144,9 +144,9 @@ function Invoke-WithRetry {
     }
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # SELF-ELEVATION CHECK
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator
@@ -162,20 +162,20 @@ if (-not $isAdmin) {
     if ($cont -notmatch "^[Yy]") { exit 0 }
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # BANNER
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║       AutoPackager - Complete Installation Script        ║" -ForegroundColor Cyan
-Write-Host "║                                                          ║" -ForegroundColor Cyan
-Write-Host "║  Minimum steps YOU need to take:                        ║" -ForegroundColor White
-Write-Host "║    1. Run this script                                    ║" -ForegroundColor White
-Write-Host "║    2. Log in to Azure when the browser opens             ║" -ForegroundColor White
-Write-Host "║    3. Paste your LLM API key (OpenAI or Anthropic)       ║" -ForegroundColor White
-Write-Host "║    Everything else is automated.                         ║" -ForegroundColor White
-Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "+----------------------------------------------------------+" -ForegroundColor Cyan
+Write-Host "|       AutoPackager - Complete Installation Script        |" -ForegroundColor Cyan
+Write-Host "|                                                          |" -ForegroundColor Cyan
+Write-Host "|  Minimum steps YOU need to take:                        |" -ForegroundColor White
+Write-Host "|    1. Run this script                                    |" -ForegroundColor White
+Write-Host "|    2. Log in to Azure when the browser opens             |" -ForegroundColor White
+Write-Host "|    3. Paste your LLM API key (OpenAI or Anthropic)       |" -ForegroundColor White
+Write-Host "|    Everything else is automated.                         |" -ForegroundColor White
+Write-Host "+----------------------------------------------------------+" -ForegroundColor Cyan
 
 # Change to script directory
 Set-Location $scriptDir
@@ -183,9 +183,9 @@ Set-Location $scriptDir
 $totalSteps = if ($SkipAzure) { 8 } else { 10 }
 $step = 0
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # STEP 1: PYTHON
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $step++
 Write-Banner "Step $step/$totalSteps  Python 3.9+"
@@ -206,12 +206,13 @@ if ($pythonCmd) {
     # Try winget first (Windows 10 1809+ / Windows 11)
     if (Test-CommandExists winget) {
         Write-Info "Trying winget install..."
-        try {
-            winget install --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+        winget install --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+        # winget exit codes: 0 = success, -1978335189 (0x8A150011) = already installed
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189) {
             $installed = $true
             Write-OK "Python 3.12 installed via winget"
-        } catch {
-            Write-Warn "winget install failed: $_"
+        } else {
+            Write-Warn "winget install returned exit code $LASTEXITCODE - will try direct download"
         }
     }
 
@@ -224,8 +225,8 @@ if ($pythonCmd) {
             Invoke-WebRequest -Uri $pyUrl -OutFile $pyInstaller -UseBasicParsing
         }
         Write-Info "Installing Python 3.12 (silent, adds to PATH)..."
-        $args = "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_doc=0"
-        Start-Process -FilePath $pyInstaller -ArgumentList $args -Wait
+        $installArgs = "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_doc=0"
+        Start-Process -FilePath $pyInstaller -ArgumentList $installArgs -Wait
         Remove-Item $pyInstaller -Force -ErrorAction SilentlyContinue
         $installed = $true
         Write-OK "Python 3.12 installed"
@@ -245,9 +246,9 @@ if ($pythonCmd) {
     Write-OK "Verified: $ver"
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # STEP 2: GIT (optional but recommended)
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $step++
 Write-Banner "Step $step/$totalSteps  Git"
@@ -259,23 +260,24 @@ if (Test-CommandExists git) {
     Write-Warn "Git not found."
     if (Test-CommandExists winget) {
         Write-Info "Installing Git via winget..."
-        try {
-            winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements
+        winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189) {
             Write-OK "Git installed"
-        } catch {
-            Write-Warn "Could not install Git automatically. It is optional but recommended."
+        } else {
+            Write-Warn "Could not install Git automatically (exit: $LASTEXITCODE). It is optional but recommended."
+            Write-Info "Install manually from https://git-scm.com/download/win"
         }
     } else {
         Write-Warn "Install Git manually from https://git-scm.com/download/win (optional)"
     }
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # STEP 3: PYTHON VIRTUAL ENVIRONMENT + DEPENDENCIES
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $step++
-Write-Banner "Step $step/$totalSteps  Python Virtual Environment & Dependencies"
+Write-Banner "Step $step/$totalSteps  Python Virtual Environment and Dependencies"
 
 if (Test-Path ".\venv\Scripts\python.exe") {
     Write-OK "Virtual environment already exists"
@@ -296,17 +298,22 @@ Write-Info "Upgrading pip..."
 & $venvPython -m pip install --upgrade pip --quiet
 
 Write-Info "Installing dependencies from requirements.txt (this may take 2-3 minutes)..."
-& $venvPip install -r requirements.txt
+& $venvPip install -r requirements.txt --no-warn-script-location
 if ($LASTEXITCODE -ne 0) {
-    Write-Fail "Dependency installation failed."
-    Write-Info "Run manually to see errors:  .\venv\Scripts\pip.exe install -r requirements.txt"
-    exit 1
+    # Retry once - transient network errors are common during bulk installs
+    Write-Warn "First install attempt failed. Retrying..."
+    & $venvPip install -r requirements.txt --no-warn-script-location
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "Dependency installation failed."
+        Write-Info "Run manually to see errors:  .\venv\Scripts\pip.exe install -r requirements.txt"
+        exit 1
+    }
 }
 Write-OK "All Python dependencies installed"
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # STEP 4: REDIS FOR WINDOWS
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $step++
 Write-Banner "Step $step/$totalSteps  Redis (message broker)"
@@ -356,9 +363,9 @@ if (Test-Path $redisExe) {
     }
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # STEP 5: INTUNEWINAPPUTIL.EXE
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $step++
 Write-Banner "Step $step/$totalSteps  IntuneWinAppUtil.exe (Microsoft Win32 Content Prep Tool)"
@@ -383,9 +390,9 @@ if (Test-Path $intuneUtil) {
     }
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # STEP 6: DATA DIRECTORIES + DATABASE
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $step++
 Write-Banner "Step $step/$totalSteps  Directories & Database"
@@ -429,9 +436,9 @@ if ($LASTEXITCODE -eq 0) {
     Write-Warn "Database init had issues - may need Azure credentials first (run again after .env is set)"
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # STEP 7: LLM API KEY
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $step++
 Write-Banner "Step $step/$totalSteps  LLM API Key"
@@ -461,9 +468,9 @@ if (-not $LlmApiKey) {
     }
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # STEP 8: AZURE SETUP
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $azureResult = $null
 
@@ -511,9 +518,9 @@ if (-not $SkipAzure) {
     }
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # STEP 9: WRITE / UPDATE .env FILE
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $step++
 Write-Banner "Step $step/$totalSteps  Writing .env file"
@@ -543,9 +550,9 @@ if ($SkipAzure -or $azureResult -eq $null) {
     Write-OK ".env written with all credentials"
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # STEP 10: HELPER SCRIPTS
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 $step++
 Write-Banner "Step $step/$totalSteps  Creating helper scripts"
@@ -605,14 +612,14 @@ Write-OK "Created: create-job.bat"
 Write-OK "Created: list-jobs.bat"
 Write-OK "Created: launch-all.bat  (starts everything at once)"
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # FINAL SUMMARY
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "║                Installation Complete!                    ║" -ForegroundColor Green
-Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host "+----------------------------------------------------------+" -ForegroundColor Green
+Write-Host "|                Installation Complete!                    |" -ForegroundColor Green
+Write-Host "+----------------------------------------------------------+" -ForegroundColor Green
 Write-Host ""
 Write-Host " What was installed:" -ForegroundColor White
 Write-Host "   Python virtual environment  → .\venv" -ForegroundColor Gray
