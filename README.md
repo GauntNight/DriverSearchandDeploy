@@ -169,6 +169,59 @@ Configure AutoPackager via `autopackager/config/config.yaml`:
 - **Deployment Rings**: Entra ID group assignments and deferral periods
 - **Testing**: VM provider and test settings
 
+## Upgrading
+
+### Upgrading to Version 2.x (VM-Based Testing Feature)
+
+The VM-based testing feature adds a new `vm_test_results` column to the Package model to store detailed test results from VM-based driver installation validation.
+
+#### For New Installations
+
+No action needed - the column is created automatically when initializing the database.
+
+#### For Existing Installations
+
+**Option 1: Add Column Manually** (Preserves existing data)
+
+Run this SQL command against your database:
+
+**PostgreSQL:**
+```sql
+ALTER TABLE packages ADD COLUMN vm_test_results JSON DEFAULT '{}';
+```
+
+**SQLite:**
+```bash
+sqlite3 autopackager.db "ALTER TABLE packages ADD COLUMN vm_test_results TEXT DEFAULT '{}';"
+```
+
+**Option 2: Recreate Database** (Development only - **DESTROYS ALL DATA**)
+
+```bash
+# Backup first!
+cp autopackager.db autopackager.db.backup
+
+# Drop and recreate
+rm autopackager.db
+python cli.py init
+```
+
+#### Verify Upgrade
+
+```python
+from autopackager.models.package import Package
+from autopackager.utils.database import db_session_scope
+
+with db_session_scope() as session:
+    package = session.query(Package).first()
+    if package:
+        print(f"vm_test_results field: {package.vm_test_results}")
+    else:
+        print("No packages in database yet - schema is ready")
+```
+
+**⚠️ Important:** Test the migration on a copy of your production database before applying to production.
+
 ## Deployment Rings
 
 AutoPackager uses a phased rollout strategy:

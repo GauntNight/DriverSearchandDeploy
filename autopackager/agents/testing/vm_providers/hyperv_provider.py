@@ -3,6 +3,7 @@
 import subprocess
 import time
 import json
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -22,10 +23,33 @@ class HyperVProvider(VMProvider):
 
         Args:
             config: Hyper-V configuration dictionary
+
+        Raises:
+            ValueError: If configuration contains invalid or unsafe values
         """
         super().__init__(config)
-        self.snapshot_name = config.get('snapshot_name')
-        self.switch_name = config.get('switch_name', 'Default Switch')
+
+        # Validate and sanitize configuration values
+        try:
+            self.vm_name = self._sanitize_powershell_param(
+                'vm_name',
+                self.vm_name,  # Already set by parent __init__
+                allow_path=False
+            )
+            self.snapshot_name = self._sanitize_powershell_param(
+                'snapshot_name',
+                config.get('snapshot_name', ''),
+                allow_path=False
+            )
+            self.switch_name = self._sanitize_powershell_param(
+                'switch_name',
+                config.get('switch_name', 'Default Switch'),
+                allow_path=False
+            )
+        except ValueError as e:
+            logger.error("Invalid Hyper-V configuration", error=str(e))
+            raise
+
         self.boot_timeout = config.get('boot_timeout_seconds', 300)
         self.vm_session = None
 
@@ -34,6 +58,46 @@ class HyperVProvider(VMProvider):
             vm_name=self.vm_name,
             snapshot_name=self.snapshot_name
         )
+
+    def _sanitize_powershell_param(self, param_name: str, value: str, allow_path: bool = False) -> str:
+        """
+        Validate and sanitize PowerShell command parameters
+
+        Args:
+            param_name: Name of parameter (for error messages)
+            value: Value to sanitize
+            allow_path: If True, allow path characters (backslash, colon, forward slash)
+
+        Returns:
+            Sanitized value safe for PowerShell
+
+        Raises:
+            ValueError: If value contains unsafe characters
+        """
+        if not value:
+            raise ValueError(f"{param_name} cannot be empty")
+
+        # Define allowed character sets
+        if allow_path:
+            # Allow alphanumeric, hyphen, underscore, backslash, colon, period, space, forward slash
+            pattern = r'^[a-zA-Z0-9_\-\\:. /]+$'
+        else:
+            # Allow alphanumeric, hyphen, underscore, space only (for VM names, etc.)
+            pattern = r'^[a-zA-Z0-9_\- ]+$'
+
+        if not re.match(pattern, value):
+            logger.error(
+                "Invalid characters in PowerShell parameter",
+                param_name=param_name,
+                value=value[:50],  # Log truncated value
+                pattern=pattern
+            )
+            raise ValueError(
+                f"{param_name} contains invalid characters. "
+                f"Allowed pattern: {pattern}"
+            )
+
+        return value
 
     def provision_vm(self) -> Dict[str, Any]:
         """
@@ -362,32 +426,48 @@ class HyperVProvider(VMProvider):
             bool: True if copy succeeded, False otherwise
         """
         try:
+            # Validate paths
+            source_str = self._sanitize_powershell_param(
+                'source_path',
+                str(source_path),
+                allow_path=True
+            )
+            dest_str = self._sanitize_powershell_param(
+                'destination_path',
+                destination_path,
+                allow_path=True
+            )
+
             # Ensure destination directory exists in VM
-            dest_dir = str(Path(destination_path).parent).replace('\\', '\\\\')
+            dest_dir = str(Path(dest_str).parent).replace('\\', '\\\\')
             mkdir_cmd = f'New-Item -Path "{dest_dir}" -ItemType Directory -Force -ErrorAction SilentlyContinue'
             self._run_powershell_command(mkdir_cmd)
 
             # Copy file to VM using Copy-VMFile
+            # vm_name is already validated in __init__
             copy_cmd = (
                 f'Copy-VMFile -Name "{self.vm_name}" '
-                f'-SourcePath "{source_path}" '
-                f'-DestinationPath "{destination_path}" '
+                f'-SourcePath "{source_str}" '
+                f'-DestinationPath "{dest_str}" '
                 f'-CreateFullPath -FileSource Host -Force'
             )
 
             result = self._run_powershell_command(copy_cmd)
 
             if result.get('exit_code') == 0:
-                logger.debug("File copied to VM", source=str(source_path), dest=destination_path)
+                logger.debug("File copied to VM", source=source_str, dest=dest_str)
                 return True
             else:
                 logger.error(
                     "Failed to copy file to VM",
-                    source=str(source_path),
+                    source=source_str,
                     stderr=result.get('stderr')
                 )
                 return False
 
+        except ValueError as e:
+            logger.error("Invalid file path", error=str(e))
+            return False
         except Exception as e:
             logger.error("File copy exception", source=str(source_path), error=str(e))
             return False
@@ -397,21 +477,34 @@ class HyperVProvider(VMProvider):
         Execute a command in the VM using Invoke-Command
 
         Args:
-            command: Command to execute
-            timeout: Optional timeout in seconds
+            command: PowerShell command to execute in VM
+            timeout: Command timeout in seconds (default: 60)
 
         Returns:
-            Dict containing success, stdout, stderr, exit_code
+            Dict with exit_code, stdout, stderr
         """
         try:
-            # Use Invoke-Command to execute in VM
+            # Log warning if command contains suspicious characters
+            if any(char in command for char in [';', '&', '|', '$(']):
+                logger.warning(
+                    "Command contains potentially unsafe characters",
+                    command_preview=command[:100]
+                )
+
+            # Use Invoke-Command with VM name
+            # vm_name is already validated in __init__
             ps_command = (
                 f'Invoke-Command -VMName "{self.vm_name}" '
-                f'-ScriptBlock {{ {command} }} '
-                f'-ErrorAction Stop'
+                f'-ScriptBlock {{ {command} }} -ErrorAction Stop'
             )
 
             result = self._run_powershell_command(ps_command, timeout=timeout)
+
+            logger.debug(
+                "Command executed in VM",
+                exit_code=result.get('exit_code'),
+                has_output=bool(result.get('stdout'))
+            )
 
             return {
                 'success': result.get('exit_code') == 0,
@@ -421,7 +514,7 @@ class HyperVProvider(VMProvider):
             }
 
         except Exception as e:
-            logger.error("Command execution exception", command=command, error=str(e))
+            logger.error("Command execution failed", error=str(e))
             return {
                 'success': False,
                 'stdout': '',
