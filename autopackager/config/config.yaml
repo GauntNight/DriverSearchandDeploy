@@ -72,6 +72,7 @@ paths:
 # Testing Configuration
 testing:
   enabled: true
+  vm_testing_enabled: false  # Enable VM-based installation testing (default: false for backward compatibility)
   vm_provider: "local"  # local or azure
   snapshot_name: "clean_windows_11"
   timeout_minutes: 30
