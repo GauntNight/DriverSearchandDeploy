@@ -2,9 +2,59 @@
 
 Use this checklist to track your implementation progress.
 
-## ☐ Azure Configuration
+---
 
-### App Registration
+## Automated Path (Recommended)
+
+If you are using `Install-AutoPackager.ps1`, most items below are handled automatically.
+The items marked **[AUTO]** require no manual action.
+
+### Before You Start
+
+- [ ] Confirmed local administrator rights on your Windows workstation
+- [ ] Confirmed Azure account with Global Admin or Application/Group Administrator role
+- [ ] Obtained LLM API key
+  - OpenAI: https://platform.openai.com/api-keys
+  - Anthropic: https://console.anthropic.com/settings/keys
+
+### Run the Installer
+
+- [ ] Opened PowerShell as Administrator
+- [ ] Ran `.\Install-AutoPackager.ps1`
+- [ ] **[AUTO]** Python 3.12 installed
+- [ ] **[AUTO]** Git installed
+- [ ] **[AUTO]** Python virtual environment created (`.\venv`)
+- [ ] **[AUTO]** All Python dependencies installed
+- [ ] **[AUTO]** Redis downloaded to `.\tools\redis\`
+- [ ] **[AUTO]** IntuneWinAppUtil.exe downloaded to `.\tools\`
+- [ ] **[AUTO]** SQLite database configured and initialised
+- [ ] **[AUTO]** Data directories created
+
+### Azure Login (one browser prompt)
+
+- [ ] Logged in to Azure when browser opened
+- [ ] **[AUTO]** App Registration created or validated
+- [ ] **[AUTO]** Microsoft Graph API permissions added
+- [ ] **[AUTO]** Admin consent granted
+- [ ] **[AUTO]** `AutoPackager-Ring0-ITPilot` group created
+- [ ] **[AUTO]** `AutoPackager-Ring1-EarlyAdopters` group created
+- [ ] **[AUTO]** `AutoPackager-Ring2-BroadDeployment` group created
+- [ ] **[AUTO]** `AutoPackager-Ring3-CriticalSystems` group created
+- [ ] **[AUTO]** `.env` file written with all credentials
+
+### Final Steps
+
+- [ ] Entered LLM API key when prompted (or edited `.env` to set `LLM_API_KEY`)
+- [ ] Verified `.env` has no placeholder values remaining
+
+---
+
+## Manual Path (Alternative)
+
+Complete these if you are not using the automated installer.
+
+### Azure: App Registration
+
 - [ ] Created App Registration named `AutoPackager-ServicePrincipal`
 - [ ] Saved **Tenant ID**: `___________________________________`
 - [ ] Saved **Client ID**: `___________________________________`
@@ -15,7 +65,8 @@ Use this checklist to track your implementation progress.
 - [ ] Added API Permission: `GroupMember.Read.All`
 - [ ] Granted admin consent for all permissions
 
-### Deployment Ring Groups
+### Azure: Deployment Ring Groups
+
 - [ ] Created `AutoPackager-Ring0-ITPilot`
   - Object ID: `___________________________________`
 - [ ] Created `AutoPackager-Ring1-EarlyAdopters`
@@ -24,121 +75,93 @@ Use this checklist to track your implementation progress.
   - Object ID: `___________________________________`
 - [ ] Created `AutoPackager-Ring3-CriticalSystems`
   - Object ID: `___________________________________`
-- [ ] Added test account to Ring 0 group
 
----
+### Workstation Setup
 
-## ☐ Workstation Setup
-
-### Prerequisites
 - [ ] Python 3.9+ installed
-- [ ] PostgreSQL installed (or using SQLite)
 - [ ] Redis installed and running
 - [ ] Git installed
-- [ ] cabextract installed (Linux) or 7-Zip (Windows)
-- [ ] Downloaded `IntuneWinAppUtil.exe`
-
-### Project Setup
-- [ ] Cloned repository
-- [ ] Created Python virtual environment
-- [ ] Activated virtual environment
-- [ ] Installed requirements: `pip install -r requirements.txt`
-- [ ] Placed `IntuneWinAppUtil.exe` in `tools/` directory
+- [ ] IntuneWinAppUtil.exe placed in `tools/` directory
+- [ ] Python virtual environment created (`venv/`)
+- [ ] Dependencies installed: `pip install -r requirements.txt`
+- [ ] `.env` created from template and filled in
+- [ ] SQLite configured in `config.yaml` (or PostgreSQL set up)
+- [ ] Database initialised: `python cli.py init`
 
 ---
 
-## ☐ Configuration
-
-### Environment Variables
-- [ ] Copied `.env.template` to `.env`
-- [ ] Set `AZURE_TENANT_ID`
-- [ ] Set `AZURE_CLIENT_ID`
-- [ ] Set `AZURE_CLIENT_SECRET`
-- [ ] Set `RING0_GROUP_ID`
-- [ ] Set `RING1_GROUP_ID`
-- [ ] Set `RING2_GROUP_ID`
-- [ ] Set `RING3_GROUP_ID`
-- [ ] Set `DB_PASSWORD` (if using PostgreSQL)
-- [ ] Set `LLM_API_KEY` (optional for Phase 1)
-
-### Database Configuration
-- [ ] Chose database: ☐ SQLite  ☐ PostgreSQL
-- [ ] If PostgreSQL: Created database `autopackager`
-- [ ] If PostgreSQL: Created user `autopackager_user`
-- [ ] If SQLite: Updated `config.yaml` to use SQLite
-- [ ] Initialized database: `python cli.py init`
-
----
-
-## ☐ Testing & Validation
+## Testing & Validation
 
 ### Services Running
+
 - [ ] Redis server is running
   - Test: `redis-cli ping` returns `PONG`
+  - Windows: `.\start-redis.bat`
 - [ ] Celery worker started
-  - Command: `python cli.py worker start`
-  - Verified 6 tasks registered
+  - Windows: `.\start-worker.bat`
+  - Linux: `python cli.py worker start`
+  - Verified 6 tasks registered in output
 
-### Dell Laptop Information
-- [ ] Determined exact Dell model: `___________________________________`
-- [ ] Laptop is Entra ID joined
-- [ ] Laptop added to Ring 0 group
+### Test Device
 
-### First Job
-- [ ] Created driver discovery job
-  - Command used: `___________________________________`
+- [ ] Identified Dell model name: `___________________________________`
+  - Command: `Get-WmiObject -Class Win32_ComputerSystem | Select-Object Model`
+- [ ] Device is Entra ID joined
+- [ ] Device added to `AutoPackager-Ring0-ITPilot` group
+
+### First Driver Job
+
+- [ ] Created first driver job:
+  - Windows: `.\create-job.bat --vendor dell --model "YOUR-MODEL"`
+  - Linux: `python cli.py create-driver-job --vendor dell --model "YOUR-MODEL"`
   - Job ID: `___________________________________`
-- [ ] Monitored job status: `python cli.py jobs status <id>`
-- [ ] Job completed successfully
-- [ ] Verified package in Intune admin center
+- [ ] Monitored job status until `completed`
+- [ ] Package visible in Intune admin center
 
 ---
 
-## ☐ Verification in Intune
+## Verification in Intune
 
 - [ ] Logged into https://intune.microsoft.com
 - [ ] Navigated to **Apps → Windows**
 - [ ] Found driver package in app list
 - [ ] Checked **Assignments** → Ring 0 group assigned
-- [ ] Triggered sync on Dell test laptop
+- [ ] Triggered Intune sync on test device:
+  - Settings → Accounts → Access work or school → [Account] → Info → Sync
 - [ ] Verified installation started on device
 
 ---
 
-## ☐ Optional Enhancements
+## Optional Enhancements
 
-- [ ] Configured automated catalog refresh (cron/Task Scheduler)
-- [ ] Set up log monitoring
-- [ ] Created additional test jobs for other models
+- [ ] Configured automated catalog refresh (Task Scheduler / cron)
+- [ ] Set up log monitoring for `data/logs/autopackager.log`
+- [ ] Created driver jobs for additional hardware models
 - [ ] Documented hardware inventory
-- [ ] Customized deployment ring deferral periods
-- [ ] Set up backup for database
+- [ ] Customised deployment ring deferral periods in `config.yaml`
+- [ ] Set up database backups (if using PostgreSQL)
+- [ ] Switched to PostgreSQL for production use
 
 ---
 
-## Common Commands Reference
+## Common Commands
+
+```cmd
+# Windows helper scripts (created by installer)
+.\launch-all.bat                                     Launch Redis + worker
+.\create-job.bat --vendor dell --model "MODEL"       Create a driver job
+.\list-jobs.bat                                      List all jobs
+.\list-jobs.bat --state completed                    Filter by state
+```
 
 ```bash
-# Virtual environment
-source venv/bin/activate          # Linux/Mac
-venv\Scripts\activate             # Windows
-
-# Database
-python cli.py init
-
-# Worker
-python cli.py worker start
-
-# Jobs
-python cli.py create-driver-job --vendor dell --model "YOUR-MODEL"
+# Cross-platform CLI commands
+python cli.py init                                   Initialise database
+python cli.py worker start                           Start Celery worker
+python cli.py create-driver-job --vendor dell --model "MODEL"
 python cli.py jobs list
 python cli.py jobs status <id>
-python cli.py jobs list --state completed
-
-# Services
-redis-server                      # Start Redis
-redis-cli ping                    # Test Redis
-sudo systemctl status postgresql  # Check PostgreSQL (Linux)
+python cli.py jobs list --state failed
 ```
 
 ---
@@ -146,25 +169,26 @@ sudo systemctl status postgresql  # Check PostgreSQL (Linux)
 ## Troubleshooting Quick Fixes
 
 | Problem | Quick Fix |
-|---------|-----------|
-| Authentication failed | Check `.env` credentials, verify API permissions granted |
-| Database connection error | Verify PostgreSQL running or switch to SQLite |
-| Redis connection refused | Run `redis-server` |
-| No driver pack found | Verify exact Dell model name |
-| Worker not processing | Check Redis connection, restart worker |
-| Import errors | Re-run `pip install -r requirements.txt` |
+|---|---|
+| Authentication failed | Check `.env` credentials; verify API permissions granted admin consent |
+| Database connection error | Verify SQLite configured in `config.yaml`; re-run `python cli.py init` |
+| Redis connection refused | Run `.\start-redis.bat` |
+| No driver pack found | Verify exact Dell model name using `wmic computersystem get model` |
+| Worker not processing | Check Redis is running; restart with `.\start-worker.bat` |
+| Import errors | Re-run `pip install -r requirements.txt` inside the venv |
+| Admin consent failed | Requires Global Admin; grant manually in Azure Portal |
 
 ---
 
 ## Success Criteria
 
-✅ You've successfully implemented AutoPackager when:
+You've successfully implemented AutoPackager when:
 
-1. Worker is processing jobs without errors
-2. Driver discovery completes successfully
-3. Package appears in Intune admin center
-4. Package is assigned to Ring 0 group
-5. Test laptop can install the driver package
+1. ✅ Worker is processing jobs without errors
+2. ✅ Driver discovery completes successfully
+3. ✅ Package appears in Intune admin center
+4. ✅ Package is assigned to Ring 0 group
+5. ✅ Test laptop installs the driver package
 
 ---
 
@@ -175,8 +199,10 @@ sudo systemctl status postgresql  # Check PostgreSQL (Linux)
 3. **Document your hardware inventory** for automation
 4. **Plan Phase 2**: COTS software update automation
 5. **Set up production monitoring** and alerting
+6. **Switch to PostgreSQL** for production use
 
 ---
 
-**Implementation Time**: ~90 minutes
+**Implementation Time (automated path)**: ~10–15 minutes
+**Implementation Time (manual path)**: ~90 minutes
 **Support**: See `IMPLEMENTATION_GUIDE.md` for detailed instructions

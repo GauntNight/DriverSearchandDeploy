@@ -1,301 +1,291 @@
 # Automated Setup Scripts
 
-AutoPackager includes automated setup scripts to quickly get you up and running.
+AutoPackager includes two setup scripts that eliminate manual configuration steps.
 
-## Quick Start
+---
 
-### Windows (PowerShell)
+## Scripts Overview
+
+| Script | Purpose |
+|---|---|
+| `Install-AutoPackager.ps1` | **One-click Windows installer** — installs everything (local + Azure) |
+| `azure-setup.ps1` | **Azure-only setup** — run standalone if local setup is already done |
+| `setup.ps1` | Legacy Windows setup (local only, no Azure automation) |
+| `setup.sh` | Linux/Mac setup (local only, no Azure automation) |
+
+---
+
+## Install-AutoPackager.ps1 (Recommended)
+
+The primary installer. Run it once and AutoPackager is fully ready.
+
+### What it installs
+
+**Local (fully automatic, no prompts):**
+
+| Component | Method |
+|---|---|
+| Python 3.12 | `winget` → python.org MSI fallback |
+| Git | `winget` |
+| Python venv + all pip packages | `pip install -r requirements.txt` |
+| Redis for Windows | Chocolatey → GitHub archive fallback |
+| IntuneWinAppUtil.exe | Downloaded from Microsoft GitHub |
+| SQLite database | Configured + schema initialised |
+| Data directories | `data/downloads`, `data/packages`, `data/logs`, `data/catalogs/*` |
+| Helper scripts | `launch-all.bat`, `start-redis.bat`, `start-worker.bat`, `create-job.bat`, `list-jobs.bat` |
+
+**Azure (requires one browser login):**
+
+| Task | Automated |
+|---|---|
+| Create App Registration | Optional (`-CreateAppRegistration` flag) |
+| Configure existing App Registration | ✅ |
+| Add Microsoft Graph API permissions | ✅ |
+| Grant tenant-wide admin consent | ✅ |
+| Create 4 deployment ring security groups | ✅ |
+| Write `.env` with all credentials | ✅ |
+
+### Basic usage
 
 ```powershell
-# Run setup script (will prompt for admin if needed)
-.\setup.ps1
-
-# For testing with SQLite (easier):
-.\setup.ps1 -UseSQLite
+# Right-click PowerShell → Run as Administrator
+.\Install-AutoPackager.ps1
 ```
 
-### Linux / WSL / Mac
+### Parameters
 
-```bash
-# Make script executable
-chmod +x setup.sh
+| Parameter | Description |
+|---|---|
+| `-SkipAzure` | Skip Azure setup (configure later with `azure-setup.ps1`) |
+| `-SkipPython` | Skip Python installation check |
+| `-UseSQLite:$false` | Use PostgreSQL instead of SQLite |
+| `-LlmProvider` | `openai` (default) or `anthropic` |
+| `-LlmApiKey` | Provide API key directly (skips interactive prompt) |
+| `-TenantId` | Provide Tenant ID directly (skips prompt) |
+| `-CreateAppRegistration` | Create a new App Registration automatically |
 
-# Run setup
-./setup.sh
+### Examples
 
-# For testing with SQLite (easier):
-./setup.sh --sqlite
+```powershell
+# Full install — interactive prompts for credentials
+.\Install-AutoPackager.ps1
 
-# Skip Redis installation (if you'll install it manually):
-./setup.sh --skip-redis
+# Full install — create App Registration automatically (no portal needed)
+.\Install-AutoPackager.ps1 -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -CreateAppRegistration
+
+# Local install only — configure Azure later
+.\Install-AutoPackager.ps1 -SkipAzure
+
+# Fully scripted — no interactive prompts
+.\Install-AutoPackager.ps1 `
+    -TenantId "your-tenant-id" `
+    -LlmApiKey "sk-your-key" `
+    -CreateAppRegistration
 ```
+
+### Estimated time
+
+- Local install: 5–10 minutes (depends on download speed)
+- Azure configuration: 2–3 minutes
+- **Total: ~10–15 minutes**
 
 ---
 
-## What the Scripts Do
+## azure-setup.ps1
 
-The automated setup scripts handle:
+Automates all Azure configuration. Use this standalone if:
+- You've already run `setup.ps1` or `setup.sh` for local setup
+- You want to re-configure Azure without re-running the full installer
+- You need to reconfigure after a credential rotation
 
-1. ✅ **Check Prerequisites** - Verify Python, Git, etc. are installed
-2. ✅ **Install System Dependencies** - Redis, PostgreSQL, cabextract
-3. ✅ **Create Virtual Environment** - Python venv setup
-4. ✅ **Install Python Packages** - All requirements.txt dependencies
-5. ✅ **Download Redis** (Windows only) - Automatic Redis download
-6. ✅ **Create .env File** - From template
-7. ✅ **Configure Database** - SQLite or PostgreSQL
-8. ✅ **Initialize Database** - Create tables and schema
-9. ✅ **Create Helper Scripts** - Quick start batch/shell files
+### What it does
+
+1. Installs Azure CLI if not present
+2. Opens browser for Azure login
+3. Validates or creates the App Registration
+4. Dynamically looks up Microsoft Graph permission IDs (no hardcoded GUIDs)
+5. Adds all required API permissions
+6. Grants tenant-wide admin consent
+7. Creates 4 Entra ID security groups
+8. Writes a complete `.env` file
+
+### Examples
+
+```powershell
+# Configure existing App Registration — prompts interactively
+.\azure-setup.ps1 -OutputEnvFile
+
+# Configure existing App Registration — provide values directly
+.\azure-setup.ps1 `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -ClientId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -ClientSecret "your-secret-value" `
+    -OutputEnvFile
+
+# Create App Registration automatically — only need Tenant ID
+.\azure-setup.ps1 -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+                  -CreateAppRegistration `
+                  -OutputEnvFile
+
+# Write .env to a specific path
+.\azure-setup.ps1 -OutputEnvFile -EnvFilePath "C:\AutoPackager\.env"
+```
+
+### Required Azure role
+
+Admin consent requires **Global Administrator** or both:
+- Application Administrator
+- Group Administrator
+
+If admin consent fails, grant it manually:
+**Azure Portal → App Registrations → [your app] → API permissions → Grant admin consent**
 
 ---
 
-## After Setup Completes
+## After Setup: Starting AutoPackager
 
-### 1. Edit Configuration
+### Option A — Start everything at once
 
-```bash
-# Edit .env with your Azure credentials
-notepad .env       # Windows
-nano .env          # Linux/Mac
-```
-
-Fill in:
-- `AZURE_TENANT_ID`
-- `AZURE_CLIENT_ID`
-- `AZURE_CLIENT_SECRET`
-- `RING0_GROUP_ID` through `RING3_GROUP_ID`
-
-### 2. Start Services
-
-**Windows:**
 ```cmd
-# Terminal 1: Start Redis
+.\launch-all.bat
+```
+
+Opens two windows: Redis server and Celery worker.
+
+### Option B — Start services individually
+
+```cmd
+# Window 1: Redis
 .\start-redis.bat
 
-# Terminal 2: Start Worker
+# Window 2: Celery worker
 .\start-worker.bat
 ```
 
-**Linux/Mac:**
-```bash
-# Terminal 1: Start Redis
-./start-redis.sh
+### Create your first driver job
 
-# Terminal 2: Start Worker
-./start-worker.sh
-```
-
-### 3. Create First Job
-
-**Windows:**
 ```cmd
-.\create-job.bat --vendor dell --model "Latitude 5420"
+.\create-job.bat --vendor dell --model "Latitude 5420" --driver-type chipset
 ```
 
-**Linux/Mac:**
-```bash
-./create-job.sh --vendor dell --model "Latitude 5420"
-```
+### Monitor jobs
 
-### 4. Monitor Progress
-
-**Windows:**
 ```cmd
 .\list-jobs.bat
 ```
 
-**Linux/Mac:**
-```bash
-./list-jobs.sh
-```
+---
+
+## Helper Scripts Reference
+
+Scripts created by `Install-AutoPackager.ps1`:
+
+| Script | What it does |
+|---|---|
+| `launch-all.bat` | Starts Redis and Celery worker in separate windows |
+| `start-redis.bat` | Starts Redis server (`tools\redis\redis-server.exe redis.conf`) |
+| `start-worker.bat` | Activates venv and starts Celery worker |
+| `create-job.bat [args]` | Passes all arguments to `python cli.py create-driver-job` |
+| `list-jobs.bat [args]` | Passes all arguments to `python cli.py jobs list` |
 
 ---
 
-## Helper Scripts Created
+## Linux/Mac Setup
 
-After setup, you'll have these quick-start scripts:
+Use `setup.sh` for the local setup, then run `azure-setup.ps1` on a Windows machine (or Azure Cloud Shell) for the Azure configuration.
 
-| Script | Purpose |
-|--------|---------|
-| `start-redis` | Start Redis server |
-| `start-worker` | Start Celery worker |
-| `create-job` | Create driver job (passes args through) |
-| `list-jobs` | List all jobs (passes args through) |
+```bash
+chmod +x setup.sh
+./setup.sh --sqlite
+```
+
+Available flags:
+
+```bash
+./setup.sh --sqlite       # Use SQLite (default for testing)
+./setup.sh --skip-redis   # Skip Redis installation
+```
 
 ---
 
 ## Troubleshooting
 
-### Python Not Found (Windows)
+### PowerShell execution policy blocked
 
-1. Download Python from https://www.python.org/downloads/
-2. **Important**: Check "Add Python to PATH" during installation
-3. Restart PowerShell and try again
-
-### Permission Denied (Linux/Mac)
-
-```bash
-# Make script executable
-chmod +x setup.sh
-
-# Run with sudo for system packages
-sudo ./setup.sh
-```
-
-### Redis Already Running
-
-```bash
-# Check if Redis is running
-redis-cli ping
-
-# If it returns PONG, you're good to go!
-```
-
-### Database Connection Failed
-
-**SQLite (Easiest for Testing):**
-```bash
-# Re-run with SQLite option
-./setup.sh --sqlite        # Linux/Mac
-.\setup.ps1 -UseSQLite     # Windows
-```
-
-**PostgreSQL:**
-```bash
-# Check PostgreSQL is running
-sudo systemctl status postgresql
-
-# Create database manually
-sudo -u postgres psql
-CREATE DATABASE autopackager;
-CREATE USER autopackager_user WITH PASSWORD 'your_password';
-GRANT ALL PRIVILEGES ON DATABASE autopackager TO autopackager_user;
-\q
-```
-
-### Script Fails Midway
-
-The scripts are idempotent - safe to run multiple times. If a step fails:
-
-1. Fix the issue (install missing package, etc.)
-2. Run the script again
-3. It will skip completed steps
-
----
-
-## Manual Installation
-
-If automated setup doesn't work, see:
-- **IMPLEMENTATION_GUIDE.md** - Detailed step-by-step manual setup
-- **SETUP.md** - Reference documentation
-
----
-
-## Uninstallation
-
-To remove AutoPackager:
-
-```bash
-# Remove virtual environment
-rm -rf venv
-
-# Remove data (optional - has your packages/logs)
-rm -rf data
-
-# Remove Redis (Windows only)
-rm -rf tools/redis
-```
-
----
-
-## Advanced Options
-
-### Custom Python Version
-
-```bash
-# Use specific Python version
-python3.11 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Install in Docker
-
-```bash
-# Coming soon - Docker Compose setup
-docker-compose up -d
-```
-
-### Production Deployment
-
-For production use:
-1. Use PostgreSQL (not SQLite)
-2. Configure proper Redis persistence
-3. Set up systemd services for worker
-4. Configure log rotation
-5. Set up monitoring and alerting
-
-See **IMPLEMENTATION_GUIDE.md** for production deployment guidance.
-
----
-
-## What Gets Installed
-
-### System Packages (Linux)
-- `cabextract` - Extract CAB files (Dell/HP catalogs)
-- `redis-server` - Task queue backend
-- `postgresql` - Database (if not using SQLite)
-
-### Python Packages
-- See `requirements.txt` for full list
-- Key packages: Celery, Redis, SQLAlchemy, MSAL, requests
-
-### Downloaded Tools
-- Redis for Windows (Windows only)
-- IntuneWinAppUtil.exe (manual download required)
-
----
-
-## Script Source Code
-
-- **Windows**: `setup.ps1` - PowerShell script
-- **Linux/Mac**: `setup.sh` - Bash script
-
-Both scripts are heavily commented and can be customized for your environment.
-
----
-
-## Quick Reference
-
-### Full Installation (One Command)
-
-**Windows (PowerShell as Admin):**
 ```powershell
-.\setup.ps1 -UseSQLite
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+# Then re-run:
+.\Install-AutoPackager.ps1
 ```
 
-**Linux/WSL/Mac:**
-```bash
-./setup.sh --sqlite
+Or bypass for a single run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Install-AutoPackager.ps1
 ```
 
-### Estimated Time
-- **Windows**: 5-10 minutes
-- **Linux**: 3-5 minutes (package downloads vary)
+### Python not found after installation
 
-### Disk Space Required
-- ~500 MB for Python packages and dependencies
-- ~50 MB for Redis
-- Variable for driver packages (grows over time)
+Close and reopen PowerShell as Administrator (PATH refresh required).
+
+### Azure CLI not found after installation
+
+Close and reopen PowerShell. If still not found, add manually:
+```
+C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin
+```
+
+### Admin consent failed
+
+Your account may not have Global Admin role. Options:
+1. Ask a Global Admin to run `.\azure-setup.ps1 -OutputEnvFile` on your behalf
+2. Grant consent manually: Azure Portal → App Registrations → API permissions → Grant admin consent
+
+### Database initialisation warnings
+
+If `python cli.py init` shows warnings during install, this is normal if Azure credentials aren't yet written. Re-run after `.env` is complete:
+
+```powershell
+.\venv\Scripts\activate.ps1
+python cli.py init
+```
+
+### Redis download failed
+
+Download manually from [https://github.com/microsoftarchive/redis/releases](https://github.com/microsoftarchive/redis/releases) and extract to `tools\redis\`.
+
+---
+
+## Disk Space Required
+
+| Component | Space |
+|---|---|
+| Python packages (venv) | ~500 MB |
+| Redis | ~50 MB |
+| Application data (grows over time) | Variable |
+
+---
+
+## Uninstalling
+
+```powershell
+# Remove virtual environment
+Remove-Item -Recurse -Force .\venv
+
+# Remove downloaded tools
+Remove-Item -Recurse -Force .\tools\redis
+
+# Remove data (optional — contains your packages and logs)
+Remove-Item -Recurse -Force .\data
+```
+
+The Azure App Registration and Entra ID groups are not removed by uninstalling locally. Delete them from Azure Portal if no longer needed.
 
 ---
 
 ## Need Help?
 
-1. Check **IMPLEMENTATION_GUIDE.md** for detailed troubleshooting
+1. Check `IMPLEMENTATION_GUIDE.md` for detailed troubleshooting
 2. Review script output for specific error messages
 3. Check logs in `data/logs/autopackager.log`
-4. Verify Azure credentials in `.env` file
-
----
-
-**Ready to start?** Run the setup script for your platform above! 🚀
+4. Verify Azure credentials in `.env`

@@ -1,238 +1,292 @@
 # AutoPackager Implementation Guide
+
 ## Getting Started with Your Test Environment
 
-This guide will walk you through implementing AutoPackager in your new M365/Intune environment with your Dell test laptop.
+This guide covers two paths to get AutoPackager running:
+
+- **[Fast Path (Recommended)](#fast-path-automated-setup)** — One script does everything. ~10 minutes.
+- **[Manual Path](#manual-setup-reference)** — Step-by-step instructions for advanced users or non-Windows environments.
 
 ---
 
-## Part 1: Azure Configuration (15 minutes)
+## Fast Path: Automated Setup
 
-### Step 1: Create Azure App Registration
+### What you need
 
-1. **Navigate to Azure Portal**
-   - Go to https://portal.azure.com
-   - Sign in with your M365 admin account
+| Requirement | Notes |
+|---|---|
+| Windows workstation | Local administrator rights required |
+| Azure account | Global Admin **or** Application Administrator + Group Administrator roles |
+| LLM API key | [OpenAI](https://platform.openai.com/api-keys) or [Anthropic](https://console.anthropic.com/settings/keys) |
 
-2. **Create App Registration**
-   ```
-   Azure Active Directory → App registrations → New registration
-   ```
+That's it. The installer handles Python, Redis, IntuneWinAppUtil, the virtual environment, the database, and all Azure configuration.
 
+---
+
+### Step 1: Run the installer
+
+Right-click PowerShell and select **Run as Administrator**, then:
+
+```powershell
+.\Install-AutoPackager.ps1
+```
+
+The script will work through these stages automatically:
+
+1. **Python 3.12** — installs via `winget` (or direct download fallback)
+2. **Git** — installs via `winget`
+3. **Python venv + dependencies** — creates `.\venv` and runs `pip install`
+4. **Redis for Windows** — downloads to `.\tools\redis\`
+5. **IntuneWinAppUtil.exe** — downloads from Microsoft GitHub to `.\tools\`
+6. **Data directories** — creates `data/downloads`, `data/packages`, `data/logs`, `data/catalogs`
+7. **Database** — configures SQLite and initialises the schema
+8. **LLM API key** — prompts you to paste your key
+9. **Azure** — launches `azure-setup.ps1` (browser login, then fully automated)
+10. **`.env` file** — written with all credentials
+11. **Helper scripts** — creates `launch-all.bat`, `create-job.bat`, `list-jobs.bat`
+
+---
+
+### Step 2: Log in to Azure
+
+When prompted, the script opens a browser window. Sign in with your Azure admin account.
+
+The `azure-setup.ps1` script then automatically:
+
+- Validates or creates your App Registration (`AutoPackager-ServicePrincipal`)
+- Looks up the correct Microsoft Graph permission IDs dynamically
+- Adds all required API permissions (Application type):
+  - `DeviceManagementApps.ReadWrite.All`
+  - `DeviceManagementConfiguration.ReadWrite.All`
+  - `Group.Read.All`
+  - `GroupMember.Read.All`
+- Grants tenant-wide admin consent
+- Creates 4 Entra ID security groups:
+  - `AutoPackager-Ring0-ITPilot`
+  - `AutoPackager-Ring1-EarlyAdopters`
+  - `AutoPackager-Ring2-BroadDeployment`
+  - `AutoPackager-Ring3-CriticalSystems`
+
+---
+
+### Step 3: Paste your LLM API key
+
+When prompted, enter your OpenAI (`sk-...`) or Anthropic (`sk-ant-...`) key. It is written directly into `.env`.
+
+---
+
+### Step 4: Start AutoPackager
+
+```cmd
+.\launch-all.bat
+```
+
+This opens two windows: one for Redis, one for the Celery worker. Both must stay open while AutoPackager is running.
+
+Alternatively, start them separately:
+
+```cmd
+# Window 1
+.\start-redis.bat
+
+# Window 2
+.\start-worker.bat
+```
+
+---
+
+### Step 5: Create your first driver job
+
+Find your Dell laptop's exact model name:
+
+```powershell
+Get-WmiObject -Class Win32_ComputerSystem | Select-Object Model
+# Example output: Latitude 5420
+```
+
+Then create the job:
+
+```cmd
+.\create-job.bat --vendor dell --model "Latitude 5420" --driver-type chipset
+```
+
+---
+
+### Step 6: Monitor progress
+
+```cmd
+.\list-jobs.bat
+```
+
+Jobs progress through these states:
+`pending` → `discovering` → `packaging` → `testing` → `deploying` → `completed`
+
+---
+
+### Step 7: Verify in Intune
+
+1. Go to [https://intune.microsoft.com](https://intune.microsoft.com)
+2. Navigate to **Apps → Windows**
+3. Your driver package should appear
+4. Check **Assignments** — it should be assigned to `AutoPackager-Ring0-ITPilot`
+
+---
+
+### Already have an App Registration?
+
+If you've already created an App Registration in the Azure Portal, the installer will prompt for your Client ID and Client Secret. Alternatively, run `azure-setup.ps1` standalone:
+
+```powershell
+.\azure-setup.ps1 -TenantId "your-tenant-id" `
+                  -ClientId "your-client-id" `
+                  -ClientSecret "your-secret" `
+                  -OutputEnvFile
+```
+
+To skip App Registration creation entirely and let the script create everything from your Tenant ID alone:
+
+```powershell
+.\Install-AutoPackager.ps1 -TenantId "your-tenant-id" -CreateAppRegistration
+```
+
+---
+
+### Timeline
+
+| Stage | Time |
+|---|---|
+| Script runs (local install) | ~5–10 min |
+| Azure login + automated config | ~2–3 min |
+| First driver job created | ~1 min |
+| **Total** | **~10–15 min** |
+
+---
+
+---
+
+## Manual Setup Reference
+
+<details>
+<summary>Click to expand — for advanced users, Linux/WSL environments, or if the automated installer cannot be used</summary>
+
+### Part 1: Azure Configuration (15 minutes)
+
+#### Step 1: Create Azure App Registration
+
+1. Go to [https://portal.azure.com](https://portal.azure.com) and sign in with your M365 admin account.
+
+2. Navigate to: **Microsoft Entra ID → App registrations → New registration**
    - **Name**: `AutoPackager-ServicePrincipal`
    - **Supported account types**: Accounts in this organizational directory only
    - **Redirect URI**: Leave blank
    - Click **Register**
 
-3. **Save Your Credentials** (you'll need these later)
-   - Copy **Application (client) ID** → This is your `AZURE_CLIENT_ID`
-   - Copy **Directory (tenant) ID** → This is your `AZURE_TENANT_ID`
+3. Save your credentials:
+   - Copy **Application (client) ID** → `AZURE_CLIENT_ID`
+   - Copy **Directory (tenant) ID** → `AZURE_TENANT_ID`
 
-4. **Create Client Secret**
-   ```
-   Certificates & secrets → New client secret
-   ```
-
+4. Create a client secret: **Certificates & secrets → New client secret**
    - **Description**: `AutoPackager Secret`
-   - **Expires**: 24 months (or per your policy)
-   - Click **Add**
-   - **⚠️ CRITICAL**: Copy the **Value** immediately → This is your `AZURE_CLIENT_SECRET`
-   - You won't be able to see this again!
+   - **Expires**: 24 months
+   - **⚠️ Copy the Value immediately** → `AZURE_CLIENT_SECRET` (shown only once)
 
-5. **Configure API Permissions**
-   ```
-   API permissions → Add a permission → Microsoft Graph → Application permissions
-   ```
+5. Add API permissions: **API permissions → Add a permission → Microsoft Graph → Application permissions**
 
-   Add these permissions:
+   Add all four:
    - `DeviceManagementApps.ReadWrite.All`
    - `DeviceManagementConfiguration.ReadWrite.All`
    - `Group.Read.All`
    - `GroupMember.Read.All`
 
-6. **Grant Admin Consent**
-   - Click **Grant admin consent for [Your Tenant]**
-   - Click **Yes**
-   - All permissions should now show ✓ "Granted for [Your Tenant]"
+6. Click **Grant admin consent for [Your Tenant]** → **Yes**
 
 ---
 
-## Part 2: Create Deployment Ring Groups (5 minutes)
+### Part 2: Create Deployment Ring Groups (5 minutes)
 
-### Step 2: Create Entra ID Groups
+Navigate to **Microsoft Entra ID → Groups → New Group** and create four Security groups:
 
-Navigate to **Azure Active Directory → Groups → New Group**
+| Group name | Description | Members |
+|---|---|---|
+| `AutoPackager-Ring0-ITPilot` | IT staff for initial driver testing | Add your test account |
+| `AutoPackager-Ring1-EarlyAdopters` | Volunteer users | (can leave empty) |
+| `AutoPackager-Ring2-BroadDeployment` | General user population | (can leave empty) |
+| `AutoPackager-Ring3-CriticalSystems` | High-stability devices | (can leave empty) |
 
-Create these 4 groups:
-
-#### Ring 0 - IT Pilot
-```
-Group type: Security
-Group name: AutoPackager-Ring0-ITPilot
-Description: IT staff for initial driver testing
-Members: Add your test account
-```
-
-#### Ring 1 - Early Adopters
-```
-Group type: Security
-Group name: AutoPackager-Ring1-EarlyAdopters
-Description: Volunteer users for early driver deployment
-Members: (Can leave empty for now)
-```
-
-#### Ring 2 - Broad Deployment
-```
-Group type: Security
-Group name: AutoPackager-Ring2-BroadDeployment
-Description: General user population
-Members: (Can leave empty for now)
-```
-
-#### Ring 3 - Critical Systems
-```
-Group type: Security
-Group name: AutoPackager-Ring3-CriticalSystems
-Description: High-stability devices (servers, executives, etc.)
-Members: (Can leave empty for now)
-```
-
-**Save the Object IDs for each group** - you'll need these for configuration.
-
-To get Object IDs:
-1. Click on each group
-2. Copy the **Object Id** field
-3. Keep these handy!
+For each group, copy the **Object Id** — you'll need these for `.env`.
 
 ---
 
-## Part 3: Workstation Setup (20 minutes)
+### Part 3: Install Prerequisites (20 minutes)
 
-### Step 3: Install Prerequisites
-
-#### Option A: Windows Workstation
+#### Windows
 
 ```powershell
-# Install Python 3.9+ from python.org
-# Download and install from: https://www.python.org/downloads/
+# Install Python 3.9+ from https://www.python.org/downloads/
+# Check "Add Python to PATH" during installation
 
-# Install PostgreSQL (or use SQLite for testing)
-# Download from: https://www.postgresql.org/download/windows/
+# Install Redis — download from:
+# https://github.com/microsoftarchive/redis/releases
 
-# Install Redis (Windows version)
-# Download from: https://github.com/microsoftarchive/redis/releases
-# Extract and run redis-server.exe
-
-# Install Git
-# Download from: https://git-scm.com/download/win
-
-# Install cabextract alternative (7-Zip works)
-# Download from: https://www.7-zip.org/
+# Install Git from: https://git-scm.com/download/win
 ```
 
-#### Option B: Linux/WSL (Recommended for Development)
+#### Linux / WSL
 
 ```bash
-# Update system
 sudo apt-get update
-
-# Install Python 3.9+
-sudo apt-get install python3 python3-pip python3-venv
-
-# Install PostgreSQL
-sudo apt-get install postgresql postgresql-contrib
-
-# Install Redis
-sudo apt-get install redis-server
-
-# Install cabextract (for Dell/HP catalogs)
-sudo apt-get install cabextract
-
-# Install Git
-sudo apt-get install git
+sudo apt-get install python3 python3-pip python3-venv redis-server cabextract git
 ```
 
-### Step 4: Download IntuneWinAppUtil.exe
+#### Download IntuneWinAppUtil.exe
 
-1. Go to: https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool
-2. Download the latest release
-3. Save `IntuneWinAppUtil.exe` (you'll place this in the project later)
+1. Go to: [https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool](https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool)
+2. Download `IntuneWinAppUtil.exe`
+3. Place it in `tools/IntuneWinAppUtil.exe`
 
 ---
 
-## Part 4: Install AutoPackager (10 minutes)
-
-### Step 5: Clone and Setup
+### Part 4: Install AutoPackager (10 minutes)
 
 ```bash
-# Clone the repository
-cd /path/to/your/workspace
-git clone <your-repository-url>
-cd DriverSearchandDeploy
-
 # Create virtual environment
 python3 -m venv venv
 
-# Activate virtual environment
-# On Linux/Mac:
-source venv/bin/activate
-# On Windows:
-venv\Scripts\activate
+# Activate
+source venv/bin/activate        # Linux/Mac
+# venv\Scripts\activate         # Windows
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### Step 6: Place IntuneWinAppUtil.exe
-
-```bash
-# Create tools directory
-mkdir -p tools
-
-# Place IntuneWinAppUtil.exe in tools/
-# Copy the file you downloaded earlier to: tools/IntuneWinAppUtil.exe
-```
-
 ---
 
-## Part 5: Configuration (10 minutes)
-
-### Step 7: Configure Environment Variables
+### Part 5: Configuration (10 minutes)
 
 ```bash
-# Copy environment template
 cp .env.template .env
-
-# Edit .env file
-nano .env  # or use your favorite editor
 ```
 
-Fill in your values from earlier:
+Edit `.env`:
 
 ```bash
-# Database (for testing, can use SQLite - see next step)
-DB_PASSWORD=YourSecurePasswordHere
-
-# Azure/Intune (from Step 1)
+# Azure/Intune (from Part 1)
 AZURE_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 AZURE_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-AZURE_CLIENT_SECRET=your~secret~value~here
+AZURE_CLIENT_SECRET=your~secret~value
 
-# Deployment Ring Group IDs (from Step 2)
-RING0_GROUP_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx  # ITPilot
-RING1_GROUP_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx  # EarlyAdopters
-RING2_GROUP_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx  # BroadDeployment
-RING3_GROUP_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx  # CriticalSystems
+# Deployment Ring Group IDs (from Part 2)
+RING0_GROUP_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+RING1_GROUP_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+RING2_GROUP_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+RING3_GROUP_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
-# LLM API Key (optional for Phase 1 - driver discovery)
-# Get from: https://platform.openai.com/api-keys or https://console.anthropic.com/
+# LLM API Key
 LLM_API_KEY=sk-your-api-key-here
 ```
 
-### Step 8: Configure Database
-
-#### Option A: SQLite (Easiest for Testing)
-
-Edit `autopackager/config/config.yaml`:
+Configure SQLite in `autopackager/config/config.yaml` (for testing):
 
 ```yaml
 database:
@@ -240,215 +294,60 @@ database:
   path: "data/autopackager.db"
 ```
 
-#### Option B: PostgreSQL (Production-Ready)
-
-```bash
-# Create database (Linux)
-sudo -u postgres psql
-CREATE DATABASE autopackager;
-CREATE USER autopackager_user WITH PASSWORD 'YourSecurePasswordHere';
-GRANT ALL PRIVILEGES ON DATABASE autopackager TO autopackager_user;
-\q
-```
-
-Keep the default in `config.yaml`:
-```yaml
-database:
-  type: "postgresql"
-  host: "localhost"
-  port: 5432
-  name: "autopackager"
-  user: "autopackager_user"
-  password: "${DB_PASSWORD}"
-```
-
 ---
 
-## Part 6: Initialize and Test (15 minutes)
-
-### Step 9: Initialize Database
+### Part 6: Initialise and Test (15 minutes)
 
 ```bash
-# Make sure virtual environment is activated
-source venv/bin/activate  # or venv\Scripts\activate on Windows
+# Create data directories
+mkdir -p data/downloads data/packages data/logs data/catalogs/dell data/catalogs/hp data/catalogs/lenovo
 
-# Initialize database
+# Initialise database
 python cli.py init
-```
 
-You should see:
-```
-✓ Database initialized successfully
-```
+# Terminal 1: Start Redis
+redis-server                           # Linux/Mac
+# tools\redis\redis-server.exe         # Windows
 
-### Step 10: Start Redis
-
-```bash
-# Linux/Mac
-redis-server
-
-# Windows
-# Run redis-server.exe from the Redis folder
-```
-
-### Step 11: Start Celery Worker
-
-Open a **new terminal** (keep Redis running):
-
-```bash
-# Navigate to project
-cd /path/to/DriverSearchandDeploy
-
-# Activate virtual environment
-source venv/bin/activate
-
-# Start worker
+# Terminal 2: Start worker
 python cli.py worker start --concurrency 2
 ```
 
-You should see Celery starting up with:
-```
-[tasks]
-  . autopackager.create_packaging_job
-  . autopackager.process_job
-  . autopackager.discovery_task
-  . autopackager.packaging_task
-  . autopackager.testing_task
-  . autopackager.deployment_task
-```
-
 ---
 
-## Part 7: Run Your First Job! (10 minutes)
-
-### Step 12: Get Your Dell Model Information
-
-On your Dell test laptop, find the exact model:
-
-```powershell
-# PowerShell
-Get-WmiObject -Class Win32_ComputerSystem | Select-Object Model
-
-# Or Command Prompt
-wmic computersystem get model
-```
-
-Example output: `Latitude 5420`, `Precision 5560`, `OptiPlex 7090`, etc.
-
-### Step 13: Create Driver Discovery Job
-
-Open **another terminal** (keep worker running):
+### Part 7: Run Your First Job
 
 ```bash
-# Navigate to project
-cd /path/to/DriverSearchandDeploy
+# Get Dell model name (PowerShell)
+Get-WmiObject -Class Win32_ComputerSystem | Select-Object Model
 
-# Activate virtual environment
-source venv/bin/activate
-
-# Create driver job (replace with YOUR Dell model)
+# Create job
 python cli.py create-driver-job \
   --vendor dell \
   --model "Latitude 5420" \
   --driver-type "chipset" \
   --current-version "1.0.0"
-```
 
-### Step 14: Monitor Job Progress
-
-```bash
-# List all jobs
+# Monitor
 python cli.py jobs list
-
-# Get detailed status (replace <job-id> with the actual ID)
 python cli.py jobs status 1
 ```
 
-You should see the job progress through states:
-- `pending` → `discovering` → `packaging` → `testing` → `deploying` → `completed`
-
-### Step 15: Verify in Intune
-
-1. Go to **Microsoft Intune admin center**: https://intune.microsoft.com
-2. Navigate to **Apps → Windows**
-3. You should see your driver package appear!
-4. Check **Assignments** - it should be assigned to your `AutoPackager-Ring0-ITPilot` group
+</details>
 
 ---
 
 ## Troubleshooting
 
-### Issue: "Authentication failed"
-**Solution**:
-- Verify your Azure credentials in `.env`
-- Check that API permissions are granted admin consent
-- Ensure client secret hasn't expired
-
-### Issue: "Database connection failed"
-**Solution**:
-- If using PostgreSQL, verify it's running: `sudo systemctl status postgresql`
-- Try SQLite for testing (see Step 8)
-- Check password in `.env` matches database
-
-### Issue: "No driver pack found"
-**Solution**:
-- Verify exact Dell model name matches catalog
-- Try without `--driver-type` to get full driver pack
-- Check Dell catalog downloaded to `data/catalogs/dell/`
-
-### Issue: "Redis connection refused"
-**Solution**:
-- Ensure Redis is running: `redis-cli ping` (should return `PONG`)
-- Start Redis: `redis-server` or Windows equivalent
-
-### Issue: "IntuneWinAppUtil.exe not found"
-**Solution**:
-- Verify file exists at `tools/IntuneWinAppUtil.exe`
-- Check file permissions (needs execute)
-- For testing, the system will create placeholder .intunewin files
-
----
-
-## Next Steps
-
-### 1. Monitor Your First Deployment
-```bash
-# Watch job progress
-watch -n 5 'python cli.py jobs list'
-
-# Check logs
-tail -f data/logs/autopackager.log
-```
-
-### 2. Test Deployment on Dell Laptop
-
-1. Ensure Dell laptop is Entra ID joined
-2. Add device to `AutoPackager-Ring0-ITPilot` group
-3. On the laptop, sync Intune:
-   ```
-   Settings → Accounts → Access work or school → [Your Account] → Info → Sync
-   ```
-4. Check Company Portal for the driver package
-
-### 3. Add More Hardware Models
-
-```bash
-# Create jobs for different models
-python cli.py create-driver-job \
-  --vendor dell \
-  --model "Precision 5560"
-
-python cli.py create-driver-job \
-  --vendor dell \
-  --model "OptiPlex 7090"
-```
-
-### 4. Explore Advanced Features
-
-- Review `autopackager/config/config.yaml` for customization
-- Adjust deployment ring deferral periods
-- Configure automated catalog refresh (cron job)
-- Set up monitoring and alerting
+| Issue | Solution |
+|---|---|
+| Authentication failed | Check `.env` credentials; verify API permissions have admin consent; check secret expiry |
+| Database connection failed | Run with SQLite: `.\Install-AutoPackager.ps1` uses SQLite by default |
+| Redis connection refused | Run `.\start-redis.bat` or `redis-cli ping` to verify |
+| No driver pack found | Verify exact model name; try without `--driver-type` |
+| IntuneWinAppUtil.exe not found | Re-run `.\Install-AutoPackager.ps1` — it downloads it automatically |
+| Admin consent failed | Requires Global Admin role; grant manually in Azure Portal → API Permissions |
+| Worker not processing | Check Redis is running; restart worker with `.\start-worker.bat` |
 
 ---
 
@@ -456,25 +355,16 @@ python cli.py create-driver-job \
 
 Before moving to production:
 
-- [ ] Use PostgreSQL (not SQLite)
-- [ ] Configure proper logging rotation
+- [ ] Switch to PostgreSQL (not SQLite): update `config.yaml` and re-run `python cli.py init`
+- [ ] Configure log rotation for `data/logs/`
 - [ ] Set up monitoring (health checks, error alerts)
-- [ ] Create proper backup strategy for database
-- [ ] Review and adjust deployment ring deferral periods
+- [ ] Create a database backup strategy
+- [ ] Review deployment ring deferral periods in `config.yaml`
 - [ ] Test rollback procedures
 - [ ] Document your hardware inventory
-- [ ] Set up automated catalog refresh
+- [ ] Set up automated catalog refresh (Task Scheduler / cron)
 - [ ] Configure LLM API for Phase 2 (software updates)
 - [ ] Create operational runbooks
-
----
-
-## Support Resources
-
-- **Setup Guide**: `SETUP.md`
-- **Technical Documentation**: `automated_software_packaging_whitepaper.md`
-- **PR/FAQ**: `PRFAQ_ Project AutoPackager.md`
-- **Example Scripts**: `scripts/example_usage.py`
 
 ---
 
@@ -504,17 +394,22 @@ python cli.py jobs list --state failed
 python cli.py version
 ```
 
+Windows helper scripts (created by installer):
+
+```cmd
+.\launch-all.bat          Launch Redis + worker in separate windows
+.\start-redis.bat         Start Redis only
+.\start-worker.bat        Start Celery worker only
+.\create-job.bat [args]   Create a driver job
+.\list-jobs.bat [args]    List jobs
+```
+
 ---
 
-## Timeline Summary
+## Support Resources
 
-- **Part 1-2 (Azure Setup)**: 20 minutes
-- **Part 3-4 (Install)**: 30 minutes
-- **Part 5-6 (Configure & Init)**: 25 minutes
-- **Part 7 (First Job)**: 10 minutes
-
-**Total Time**: ~90 minutes for complete setup and first driver deployment!
-
----
-
-Good luck! 🚀
+- **Automated Setup**: `AUTOMATED_SETUP.md`
+- **Manual Setup Reference**: `SETUP.md`
+- **Technical Documentation**: `automated_software_packaging_whitepaper.md`
+- **PR/FAQ**: `PRFAQ_ Project AutoPackager.md`
+- **Example Scripts**: `scripts/example_usage.py`
