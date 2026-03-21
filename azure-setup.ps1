@@ -186,16 +186,38 @@ Write-Info "A browser window will open for authentication..."
 Write-Host ""
 
 try {
-    $loginResult = az login --tenant $TenantId --output json | ConvertFrom-Json
-    $accountName = $loginResult[0].user.name
+    # --allow-no-subscriptions is required for M365/Intune-only tenants that have
+    # no Azure Pay-As-You-Go subscription. Without it, az login returns an empty
+    # array and the script crashes trying to index $loginResult[0].
+    $loginResult = az login --tenant $TenantId --allow-no-subscriptions --output json | ConvertFrom-Json
+
+    # When there are no subscriptions the result may be an empty array or the
+    # account info is in a different shape - use az ad signed-in-user show instead.
+    try {
+        $accountInfo = az ad signed-in-user show --output json | ConvertFrom-Json
+        $accountName = $accountInfo.userPrincipalName
+    } catch {
+        # Fallback: try to pull name from the login result if it has entries
+        if ($loginResult -and $loginResult.Count -gt 0) {
+            $accountName = $loginResult[0].user.name
+        } else {
+            $accountName = "(account confirmed - no subscription in this tenant)"
+        }
+    }
     Write-OK "Signed in as: $accountName"
 } catch {
     Write-Fail "Login failed: $_"
     exit 1
 }
 
-# Set active subscription/tenant
-az account set --subscription (az account show --query id -o tsv) 2>$null
+# Set active tenant context. Skip if no subscriptions (Intune-only tenants).
+$savedEAP = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
+$currentSub = az account show --query id -o tsv 2>$null
+$ErrorActionPreference = $savedEAP
+if ($currentSub) {
+    az account set --subscription $currentSub 2>$null
+}
 
 # ------------------------------------------------------------------------------
 # STEP 4: APP REGISTRATION (create or validate existing)

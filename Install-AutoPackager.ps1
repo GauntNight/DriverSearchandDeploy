@@ -548,11 +548,20 @@ if (-not $SkipAzure) {
 
         try {
             $azureResult = & "$scriptDir\azure-setup.ps1" @azureArgs
-            Write-OK "Azure configuration complete"
         } catch {
-            Write-Fail "Azure setup failed: $_"
-            Write-Warn "You can run azure-setup.ps1 separately later."
+            # Exceptions from the script itself (parse errors, etc.)
+            Write-Fail "Azure setup failed with exception: $_"
+            $azureResult = $null
+        }
+        # azure-setup.ps1 uses exit 1 on failure; that sets $LASTEXITCODE but
+        # does NOT throw, so try/catch alone is insufficient.
+        if ($LASTEXITCODE -ne 0 -or $null -eq $azureResult) {
+            Write-Fail "Azure setup did not complete successfully (exit code: $LASTEXITCODE)."
+            Write-Warn "Common cause: M365/Intune-only tenant with no Azure subscription - update applied, re-run to retry."
+            Write-Warn "You can also run .\azure-setup.ps1 -OutputEnvFile separately after this installer finishes."
             $SkipAzure = $true
+        } else {
+            Write-OK "Azure configuration complete"
         }
     } else {
         Write-Warn "Azure setup skipped. Run .\azure-setup.ps1 when ready."
