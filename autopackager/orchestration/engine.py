@@ -47,7 +47,7 @@ class OrchestrationEngine:
                 current_version=current_version,
                 hardware_model=hardware_model,
                 driver_type=driver_type,
-                metadata=metadata or {}
+                job_metadata=metadata or {}
             )
 
             session.add(job)
@@ -93,9 +93,11 @@ class OrchestrationEngine:
                 job.completed_at = datetime.utcnow()
 
             if metadata_update:
-                current_metadata = job.job_metadata or {}
-                current_metadata.update(metadata_update)
-                job.job_metadata = current_metadata
+                # Create a new dict so SQLAlchemy detects the change.
+                # Reassigning the same mutated object is a no-op to SQLAlchemy's
+                # change tracker because it compares by identity against the
+                # committed state, causing the UPDATE to silently skip this column.
+                job.job_metadata = {**(job.job_metadata or {}), **metadata_update}
 
             session.flush()
             session.expunge(job)
