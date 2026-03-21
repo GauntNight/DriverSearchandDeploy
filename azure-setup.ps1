@@ -124,8 +124,15 @@ if (-not $azAvailable) {
         Write-Info "Installing Azure CLI via winget..."
         $wingetAvailable = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($wingetAvailable) {
-            winget install --id Microsoft.AzureCLI --silent --accept-package-agreements --accept-source-agreements
-        } else {
+            # --disable-interactivity prevents winget's "Press any key to continue"
+            # prompt after install completes (--silent only suppresses the MSI UI)
+            winget install --id Microsoft.AzureCLI --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189) {
+                Write-Warn "winget returned exit code $LASTEXITCODE - will try direct MSI download"
+                $wingetAvailable = $false   # fall through to MSI path
+            }
+        }
+        if (-not $wingetAvailable) {
             Write-Info "Winget not available. Downloading Azure CLI installer..."
             $cliInstaller = "$env:TEMP\AzureCLI.msi"
             Invoke-WebRequest -Uri "https://aka.ms/installazurecliwindows" -OutFile $cliInstaller -UseBasicParsing
