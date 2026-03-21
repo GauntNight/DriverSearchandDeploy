@@ -189,6 +189,12 @@ def cancel_job(job_id, all_stuck):
 
 
 
+@cli.group()
+def worker():
+    """Manage Celery workers"""
+    pass
+
+
 @worker.command('purge')
 @click.option('--yes', is_flag=True, help='Skip confirmation prompt')
 def purge_queue(yes):
