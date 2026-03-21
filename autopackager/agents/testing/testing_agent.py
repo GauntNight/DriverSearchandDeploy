@@ -43,9 +43,42 @@ class TestingAgent:
             raise ValueError(f"Package {package_id} not found")
 
         # Run smoke tests
-        test_result = self._run_smoke_tests(package)
+        smoke_test_result = self._run_smoke_tests(package)
 
-        # Update package test status
+        # Initialize combined test result with smoke test results
+        test_result = {
+            'test_passed': smoke_test_result.get('test_passed', False),
+            'smoke_tests': smoke_test_result,
+            'vm_test_results': None
+        }
+
+        # Check if VM testing is enabled
+        vm_testing_enabled = self.test_config.get('vm_testing_enabled', False)
+
+        if vm_testing_enabled:
+            logger.info("VM testing enabled, running VM tests", package_id=package.id)
+
+            # Run VM-based tests
+            vm_test_result = self.run_vm_test(package)
+            test_result['vm_test_results'] = vm_test_result
+
+            # Combine results - both smoke tests and VM tests must pass
+            test_result['test_passed'] = (
+                smoke_test_result.get('test_passed', False) and
+                vm_test_result.get('test_passed', False)
+            )
+
+            logger.info(
+                "Combined test results",
+                package_id=package.id,
+                smoke_passed=smoke_test_result.get('test_passed'),
+                vm_passed=vm_test_result.get('test_passed'),
+                overall_passed=test_result['test_passed']
+            )
+        else:
+            logger.info("VM testing disabled, using smoke test results only", package_id=package.id)
+
+        # Update package test status with combined results
         self._update_package_test_status(package_id, test_result)
 
         return test_result
@@ -151,12 +184,19 @@ class TestingAgent:
             if package:
                 package.tested = True
                 package.test_passed = test_result.get('test_passed', False)
-                package.test_logs = str(test_result.get('test_results', {}))
+
+                # Store both smoke test and VM test results
+                test_logs = {
+                    'smoke_tests': test_result.get('smoke_tests', {}).get('test_results', {}),
+                    'vm_test_results': test_result.get('vm_test_results')
+                }
+                package.test_logs = str(test_logs)
 
                 logger.info(
                     "Updated package test status",
                     package_id=package_id,
-                    passed=package.test_passed
+                    passed=package.test_passed,
+                    has_vm_results=test_result.get('vm_test_results') is not None
                 )
 
     def _get_package(self, package_id: int) -> Package:
@@ -169,22 +209,226 @@ class TestingAgent:
 
     def run_vm_test(self, package: Package) -> Dict[str, Any]:
         """
-        Run full VM-based test (for future implementation)
-        This would provision a VM, install the package, and verify functionality
+        Run full VM-based test
+        Provisions a VM, installs the package, validates installation, and cleans up
+
+        Steps:
+        1. Load VM provider from config
+        2. Provision VM (restore snapshot, start VM, wait for boot)
+        3. Copy package to VM
+        4. Install package using install command
+        5. Run validators (Device Manager, Event Log, detection rules, system stability)
+        6. Collect logs
+        7. Clean up VM
+        8. Return test results dict
+
+        Args:
+            package: Package model instance to test
+
+        Returns:
+            Dict containing:
+                - test_passed: bool
+                - vm_provider: str (provider type used)
+                - test_duration: float (seconds)
+                - provision_result: Dict
+                - install_result: Dict
+                - validation_result: Dict
+                - cleanup_result: Dict
+                - error: Optional[str]
         """
-        logger.info("VM testing not yet implemented (future feature)")
+        import time
+        import subprocess
+        from concurrent.futures import TimeoutError as FuturesTimeoutError
 
-        # TODO: Implement VM-based testing
-        # 1. Provision clean Windows VM from snapshot
-        # 2. Copy .intunewin package to VM
-        # 3. Simulate Intune Management Extension deployment
-        # 4. Run installation
-        # 5. Verify detection rules
-        # 6. Test basic functionality
-        # 7. Run uninstallation
-        # 8. Restore VM snapshot
+        logger.info("Starting VM-based testing", package_id=package.id)
 
-        return {
-            'test_passed': True,
-            'note': 'VM testing not yet implemented'
+        # Initialize test result structure
+        test_result = {
+            'test_passed': False,
+            'vm_provider': None,
+            'test_duration': 0.0,
+            'provision_result': {},
+            'install_result': {},
+            'validation_result': {},
+            'cleanup_result': {},
+            'error': None
         }
+
+        start_time = time.time()
+        provider = None
+
+        try:
+            # Step 1: Load VM provider from config
+            vm_provider_type = self.test_config.get('vm_provider', 'local')
+            vm_config = self.test_config.get('vm_config', {})
+            timeout_minutes = self.test_config.get('timeout_minutes', 30)
+
+            test_result['vm_provider'] = vm_provider_type
+
+            logger.info(
+                "Loading VM provider",
+                provider_type=vm_provider_type,
+                package_id=package.id,
+                timeout_minutes=timeout_minutes
+            )
+
+            # Step 2: Instantiate the appropriate VM provider
+            if vm_provider_type == 'local':
+                # Use Hyper-V provider for local testing
+                from autopackager.agents.testing.vm_providers.hyperv_provider import HyperVProvider
+
+                hyperv_config = vm_config.get('hyperv', {})
+                if not hyperv_config:
+                    error_msg = 'Hyper-V configuration not found in config'
+                    logger.error(error_msg, package_id=package.id)
+                    test_result['error'] = error_msg
+                    return test_result
+
+                # Add timeout from parent config
+                hyperv_config['timeout_minutes'] = timeout_minutes
+
+                provider = HyperVProvider(hyperv_config)
+
+            elif vm_provider_type == 'azure':
+                # Use Azure provider for cloud-based testing
+                error_msg = 'Azure VM provider not yet implemented'
+                logger.error(error_msg, package_id=package.id)
+                test_result['error'] = error_msg
+                return test_result
+
+            else:
+                error_msg = f'Unknown VM provider type: {vm_provider_type}'
+                logger.error(
+                    "Unknown VM provider type",
+                    provider_type=vm_provider_type,
+                    package_id=package.id
+                )
+                test_result['error'] = error_msg
+                return test_result
+
+            # Step 3-8: Run complete test workflow via provider
+            # The provider's run_test() method handles:
+            # - VM provisioning (restore snapshot, start, wait for boot)
+            # - Package installation (copy files, execute install command)
+            # - Validation (Device Manager, Event Log, detection rules, stability)
+            # - Cleanup (stop VM, restore snapshot)
+            logger.info("Executing VM test workflow", package_id=package.id)
+
+            # Execute test with timeout enforcement
+            test_result = provider.run_test(package)
+
+            # Update duration
+            test_result['test_duration'] = time.time() - start_time
+
+            # Log test completion
+            if test_result.get('test_passed'):
+                logger.info(
+                    "VM test completed successfully",
+                    package_id=package.id,
+                    duration=test_result.get('test_duration')
+                )
+            else:
+                logger.error(
+                    "VM test failed",
+                    package_id=package.id,
+                    error=test_result.get('error'),
+                    duration=test_result.get('test_duration')
+                )
+
+            return test_result
+
+        except subprocess.TimeoutExpired as e:
+            # Handle subprocess timeout errors
+            error_msg = f'VM test timeout (subprocess): {str(e)}'
+            logger.error(
+                "VM test timeout (subprocess)",
+                package_id=package.id,
+                timeout_minutes=timeout_minutes,
+                error=str(e),
+                elapsed_time=time.time() - start_time
+            )
+            test_result['error'] = error_msg
+            test_result['test_duration'] = time.time() - start_time
+            return test_result
+
+        except TimeoutError as e:
+            # Handle timeout errors specifically
+            error_msg = f'VM test timeout after {timeout_minutes} minutes: {str(e)}'
+            logger.error(
+                "VM test timeout",
+                package_id=package.id,
+                timeout_minutes=timeout_minutes,
+                error=str(e),
+                elapsed_time=time.time() - start_time
+            )
+            test_result['error'] = error_msg
+            test_result['test_duration'] = time.time() - start_time
+            return test_result
+
+        except FuturesTimeoutError as e:
+            # Handle concurrent.futures timeout errors
+            error_msg = f'VM test timeout after {timeout_minutes} minutes: {str(e)}'
+            logger.error(
+                "VM test timeout (futures)",
+                package_id=package.id,
+                timeout_minutes=timeout_minutes,
+                error=str(e),
+                elapsed_time=time.time() - start_time
+            )
+            test_result['error'] = error_msg
+            test_result['test_duration'] = time.time() - start_time
+            return test_result
+
+        except Exception as e:
+            # Handle all other exceptions
+            error_msg = f'VM test exception: {str(e)}'
+            logger.error(
+                "VM test failed with exception",
+                package_id=package.id,
+                error=str(e),
+                exception_type=type(e).__name__,
+                elapsed_time=time.time() - start_time
+            )
+            test_result['error'] = error_msg
+            test_result['test_duration'] = time.time() - start_time
+            return test_result
+
+        finally:
+            # Ensure cleanup always runs, even if errors occurred during provider instantiation
+            if provider is not None:
+                logger.info(
+                    "Ensuring VM cleanup",
+                    package_id=package.id,
+                    has_provider=True
+                )
+                try:
+                    # The provider's run_test() already has cleanup in finally block,
+                    # but we ensure cleanup is called if provider was instantiated
+                    # and test didn't reach run_test()
+                    if not test_result.get('cleanup_result'):
+                        logger.info("Running final cleanup", package_id=package.id)
+                        cleanup_result = provider.cleanup_vm()
+                        test_result['cleanup_result'] = cleanup_result
+
+                        if not cleanup_result.get('success'):
+                            logger.warning(
+                                "Final VM cleanup incomplete",
+                                package_id=package.id,
+                                error=cleanup_result.get('error')
+                            )
+                except Exception as cleanup_error:
+                    logger.error(
+                        "Final VM cleanup failed",
+                        package_id=package.id,
+                        error=str(cleanup_error)
+                    )
+                    test_result['cleanup_result'] = {
+                        'success': False,
+                        'error': str(cleanup_error)
+                    }
+            else:
+                logger.debug(
+                    "No provider to cleanup",
+                    package_id=package.id,
+                    has_provider=False
+                )

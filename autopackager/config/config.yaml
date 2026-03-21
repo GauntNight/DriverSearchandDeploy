@@ -72,9 +72,40 @@ paths:
 # Testing Configuration
 testing:
   enabled: true
+  vm_testing_enabled: false  # Enable VM-based installation testing (default: false for backward compatibility)
   vm_provider: "local"  # local or azure
   snapshot_name: "clean_windows_11"
   timeout_minutes: 30
+
+  # VM Provider Configuration
+  vm_config:
+    # Hyper-V Provider Settings (for local testing)
+    hyperv:
+      vm_name: "AutoPackager-TestVM"
+      snapshot_name: "clean_windows_11"
+      switch_name: "Default Switch"
+      memory_mb: 4096
+      processors: 2
+      boot_timeout_seconds: 300
+
+    # Azure Provider Settings (for cloud-based testing)
+    azure:
+      resource_group: "${AZURE_TEST_RG}"
+      vm_size: "Standard_D2s_v3"
+      image_reference:
+        publisher: "MicrosoftWindowsDesktop"
+        offer: "Windows-11"
+        sku: "win11-22h2-pro"
+        version: "latest"
+      admin_username: "azureuser"
+      admin_password: "${AZURE_VM_ADMIN_PASSWORD}"
+      location: "eastus"
+      boot_timeout_seconds: 600
+
+    # Common Settings
+    timeout_minutes: 30
+    max_retries: 2
+    cleanup_on_failure: true
 
 # Logging
 logging:

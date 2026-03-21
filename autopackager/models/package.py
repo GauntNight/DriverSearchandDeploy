@@ -37,6 +37,9 @@ class Package(Base):
     test_passed = Column(Boolean)
     test_logs = Column(String(4096))
 
+    # VM-based testing results
+    vm_test_results = Column(JSON, default={})
+
     # Intune deployment
     intune_app_id = Column(String(255))
     deployed = Column(Boolean, default=False)
@@ -64,6 +67,7 @@ class Package(Base):
             'detection_rules': self.detection_rules,
             'tested': self.tested,
             'test_passed': self.test_passed,
+            'vm_test_results': self.vm_test_results,
             'intune_app_id': self.intune_app_id,
             'deployed': self.deployed,
             'created_at': self.created_at.isoformat() if self.created_at else None,
