@@ -43,9 +43,42 @@ class TestingAgent:
             raise ValueError(f"Package {package_id} not found")
 
         # Run smoke tests
-        test_result = self._run_smoke_tests(package)
+        smoke_test_result = self._run_smoke_tests(package)
 
-        # Update package test status
+        # Initialize combined test result with smoke test results
+        test_result = {
+            'test_passed': smoke_test_result.get('test_passed', False),
+            'smoke_tests': smoke_test_result,
+            'vm_test_results': None
+        }
+
+        # Check if VM testing is enabled
+        vm_testing_enabled = self.test_config.get('vm_testing_enabled', False)
+
+        if vm_testing_enabled:
+            logger.info("VM testing enabled, running VM tests", package_id=package.id)
+
+            # Run VM-based tests
+            vm_test_result = self.run_vm_test(package)
+            test_result['vm_test_results'] = vm_test_result
+
+            # Combine results - both smoke tests and VM tests must pass
+            test_result['test_passed'] = (
+                smoke_test_result.get('test_passed', False) and
+                vm_test_result.get('test_passed', False)
+            )
+
+            logger.info(
+                "Combined test results",
+                package_id=package.id,
+                smoke_passed=smoke_test_result.get('test_passed'),
+                vm_passed=vm_test_result.get('test_passed'),
+                overall_passed=test_result['test_passed']
+            )
+        else:
+            logger.info("VM testing disabled, using smoke test results only", package_id=package.id)
+
+        # Update package test status with combined results
         self._update_package_test_status(package_id, test_result)
 
         return test_result
@@ -151,12 +184,19 @@ class TestingAgent:
             if package:
                 package.tested = True
                 package.test_passed = test_result.get('test_passed', False)
-                package.test_logs = str(test_result.get('test_results', {}))
+
+                # Store both smoke test and VM test results
+                test_logs = {
+                    'smoke_tests': test_result.get('smoke_tests', {}).get('test_results', {}),
+                    'vm_test_results': test_result.get('vm_test_results')
+                }
+                package.test_logs = str(test_logs)
 
                 logger.info(
                     "Updated package test status",
                     package_id=package_id,
-                    passed=package.test_passed
+                    passed=package.test_passed,
+                    has_vm_results=test_result.get('vm_test_results') is not None
                 )
 
     def _get_package(self, package_id: int) -> Package:
