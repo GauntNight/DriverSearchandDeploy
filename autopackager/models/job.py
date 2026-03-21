@@ -63,7 +63,7 @@ class Job(Base):
     error_message = Column(String(2048))
 
     # Metadata (flexible JSON field for agent-specific data)
-    job_metadata = Column('metadata', JSON, default={})
+    job_metadata = Column('metadata', JSON, default=dict)
 
     def __repr__(self):
         return f"<Job {self.id}: {self.software_title} ({self.state})>"
