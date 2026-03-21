@@ -160,10 +160,45 @@ def job_status(job_id):
             console.print(f"    {key}: {value}")
 
 
-@cli.group()
-def worker():
-    """Manage Celery workers"""
-    pass
+@jobs.command('cancel')
+@click.argument('job_id', type=int)
+@click.option('--all-stuck', is_flag=True, help='Cancel all non-terminal jobs')
+def cancel_job(job_id, all_stuck):
+    """Cancel a job (mark as cancelled in the database)"""
+    engine = OrchestrationEngine()
+
+    if all_stuck:
+        stuck_states = [JobState.PENDING, JobState.DISCOVERING, JobState.PACKAGING,
+                        JobState.TESTING, JobState.DEPLOYING]
+        cancelled = 0
+        for state in stuck_states:
+            for job in engine.get_jobs_by_state(state):
+                engine.update_job_state(job.id, JobState.CANCELLED)
+                console.print(f"  Cancelled job #{job.id}: {job.software_title}")
+                cancelled += 1
+        console.print(f"[bold green]✓[/bold green] Cancelled {cancelled} job(s)")
+    else:
+        job = engine.get_job(job_id)
+        if not job:
+            console.print(f"[bold red]✗[/bold red] Job {job_id} not found")
+            return
+        engine.update_job_state(job_id, JobState.CANCELLED)
+        console.print(f"[bold green]✓[/bold green] Job #{job_id} cancelled")
+
+
+
+
+
+@worker.command('purge')
+@click.option('--yes', is_flag=True, help='Skip confirmation prompt')
+def purge_queue(yes):
+    """Purge all pending tasks from the Celery queue"""
+    if not yes:
+        click.confirm('This will discard all queued tasks. Continue?', abort=True)
+
+    from autopackager.orchestration.celery_app import celery_app
+    count = celery_app.control.purge()
+    console.print(f"[bold green]✓[/bold green] Purged {count} task(s) from the queue")
 
 
 @worker.command('start')
