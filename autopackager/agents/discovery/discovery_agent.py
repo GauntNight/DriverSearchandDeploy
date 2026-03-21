@@ -140,10 +140,18 @@ class DiscoveryAgent:
                 driver_packs = [driver_packs]
 
             for pack in driver_packs:
-                supported_systems = pack.get('SupportedSystems', {}).get('Brand', {}).get('Model', [])
+                # Brand can be a dict (single brand) or list (multiple brands) due to
+                # how xmltodict parses repeated XML elements.
+                brands = pack.get('SupportedSystems', {}).get('Brand', {})
+                if not isinstance(brands, list):
+                    brands = [brands]
 
-                if not isinstance(supported_systems, list):
-                    supported_systems = [supported_systems]
+                supported_systems = []
+                for brand in brands:
+                    models = brand.get('Model', [])
+                    if not isinstance(models, list):
+                        models = [models]
+                    supported_systems.extend(models)
 
                 # Check if hardware model matches
                 for system in supported_systems:
