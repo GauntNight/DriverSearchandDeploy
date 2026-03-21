@@ -77,8 +77,10 @@ Run a single script as Administrator — it installs and configures everything a
 - Azure account with Global Admin or Application/Group Administrator role
 - An LLM API key ([OpenAI](https://platform.openai.com/api-keys) or [Anthropic](https://console.anthropic.com/settings/keys))
 
+**Easiest:** double-click `Install-AutoPackager.bat` — it handles elevation automatically.
+
+**Or from PowerShell (Run as Administrator):**
 ```powershell
-# Right-click PowerShell → "Run as Administrator", then:
 .\Install-AutoPackager.ps1
 ```
 
@@ -283,6 +285,7 @@ DriverSearchandDeploy/
 ├── scripts/               # Helper scripts
 ├── tools/                 # IntuneWinAppUtil.exe, Redis
 ├── cli.py                 # Command-line interface
+├── Install-AutoPackager.bat  # Double-click launcher (handles elevation)
 ├── Install-AutoPackager.ps1  # One-click Windows installer
 ├── azure-setup.ps1           # Automated Azure configuration
 ├── setup.ps1                 # Legacy Windows setup script

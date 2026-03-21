@@ -47,8 +47,14 @@ The primary installer. Run it once and AutoPackager is fully ready.
 
 ### Basic usage
 
+**Easiest — double-click in File Explorer:**
+```
+Install-AutoPackager.bat
+```
+The `.bat` file detects whether it has Administrator rights and re-launches itself elevated via a UAC prompt if needed. No manual PowerShell setup required.
+
+**From an existing PowerShell (Run as Administrator):**
 ```powershell
-# Right-click PowerShell → Run as Administrator
 .\Install-AutoPackager.ps1
 ```
 
@@ -212,16 +218,11 @@ Available flags:
 
 ### PowerShell execution policy blocked
 
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-# Then re-run:
-.\Install-AutoPackager.ps1
-```
+Use `Install-AutoPackager.bat` instead — it sets `-ExecutionPolicy Bypass` automatically so you never see this error.
 
-Or bypass for a single run:
-
+If running the `.ps1` directly:
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\Install-AutoPackager.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-AutoPackager.ps1
 ```
 
 ### Python not found after installation
