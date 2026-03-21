@@ -110,10 +110,23 @@ function Test-CommandExists {
 }
 
 function Get-PythonCommand {
-    # Returns the python command name if Python 3.9+ is found, else $null
+    # Returns the python command name if Python 3.9+ is found, else $null.
+    # Guards against the Windows Store "App Execution Alias" stub:
+    #   - Get-Command finds it (it's a real .exe path)
+    #   - Running it writes to stderr and exits non-zero
+    #   - Under $ErrorActionPreference="Stop", stderr from native commands
+    #     becomes a NativeCommandError and throws before we can check anything
+    # Fix: temporarily set EAP to SilentlyContinue while probing each command.
     foreach ($cmd in @("python", "python3", "py")) {
-        if (Test-CommandExists $cmd) {
+        if (-not (Test-CommandExists $cmd)) { continue }
+        try {
+            $savedEAP = $ErrorActionPreference
+            $ErrorActionPreference = "SilentlyContinue"
             $ver = & $cmd --version 2>&1
+            $exitCode = $LASTEXITCODE
+            $ErrorActionPreference = $savedEAP
+
+            if ($exitCode -ne 0) { continue }   # Store stub or broken install
             if ($ver -match "Python (\d+)\.(\d+)") {
                 $major = [int]$Matches[1]
                 $minor = [int]$Matches[2]
@@ -121,6 +134,9 @@ function Get-PythonCommand {
                     return $cmd
                 }
             }
+        } catch {
+            $ErrorActionPreference = $savedEAP
+            continue
         }
     }
     return $null
@@ -192,14 +208,19 @@ Write-Banner "Step $step/$totalSteps  Python 3.9+"
 
 $pythonCmd = Get-PythonCommand
 
-if ($pythonCmd) {
+if ($SkipPython) {
+    if (-not $pythonCmd) { $pythonCmd = "python" }
+    $ver = & $pythonCmd --version 2>&1
+    Write-OK "Python check skipped. Using: $pythonCmd ($ver)"
+} elseif ($pythonCmd) {
     $ver = & $pythonCmd --version 2>&1
     Write-OK "Found: $ver (command: $pythonCmd)"
-} elseif ($SkipPython) {
-    Write-Warn "Python check skipped. Assuming python.exe is in PATH."
-    $pythonCmd = "python"
 } else {
+    # Not found (or only a Windows Store stub was present)
     Write-Warn "Python 3.9+ not found. Installing Python 3.12..."
+    Write-Info "If you see an App Execution Alias warning, disable it:"
+    Write-Info "Settings > Apps > Advanced app settings > App execution aliases > python.exe OFF"
+    Write-Host ""
 
     $installed = $false
 
@@ -232,14 +253,17 @@ if ($pythonCmd) {
         Write-OK "Python 3.12 installed"
     }
 
-    # Refresh PATH
+    # Refresh PATH so the new install is visible in this session
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("PATH", "User")
 
     $pythonCmd = Get-PythonCommand
     if (-not $pythonCmd) {
-        Write-Fail "Python not found after installation. Please install manually and re-run."
-        Write-Info "https://www.python.org/downloads/"
+        Write-Fail "Python not found after installation."
+        Write-Info "If the Windows Store stub is blocking, disable it in:"
+        Write-Info "Settings > Apps > Advanced app settings > App execution aliases"
+        Write-Info "Then re-run this script."
+        Write-Info "Or download manually: https://www.python.org/downloads/"
         exit 1
     }
     $ver = & $pythonCmd --version 2>&1
