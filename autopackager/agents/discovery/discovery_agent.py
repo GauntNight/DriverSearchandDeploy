@@ -71,7 +71,9 @@ class DiscoveryAgent:
 
         if driver_pack:
             latest_version = driver_pack.get('dellVersion', 'Unknown')
-            download_url = driver_pack.get('path', '')
+            # Catalog paths are relative to the Dell download base URL
+            base_url = catalog_config.get('base_url', 'https://downloads.dell.com/').rstrip('/')
+            download_url = f"{base_url}/{driver_pack.get('path', '')}"
 
             # Compare versions
             update_available = self._compare_versions(job.current_version, latest_version)

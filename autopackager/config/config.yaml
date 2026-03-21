@@ -32,6 +32,7 @@ oem_catalogs:
   dell:
     enabled: true
     catalog_url: "https://downloads.dell.com/catalog/DriverPackCatalog.cab"
+    base_url: "https://downloads.dell.com/"
     catalog_path: "data/catalogs/dell"
   hp:
     enabled: true
