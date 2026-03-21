@@ -63,35 +63,59 @@ The initial phase focuses on automating driver and BIOS updates for Dell, HP, an
 - ✅ Testing agent with smoke tests
 - ✅ Deployment agent with Intune Graph API integration
 - ✅ Deployment ring support (Ring 0-3)
-- ✅ Database tracking with PostgreSQL
+- ✅ Database tracking with PostgreSQL / SQLite
 - ✅ CLI interface for job management
 
 ## Quick Start
 
-### 🚀 Automated Setup (Recommended)
+### 🚀 One-Click Installation (Recommended)
 
-**Windows (PowerShell):**
+Run a single script as Administrator — it installs and configures everything automatically.
+
+**What you need before running:**
+- Windows workstation with local administrator rights
+- Azure account with Global Admin or Application/Group Administrator role
+- An LLM API key ([OpenAI](https://platform.openai.com/api-keys) or [Anthropic](https://console.anthropic.com/settings/keys))
+
 ```powershell
-.\setup.ps1 -UseSQLite
+# Right-click PowerShell → "Run as Administrator", then:
+.\Install-AutoPackager.ps1
 ```
 
-**Linux/WSL/Mac:**
+**The script handles everything:**
+- ✅ Installs Python 3.12, Git, Redis, and IntuneWinAppUtil.exe
+- ✅ Creates Python virtual environment and installs all dependencies
+- ✅ Creates the Azure App Registration (or configures an existing one)
+- ✅ Adds all required Microsoft Graph API permissions and grants admin consent
+- ✅ Creates the 4 deployment ring security groups in Entra ID
+- ✅ Writes a complete `.env` configuration file
+- ✅ Creates helper scripts: `launch-all.bat`, `create-job.bat`, `list-jobs.bat`
+
+**Minimum manual steps:**
+1. Run `.\Install-AutoPackager.ps1`
+2. Log in to Azure when the browser opens
+3. Paste your LLM API key when prompted
+
+**See [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) for all options and flags**
+
+### Already Have an App Registration?
+
+If you've already created an App Registration in Azure Portal, just provide the values when prompted — `azure-setup.ps1` handles all remaining Azure tasks:
+
+```powershell
+# Handles groups, permissions, admin consent, and .env generation
+.\azure-setup.ps1 -OutputEnvFile
+```
+
+### Linux/WSL/Mac Setup
+
 ```bash
 chmod +x setup.sh
 ./setup.sh --sqlite
+# Then run: .\azure-setup.ps1 on Windows to configure Azure
 ```
 
-The automated setup will:
-- ✅ Check prerequisites and install dependencies
-- ✅ Create Python virtual environment
-- ✅ Install Redis (Windows: automatic download)
-- ✅ Configure database (SQLite for testing)
-- ✅ Initialize database and create directories
-- ✅ Create helper scripts for easy operation
-
-**See [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) for details**
-
-### Manual Installation (Alternative)
+### Manual Installation (Advanced)
 
 <details>
 <summary>Click to expand manual installation steps</summary>
@@ -111,7 +135,7 @@ cd DriverSearchandDeploy
 
 # Create virtual environment
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -126,6 +150,8 @@ python cli.py init
 # Start worker
 python cli.py worker start
 ```
+
+See [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) for full manual setup instructions.
 
 </details>
 
@@ -255,8 +281,12 @@ DriverSearchandDeploy/
 │   └── utils/             # Config, logging, database, Graph client
 ├── data/                  # Runtime data (downloads, packages, logs)
 ├── scripts/               # Helper scripts
-├── tools/                 # IntuneWinAppUtil.exe
+├── tools/                 # IntuneWinAppUtil.exe, Redis
 ├── cli.py                 # Command-line interface
+├── Install-AutoPackager.ps1  # One-click Windows installer
+├── azure-setup.ps1           # Automated Azure configuration
+├── setup.ps1                 # Legacy Windows setup script
+├── setup.sh                  # Linux/Mac setup script
 └── requirements.txt       # Python dependencies
 ```
 
@@ -287,14 +317,17 @@ DriverSearchandDeploy/
 ## Documentation
 
 ### Getting Started
-- **🚀 Implementation Guide**: [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) - **START HERE for deployment**
-- **✅ Quick Start Checklist**: [QUICKSTART_CHECKLIST.md](QUICKSTART_CHECKLIST.md) - Track your progress
+- **🚀 One-Click Installer**: `Install-AutoPackager.ps1` — run this first
+- **☁️ Azure Setup Script**: `azure-setup.ps1` — automates all Azure configuration
+- **📋 Implementation Guide**: [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) — step-by-step walkthrough
+- **✅ Quick Start Checklist**: [QUICKSTART_CHECKLIST.md](QUICKSTART_CHECKLIST.md) — track your progress
 
 ### Reference Documentation
-- **Setup Guide**: [SETUP.md](SETUP.md) - Detailed installation instructions
+- **Automated Setup Guide**: [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) — script options and flags
+- **Manual Setup Guide**: [SETUP.md](SETUP.md) — detailed manual installation reference
 - **Technical Whitepaper**: [automated_software_packaging_whitepaper.md](automated_software_packaging_whitepaper.md)
 - **PR/FAQ**: [PRFAQ_ Project AutoPackager.md](PRFAQ_%20Project%20AutoPackager.md)
-- **Windows App Packaging**: [ch11-windows-app-packaging-reference.md](ch11-windows-app-packaging-reference.md) - Win32 app packaging patterns and best practices
+- **Windows App Packaging**: [ch11-windows-app-packaging-reference.md](ch11-windows-app-packaging-reference.md) — Win32 app packaging patterns and best practices
 
 ## License
 
@@ -303,4 +336,4 @@ Internal use only - Enterprise project
 ## Credits
 
 Built with AI assistance
-Version 0.1.0 - Phase 1 Implementation
+Version 1.1.0 - Phase 1 with One-Click Installer

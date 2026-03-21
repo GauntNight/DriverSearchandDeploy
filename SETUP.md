@@ -1,5 +1,15 @@
 # AutoPackager Setup Guide
 
+> **Looking for the quickest way to get started?**
+> Run `.\Install-AutoPackager.ps1` as Administrator. It installs Python, Redis,
+> IntuneWinAppUtil, all Python dependencies, and configures Azure automatically.
+> See [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) for full details.
+>
+> This document is the **manual setup reference** for advanced users and
+> Linux/WSL environments.
+
+---
+
 ## Phase 1: Driver Management Automation
 
 This guide will help you set up AutoPackager for automated driver management and deployment via Microsoft Intune.
@@ -131,10 +141,11 @@ Create an Azure App Registration with the following API permissions:
 
 1. Go to Azure Portal → App Registrations → New Registration
 2. Name: "AutoPackager Service Principal"
-3. Add API Permissions:
+3. Add API Permissions (Application type):
    - `DeviceManagementApps.ReadWrite.All`
    - `DeviceManagementConfiguration.ReadWrite.All`
    - `Group.Read.All`
+   - `GroupMember.Read.All`
 4. Grant admin consent
 5. Create a client secret
 6. Copy Tenant ID, Client ID, and Client Secret to `.env`
