@@ -155,15 +155,15 @@ class PackagingAgent:
         if filename.endswith('.exe'):
             # Common silent install parameters for EXE
             install_cmd = f"{installer_path.name} /S /quiet /norestart"
-            uninstall_cmd = None  # Will be determined from registry
+            uninstall_cmd = f"{installer_path.name} /S /quiet /uninstall /norestart"
         elif filename.endswith('.msi'):
             # MSI silent install
             install_cmd = f"msiexec /i {installer_path.name} /quiet /norestart"
             uninstall_cmd = f"msiexec /x {installer_path.name} /quiet /norestart"
         else:
-            # Generic
+            # Generic (e.g. .cab driver packs) - no traditional uninstaller
             install_cmd = str(installer_path.name)
-            uninstall_cmd = None
+            uninstall_cmd = "cmd /c exit 0"
 
         logger.info("Generated install command", install_cmd=install_cmd)
 

@@ -106,7 +106,7 @@ class DeploymentAgent:
             'publisher': job.vendor,
             'fileName': Path(package.intunewin_path).name,
             'installCommandLine': package.install_command,
-            'uninstallCommandLine': package.uninstall_command or '',
+            'uninstallCommandLine': package.uninstall_command or 'cmd /c exit 0',
             'installExperience': {
                 'runAsAccount': 'system',
                 'deviceRestartBehavior': 'suppress'
