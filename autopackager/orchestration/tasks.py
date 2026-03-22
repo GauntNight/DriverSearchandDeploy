@@ -251,12 +251,27 @@ def deployment_task(self, previous_result, job_id: int):
         return {"job_id": job_id, "intune_app_id": result.get('intune_app_id'), "completed": True}
 
     except Exception as e:
-        logger.error("Deployment failed", job_id=job_id, error=str(e))
+        # Extract the real error from tenacity RetryError
+        original = e
+        if hasattr(e, 'last_attempt'):
+            try:
+                original = e.last_attempt.result()
+            except Exception as inner:
+                original = inner
+
+        error_detail = str(original)
+        if hasattr(original, 'response') and original.response is not None:
+            try:
+                error_detail = f"HTTP {original.response.status_code}: {original.response.json()}"
+            except Exception:
+                error_detail = f"HTTP {original.response.status_code}: {original.response.text}"
+
+        logger.error("Deployment failed", job_id=job_id, error=error_detail)
 
         if engine.can_retry_job(job_id):
             retry_count = engine.increment_retry_count(job_id)
             logger.info("Retrying deployment", job_id=job_id, retry_count=retry_count)
             raise self.retry(exc=e, countdown=engine.retry_delay)
         else:
-            engine.mark_job_failed(job_id, f"Deployment failed: {str(e)}")
+            engine.mark_job_failed(job_id, f"Deployment failed: {error_detail}")
             raise

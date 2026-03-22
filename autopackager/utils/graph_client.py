@@ -56,6 +56,24 @@ class GraphAPIClient:
             "Content-Type": "application/json"
         }
 
+    def _raise_with_details(self, response):
+        """Check response status and raise with detailed error info"""
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as e:
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = response.text
+            logger.error(
+                "Graph API error",
+                method=response.request.method,
+                url=response.url,
+                status_code=response.status_code,
+                error_body=error_body,
+            )
+            raise
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def get(self, endpoint, params=None):
         """Make a GET request to Graph API"""
@@ -63,7 +81,7 @@ class GraphAPIClient:
         logger.debug("GET request", url=url, params=params)
 
         response = requests.get(url, headers=self._get_headers(), params=params)
-        response.raise_for_status()
+        self._raise_with_details(response)
 
         return response.json()
 
@@ -74,7 +92,7 @@ class GraphAPIClient:
         logger.debug("POST request", url=url)
 
         response = requests.post(url, headers=self._get_headers(), json=data)
-        response.raise_for_status()
+        self._raise_with_details(response)
 
         return response.json()
 
@@ -85,7 +103,7 @@ class GraphAPIClient:
         logger.debug("PATCH request", url=url)
 
         response = requests.patch(url, headers=self._get_headers(), json=data)
-        response.raise_for_status()
+        self._raise_with_details(response)
 
         return response.json()
 
@@ -96,7 +114,7 @@ class GraphAPIClient:
         logger.debug("DELETE request", url=url)
 
         response = requests.delete(url, headers=self._get_headers())
-        response.raise_for_status()
+        self._raise_with_details(response)
 
         return response.status_code == 204
 
