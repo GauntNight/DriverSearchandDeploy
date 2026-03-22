@@ -105,12 +105,20 @@ class DeploymentAgent:
         """
         rules = self._normalize_rules(package.detection_rules)
 
+        # setupFilePath is required by Graph API - it's the installer filename
+        # inside the .intunewin package
+        if package.installer_path:
+            setup_file_path = Path(package.installer_path).name
+        else:
+            setup_file_path = Path(package.intunewin_path).stem + '.exe'
+
         return {
             '@odata.type': '#microsoft.graph.win32LobApp',
             'displayName': package.name,
             'description': f"{package.name} v{package.version} - {job.vendor}",
             'publisher': job.vendor,
             'fileName': Path(package.intunewin_path).name,
+            'setupFilePath': setup_file_path,
             'installCommandLine': package.install_command,
             'uninstallCommandLine': package.uninstall_command or 'cmd /c exit 0',
             'installExperience': {
