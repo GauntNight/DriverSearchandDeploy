@@ -217,22 +217,24 @@ class PackagingAgent:
         return intunewin_files[0]
 
     def _generate_detection_rules(self, job: Job) -> list:
-        """Generate detection rules for Intune"""
-        # For drivers, use file version detection
-        # For software, use registry or file path detection
+        """Generate detection rules for Intune (Graph API v1.0 schema).
 
+        Graph API v1.0 uses ``rules`` with ``win32LobAppRegistryRule``
+        (not the beta ``detectionRules`` / ``win32LobAppRegistryDetection``).
+        """
         target_version = job.job_metadata.get('target_version', '')
         vendor = (job.vendor or 'Unknown').capitalize()
 
         detection_rules = [
             {
-                '@odata.type': '#microsoft.graph.win32LobAppRegistryDetection',
+                '@odata.type': '#microsoft.graph.win32LobAppRegistryRule',
+                'ruleType': 'detection',
                 'check32BitOn64System': False,
                 'keyPath': f'HKEY_LOCAL_MACHINE\\SOFTWARE\\{vendor}\\UpdatePackage\\Log',
                 'valueName': target_version,
-                'detectionType': 'exists',
+                'operationType': 'exists',
                 'operator': 'notConfigured',
-                'detectionValue': None,
+                'comparisonValue': None,
             }
         ]
 

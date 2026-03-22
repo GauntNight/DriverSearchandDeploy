@@ -203,8 +203,7 @@ def purge_queue(yes):
         click.confirm('This will discard all queued tasks. Continue?', abort=True)
 
     from autopackager.orchestration.celery_app import celery_app
-    with celery_app.connection() as conn:
-        count = celery_app.amqp.TaskConsumer(conn).purge()
+    count = celery_app.control.purge()
     console.print(f"[bold green]✓[/bold green] Purged {count} task(s) from the queue")
 
 

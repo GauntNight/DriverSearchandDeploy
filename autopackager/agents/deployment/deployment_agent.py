@@ -98,7 +98,13 @@ class DeploymentAgent:
             return new_app['id']
 
     def _prepare_app_data(self, package: Package, job: Job) -> Dict[str, Any]:
-        """Prepare Intune app data structure"""
+        """Prepare Intune app data structure (Graph API v1.0 schema).
+
+        v1.0 uses a single ``rules`` array (with ``ruleType`` per entry)
+        instead of the beta ``detectionRules`` / ``requirementRules`` split.
+        """
+        rules = self._normalize_rules(package.detection_rules)
+
         return {
             '@odata.type': '#microsoft.graph.win32LobApp',
             'displayName': package.name,
@@ -111,12 +117,37 @@ class DeploymentAgent:
                 'runAsAccount': 'system',
                 'deviceRestartBehavior': 'suppress'
             },
-            'detectionRules': package.detection_rules or [],
-            'requirementRules': package.requirements or [],
+            'rules': rules,
             'minimumSupportedOperatingSystem': {
                 'v10_1607': True  # Windows 10 1607+
             }
         }
+
+    def _normalize_rules(self, rules: list) -> list:
+        """Convert legacy beta-schema detection rules to Graph API v1.0 format.
+
+        Handles both old rules (win32LobAppRegistryDetection with
+        detectionType/detectionValue) and new rules (win32LobAppRegistryRule
+        with operationType/comparisonValue).
+        """
+        if not rules:
+            return []
+        normalized = []
+        for rule in rules:
+            r = dict(rule)
+            odata = r.get('@odata.type', '')
+            # Migrate beta RegistryDetection → v1.0 RegistryRule
+            if 'RegistryDetection' in odata:
+                r['@odata.type'] = '#microsoft.graph.win32LobAppRegistryRule'
+                r.setdefault('ruleType', 'detection')
+                if 'detectionType' in r:
+                    r['operationType'] = r.pop('detectionType')
+                if 'detectionValue' in r:
+                    r['comparisonValue'] = r.pop('detectionValue')
+            # Ensure every rule has ruleType
+            r.setdefault('ruleType', 'detection')
+            normalized.append(r)
+        return normalized
 
     def _create_supersedence(
         self,
