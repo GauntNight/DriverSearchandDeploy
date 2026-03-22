@@ -221,16 +221,20 @@ class PackagingAgent:
         # For drivers, use file version detection
         # For software, use registry or file path detection
 
-        detection_rules = []
+        target_version = job.job_metadata.get('target_version', '')
+        vendor = (job.vendor or 'Unknown').capitalize()
 
-        # Simple file-based detection for now
-        detection_rules.append({
-            'type': 'file',
-            'path': 'C:\\Windows\\System32\\drivers',  # Example for drivers
-            'file': f"{job.software_title.replace(' ', '_')}.sys",
-            'detectionType': 'exists',
-            'check32BitOn64System': False
-        })
+        detection_rules = [
+            {
+                '@odata.type': '#microsoft.graph.win32LobAppRegistryDetection',
+                'check32BitOn64System': False,
+                'keyPath': f'HKEY_LOCAL_MACHINE\\SOFTWARE\\{vendor}\\UpdatePackage\\Log',
+                'valueName': target_version,
+                'detectionType': 'exists',
+                'operator': 'notConfigured',
+                'detectionValue': None,
+            }
+        ]
 
         return detection_rules
 
