@@ -232,7 +232,7 @@ class PackagingAgent:
                 'valueName': target_version,
                 'detectionType': 'exists',
                 'operator': 'notConfigured',
-                'detectionValue': None,
+                'detectionValue': '',
             }
         ]
 

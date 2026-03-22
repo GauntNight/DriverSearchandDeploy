@@ -111,12 +111,29 @@ class DeploymentAgent:
                 'runAsAccount': 'system',
                 'deviceRestartBehavior': 'suppress'
             },
-            'detectionRules': package.detection_rules or [],
+            'detectionRules': self._sanitize_detection_rules(package.detection_rules),
             'requirementRules': package.requirements or [],
             'minimumSupportedOperatingSystem': {
                 'v10_1607': True  # Windows 10 1607+
             }
         }
+
+    def _sanitize_detection_rules(self, rules: list) -> list:
+        """Ensure detection rules have valid string values required by the Graph API.
+
+        The Graph API rejects win32LobAppRegistryDetection rules where
+        detectionValue is null, treating them as invalid and returning
+        'must have at least one detection rule specified'.
+        """
+        if not rules:
+            return []
+        sanitized = []
+        for rule in rules:
+            sanitized_rule = dict(rule)
+            if sanitized_rule.get('detectionValue') is None:
+                sanitized_rule['detectionValue'] = ''
+            sanitized.append(sanitized_rule)
+        return sanitized
 
     def _create_supersedence(
         self,
