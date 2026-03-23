@@ -183,3 +183,22 @@ class OrchestrationEngine:
         """Mark a job as completed"""
         logger.info("Marking job as completed", job_id=job_id)
         self.update_job_state(job_id, JobState.COMPLETED, metadata_update=metadata_update)
+
+    def delete_job(self, job_id: int) -> bool:
+        """Delete a single job record by ID. Returns True if deleted."""
+        with db_session_scope() as session:
+            job = session.query(Job).filter(Job.id == job_id).first()
+            if not job:
+                return False
+            session.delete(job)
+            return True
+
+    def purge_jobs(self, state: str = None) -> int:
+        """Delete all jobs, or only jobs matching a given state. Returns count deleted."""
+        with db_session_scope() as session:
+            q = session.query(Job)
+            if state:
+                q = q.filter(Job.state == state)
+            count = q.count()
+            q.delete(synchronize_session=False)
+            return count
