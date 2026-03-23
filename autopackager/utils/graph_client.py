@@ -277,8 +277,7 @@ class GraphAPIClient:
                 upload_url = self._azure_url_with_params(
                     sas_url, comp="block", blockid=block_id
                 )
-                resp = requests.put(upload_url, data=chunk, headers={"x-ms-blob-type": "BlockBlob"})
-                resp.raise_for_status()
+                self._put_block_with_retry(upload_url, chunk)
 
                 block_num += 1
                 logger.debug("Uploaded block", block_num=block_num, total_blocks=_expected_blocks(file_size))
@@ -298,6 +297,24 @@ class GraphAPIClient:
         resp.raise_for_status()
 
         logger.info("Azure Storage upload complete", blocks=len(block_ids), size_bytes=file_size)
+
+    @staticmethod
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=2, max=60),
+        reraise=True,
+    )
+    def _put_block_with_retry(url, data):
+        """Upload a single block with retry on transient Azure errors (503, 500, 429)."""
+        resp = requests.put(url, data=data, headers={"x-ms-blob-type": "BlockBlob"})
+        if resp.status_code in (429, 500, 503):
+            logger.warning(
+                "Transient Azure error, retrying",
+                status=resp.status_code,
+                body=resp.text[:200],
+            )
+            resp.raise_for_status()
+        resp.raise_for_status()
 
     @staticmethod
     def _azure_url_with_params(sas_url, **extra_params):
