@@ -133,12 +133,21 @@ class DeploymentAgent:
         """Prepare Intune app data structure (Graph API v1.0 schema)."""
         rules = self._normalize_rules(package.detection_rules)
 
+        # setupFilePath is required by Graph API — the installer filename inside
+        # the .intunewin package.  Derive from the stored installer_path, or fall
+        # back to the first token of the install command (the executable name).
+        if package.installer_path:
+            setup_file = Path(package.installer_path).name
+        else:
+            setup_file = package.install_command.split()[0] if package.install_command else Path(package.intunewin_path).stem
+
         return {
             '@odata.type': '#microsoft.graph.win32LobApp',
             'displayName': package.name,
             'description': f"{package.name} v{package.version} - {job.vendor}",
             'publisher': job.vendor,
             'fileName': Path(package.intunewin_path).name,
+            'setupFilePath': setup_file,
             'installCommandLine': package.install_command,
             'uninstallCommandLine': package.uninstall_command or 'cmd /c exit 0',
             'installExperience': {
