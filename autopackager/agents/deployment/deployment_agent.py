@@ -141,11 +141,35 @@ class DeploymentAgent:
         else:
             setup_file = package.install_command.split()[0] if package.install_command else Path(package.intunewin_path).stem
 
-        return {
+        vendor = job.vendor or package.vendor or 'Unknown'
+        version = package.version or job.target_version or 'Unknown'
+        hardware_model = job.hardware_model or ''
+        description = f"{package.name} v{version} - {vendor}"
+        if hardware_model:
+            description = f"{package.name} v{version} for {hardware_model} - {vendor}"
+
+        # Build informationUrl from vendor support sites (deterministic, no LLM)
+        information_url = self._get_vendor_support_url(vendor, hardware_model)
+
+        # Build notes from release metadata when available
+        notes_parts = []
+        release_date = job.job_metadata.get('release_date', '')
+        release_notes = job.job_metadata.get('release_notes') or job.release_notes or ''
+        if release_date:
+            notes_parts.append(f"Release date: {release_date}")
+        if release_notes:
+            notes_parts.append(release_notes)
+        if job.job_type and job.job_type.value == 'driver_update' and hardware_model:
+            notes_parts.append(f"Hardware model: {hardware_model}")
+        notes = '\n'.join(notes_parts) if notes_parts else ''
+
+        app_data = {
             '@odata.type': '#microsoft.graph.win32LobApp',
             'displayName': package.name,
-            'description': f"{package.name} v{package.version} - {job.vendor}",
-            'publisher': job.vendor,
+            'description': description,
+            'publisher': vendor,
+            'developer': vendor,
+            'owner': vendor,
             'fileName': Path(package.intunewin_path).name,
             'setupFilePath': setup_file,
             'installCommandLine': package.install_command,
@@ -159,6 +183,28 @@ class DeploymentAgent:
                 'v10_1607': True  # Windows 10 1607+
             }
         }
+
+        # Only include optional fields when they have values
+        if version and version != 'Unknown':
+            app_data['displayVersion'] = version
+        if information_url:
+            app_data['informationUrl'] = information_url
+        if notes:
+            app_data['notes'] = notes
+
+        return app_data
+
+    @staticmethod
+    def _get_vendor_support_url(vendor: str, hardware_model: str = '') -> str:
+        """Return a vendor-specific support URL. Deterministic — no LLM needed."""
+        vendor_lower = (vendor or '').lower()
+        if vendor_lower == 'dell':
+            return 'https://www.dell.com/support/home'
+        elif vendor_lower == 'hp':
+            return 'https://support.hp.com/drivers'
+        elif vendor_lower == 'lenovo':
+            return 'https://support.lenovo.com/solutions/ht003029'
+        return ''
 
     def _normalize_rules(self, rules: list) -> list:
         """Convert legacy beta-schema detection rules to Graph API v1.0 format."""
@@ -412,6 +458,95 @@ class DeploymentAgent:
         logger.info("Promoting deployment to next ring", deployment_id=deployment_id)
         # TODO: Implement ring promotion logic
         logger.warning("Ring promotion not yet implemented")
+
+    # ---------------------------------------------------------------------------
+    # Driver Update Profiles (Intune-native driver management — ch04 reference)
+    # ---------------------------------------------------------------------------
+
+    def deploy_driver_update_profile(
+        self,
+        job: Job,
+        approval_type: str = 'manual',
+        deferral_days: int = 3,
+    ) -> Dict[str, Any]:
+        """Create an Intune Driver Update Profile and assign it to Ring 0.
+
+        This is the Intune-native approach from ch04 — instead of packaging a
+        CAB as a Win32 app, it creates a Driver Update Profile that lets Intune
+        / Windows Update surface and manage driver updates for the targeted
+        device group.
+
+        Use ``approval_type='manual'`` for firmware/GPU drivers that need
+        review, or ``'automatic'`` with a deferral for routine driver updates.
+
+        Note: The approval type is **immutable** after creation. To change it
+        you must delete and recreate the profile.
+        """
+        logger.info(
+            "Creating driver update profile deployment",
+            job_id=job.id,
+            approval_type=approval_type,
+        )
+
+        hardware_model = job.hardware_model or job.software_title
+        display_name = f"Driver Updates - {hardware_model}"
+        description = (
+            f"Driver update management for {hardware_model} "
+            f"({job.vendor or 'Unknown'}) — {approval_type} approval"
+        )
+
+        graph_client = self._get_graph_client()
+
+        # Check for existing profile with the same name
+        existing = graph_client.list_driver_update_profiles()
+        for profile in existing.get('value', []):
+            if profile.get('displayName') == display_name:
+                logger.info(
+                    "Driver update profile already exists",
+                    profile_id=profile['id'],
+                )
+                return {
+                    'profile_id': profile['id'],
+                    'status': 'already_exists',
+                    'display_name': display_name,
+                }
+
+        profile = graph_client.create_driver_update_profile(
+            display_name=display_name,
+            description=description,
+            approval_type=approval_type,
+            deferral_days=deferral_days,
+        )
+        profile_id = profile['id']
+
+        # Assign to Ring 0 device group
+        if self.deployment_rings:
+            ring = self.deployment_rings[0]
+            graph_client.assign_driver_update_profile(
+                profile_id, ring['entra_group_id']
+            )
+            logger.info(
+                "Driver update profile assigned",
+                profile_id=profile_id,
+                ring=ring['name'],
+            )
+
+        logger.info(
+            "Driver update profile deployment complete",
+            job_id=job.id,
+            profile_id=profile_id,
+        )
+
+        return {
+            'profile_id': profile_id,
+            'status': 'created',
+            'display_name': display_name,
+            'approval_type': approval_type,
+            'note': (
+                'Intune will take 1-2 days to inventory devices and populate '
+                'available driver updates for this profile.'
+            ),
+        }
 
     def get_deployment_status(self, intune_app_id: str) -> Dict[str, Any]:
         """Get deployment status from Intune"""

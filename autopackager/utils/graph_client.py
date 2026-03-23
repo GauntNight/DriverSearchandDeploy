@@ -337,6 +337,90 @@ class GraphAPIClient:
         logger.info("Fetching Entra ID group", group_id=group_id)
         return self.get(f"groups/{group_id}")
 
+    # ---------------------------------------------------------------------------
+    # Driver Update Profiles (Intune-native driver management — ch04 reference)
+    # Uses beta API endpoint as these are not yet in v1.0.
+    # ---------------------------------------------------------------------------
+
+    def _beta_post(self, endpoint, data=None):
+        """POST to the Graph beta endpoint (driver update profiles require beta)."""
+        url = f"{self.graph_endpoint}/beta/{endpoint}"
+        logger.debug("POST (beta) request", url=url)
+        response = requests.post(url, headers=self._get_headers(), json=data)
+        self._raise_with_details(response)
+        return self._parse_response(response)
+
+    def _beta_get(self, endpoint, params=None):
+        """GET from the Graph beta endpoint."""
+        url = f"{self.graph_endpoint}/beta/{endpoint}"
+        logger.debug("GET (beta) request", url=url, params=params)
+        response = requests.get(url, headers=self._get_headers(), params=params)
+        self._raise_with_details(response)
+        return response.json()
+
+    def create_driver_update_profile(
+        self,
+        display_name: str,
+        description: str = '',
+        approval_type: str = 'manual',
+        deferral_days: int = 3,
+    ):
+        """Create an Intune Driver Update Profile.
+
+        Args:
+            display_name: Profile display name.
+            description: Profile description.
+            approval_type: ``'manual'`` or ``'automatic'``.
+            deferral_days: Days before auto-approval (only for automatic mode).
+
+        Returns:
+            The created profile JSON (includes ``id``).
+        """
+        logger.info(
+            "Creating driver update profile",
+            name=display_name,
+            approval_type=approval_type,
+        )
+        payload = {
+            'approvalType': approval_type,
+            'description': description,
+            'displayName': display_name,
+            'roleScopeTagIds': ['0'],
+        }
+        if approval_type == 'automatic':
+            payload['deploymentDeferralInDays'] = deferral_days
+
+        return self._beta_post(
+            'deviceManagement/windowsDriverUpdateProfiles', payload
+        )
+
+    def assign_driver_update_profile(self, profile_id: str, group_id: str):
+        """Assign a Driver Update Profile to a device group."""
+        logger.info(
+            "Assigning driver update profile",
+            profile_id=profile_id,
+            group_id=group_id,
+        )
+        payload = {
+            'assignments': [
+                {
+                    'target': {
+                        '@odata.type': '#microsoft.graph.groupAssignmentTarget',
+                        'groupId': group_id,
+                    }
+                }
+            ]
+        }
+        return self._beta_post(
+            f'deviceManagement/windowsDriverUpdateProfiles/{profile_id}/assign',
+            payload,
+        )
+
+    def list_driver_update_profiles(self):
+        """List all Driver Update Profiles in the tenant."""
+        logger.info("Listing driver update profiles")
+        return self._beta_get('deviceManagement/windowsDriverUpdateProfiles')
+
 
 def _expected_blocks(file_size):
     import math
