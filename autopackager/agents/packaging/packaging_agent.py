@@ -149,25 +149,100 @@ class PackagingAgent:
         return f"{safe_title}_{version}_{timestamp}"
 
     def _generate_install_commands(self, job: Job, installer_path: Path) -> tuple:
-        """Generate install and uninstall commands"""
+        """Generate install and uninstall commands based on installer type.
+
+        For CAB driver packs the bare filename is not executable — we need to
+        expand the CAB and stage the drivers via ``pnputil``.  Per the
+        ch11 reference, PowerShell wrapped via the full 64-bit path is the
+        recommended approach for Intune Win32 apps.
+        """
         filename = installer_path.name.lower()
 
         if filename.endswith('.exe'):
             # Common silent install parameters for EXE
             install_cmd = f"{installer_path.name} /S /quiet /norestart"
-            uninstall_cmd = None  # Will be determined from registry
+            uninstall_cmd = f"{installer_path.name} /S /quiet /uninstall /norestart"
         elif filename.endswith('.msi'):
             # MSI silent install
             install_cmd = f"msiexec /i {installer_path.name} /quiet /norestart"
             uninstall_cmd = f"msiexec /x {installer_path.name} /quiet /norestart"
+        elif filename.endswith('.cab'):
+            # CAB driver pack: expand, then install drivers via pnputil.
+            # Generate a companion PowerShell install script so the Intune
+            # install command is a single script invocation.
+            script_name = self._generate_cab_install_script(installer_path)
+            install_cmd = (
+                r"%SystemRoot%\System32\WindowsPowerShell\v1.0\PowerShell.exe "
+                f"-ExecutionPolicy Bypass -NoProfile -File {script_name}"
+            )
+            uninstall_cmd = "cmd /c exit 0"
         else:
-            # Generic
+            # Unknown type — use filename directly as best-effort
             install_cmd = str(installer_path.name)
-            uninstall_cmd = None
+            uninstall_cmd = "cmd /c exit 0"
 
         logger.info("Generated install command", install_cmd=install_cmd)
 
         return install_cmd, uninstall_cmd
+
+    def _generate_cab_install_script(self, installer_path: Path) -> str:
+        """Create a PowerShell script that expands a CAB driver pack and
+        installs drivers via ``pnputil``.
+
+        The script is placed alongside the CAB in the package source folder so
+        IntuneWinAppUtil bundles it into the .intunewin file.
+
+        Returns the script filename (not the full path) for use as the Intune
+        install command.
+        """
+        cab_name = installer_path.name
+        script_name = "Install-DriverPack.ps1"
+        script_path = installer_path.parent / script_name
+
+        script_content = f"""\
+# Install-DriverPack.ps1
+# Auto-generated driver pack installer for {cab_name}
+# Expands the CAB and stages drivers via pnputil.
+
+$ErrorActionPreference = 'Stop'
+
+$cabFile  = Join-Path $PSScriptRoot '{cab_name}'
+$expandDir = Join-Path $env:TEMP 'DriverPackExpand'
+
+# Clean previous expansion if present
+if (Test-Path $expandDir) {{
+    Remove-Item $expandDir -Recurse -Force
+}}
+New-Item -ItemType Directory -Path $expandDir -Force | Out-Null
+
+# Expand CAB contents
+Write-Output "Expanding $cabFile to $expandDir ..."
+expand.exe $cabFile -F:* $expandDir
+if ($LASTEXITCODE -ne 0) {{
+    Write-Error "expand.exe failed with exit code $LASTEXITCODE"
+    exit $LASTEXITCODE
+}}
+
+# Install drivers — pnputil stages all INF files found under the expanded tree
+Write-Output 'Installing drivers via pnputil ...'
+pnputil.exe /add-driver "$expandDir\\*.inf" /subdirs /install
+$pnpExit = $LASTEXITCODE
+
+# Clean up
+Remove-Item $expandDir -Recurse -Force -ErrorAction SilentlyContinue
+
+if ($pnpExit -ne 0) {{
+    Write-Error "pnputil.exe failed with exit code $pnpExit"
+    exit $pnpExit
+}}
+
+Write-Output 'Driver pack installed successfully.'
+exit 0
+"""
+        script_path.write_text(script_content, encoding='utf-8')
+        logger.info("Generated CAB install script", script=script_name, cab=cab_name)
+
+        return script_name
 
     def _create_intunewin_package(self, package_dir: Path, installer_path: Path) -> Path:
         """Create .intunewin package using IntuneWinAppUtil.exe"""
@@ -217,20 +292,26 @@ class PackagingAgent:
         return intunewin_files[0]
 
     def _generate_detection_rules(self, job: Job) -> list:
-        """Generate detection rules for Intune"""
-        # For drivers, use file version detection
-        # For software, use registry or file path detection
+        """Generate detection rules for Intune (Graph API v1.0 schema).
 
-        detection_rules = []
+        Graph API v1.0 uses ``rules`` with ``win32LobAppRegistryRule``
+        (not the beta ``detectionRules`` / ``win32LobAppRegistryDetection``).
+        """
+        target_version = job.job_metadata.get('target_version', '')
+        vendor = (job.vendor or 'Unknown').capitalize()
 
-        # Simple file-based detection for now
-        detection_rules.append({
-            'type': 'file',
-            'path': 'C:\\Windows\\System32\\drivers',  # Example for drivers
-            'file': f"{job.software_title.replace(' ', '_')}.sys",
-            'detectionType': 'exists',
-            'check32BitOn64System': False
-        })
+        detection_rules = [
+            {
+                '@odata.type': '#microsoft.graph.win32LobAppRegistryRule',
+                'ruleType': 'detection',
+                'check32BitOn64System': False,
+                'keyPath': f'HKEY_LOCAL_MACHINE\\SOFTWARE\\{vendor}\\UpdatePackage\\Log',
+                'valueName': target_version,
+                'operationType': 'exists',
+                'operator': 'notConfigured',
+                'comparisonValue': None,
+            }
+        ]
 
         return detection_rules
 

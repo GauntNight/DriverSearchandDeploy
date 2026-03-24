@@ -1,0 +1,53 @@
+=== AutoPackager Dashboard E2E Verification ===
+Started: 2026-03-24 01:42:02.816262
+
+[INFO] Step 1: Checking Redis availability...
+[INFO] Redis not detected (optional for read-only dashboard)
+[INFO] Step 2: Checking dashboard server...
+[PASS] Dashboard server already running on port 8000
+[INFO] Step 3: Creating test job...
+[INFO] Creating test job via CLI...
+[FAIL] Failed to create test job: Usage: cli.py [OPTIONS] COMMAND [ARGS]...
+Try 'cli.py --help' for help.
+
+Error: No such command 'create-job'.
+
+[INFO] Step 4: Testing dashboard load time...
+[INFO] Testing dashboard load time...
+[FAIL] Dashboard failed to load (HTTP 404)
+[INFO] Step 5: Testing API endpoints...
+[FAIL] GET /api/stats returned HTTP 404
+[PASS] GET /api/jobs returns valid JSON data
+[INFO] Total jobs in system: 1
+[PASS] GET /api/jobs?state=pending returns valid JSON data
+[FAIL] GET /api/deployments returned HTTP 404
+[FAIL] GET /api/deployments/rings returned HTTP 404
+[FAIL] GET /api/activity returned HTTP 404
+[PASS] GET /health returns valid JSON data
+[PASS] Health endpoint reports healthy status
+[INFO] Step 6: Testing static files...
+[INFO] Testing static file delivery...
+[FAIL] CSS file failed (HTTP 404)
+[FAIL] JavaScript file failed (HTTP 404)
+[INFO] Step 7: Testing auto-refresh configuration...
+[FAIL] Auto-refresh not properly configured
+[INFO] Step 8: Testing responsive design...
+[INFO] Testing responsive design...
+[FAIL] Insufficient responsive design (only 0 media queries)
+[INFO] Step 9: Testing HTML structure...
+[INFO] Testing dashboard HTML structure...
+[FAIL] Section 'dashboard-stats' missing from HTML
+[FAIL] Section 'active-jobs' missing from HTML
+[FAIL] Section 'deployment-rings' missing from HTML
+[FAIL] Section 'activity-timeline' missing from HTML
+[FAIL] ✗ Dashboard shows real-time pipeline status
+[FAIL] ✗ Dashboard loads in under 3 seconds
+[FAIL] ✗ All API endpoints return valid data
+[FAIL] ✗ Dashboard auto-refreshes every 5 seconds
+[PASS] ✓ Accessible via any modern browser
+[FAIL] ✗ Responsive design works on desktop and tablet
+[FAIL] ✗ All required dashboard sections present
+
+Result: 1/7 acceptance criteria met
+
+Full results saved to: verification-results.txt

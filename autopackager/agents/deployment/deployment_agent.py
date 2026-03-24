@@ -1,7 +1,12 @@
 """Deployment Agent - Deploy to Microsoft Intune"""
 
-from typing import Dict, Any, List
+import shutil
+import tempfile
+import time
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
+from typing import Dict, Any
 
 from autopackager.models.job import Job
 from autopackager.models.package import Package
@@ -30,11 +35,10 @@ class DeploymentAgent:
 
     def deploy(self, job: Job) -> Dict[str, Any]:
         """
-        Main deployment method - publishes package to Intune
+        Main deployment method - publishes package to Intune and assigns Ring 0
         """
         logger.info("Starting deployment", job_id=job.id)
 
-        # Get package from job metadata
         package_id = job.job_metadata.get('package_id')
         if not package_id:
             raise ValueError("No package ID in job metadata")
@@ -43,11 +47,10 @@ class DeploymentAgent:
         if not package:
             raise ValueError(f"Package {package_id} not found")
 
-        # Verify package has passed testing
         if not package.test_passed:
             raise Exception("Package has not passed testing - cannot deploy")
 
-        # Create or update Intune app
+        # Create/update Intune app, upload content, and publish
         intune_app_id = self._create_or_update_intune_app(package, job)
 
         # Assign to Ring 0 (IT Pilot)
@@ -64,74 +67,322 @@ class DeploymentAgent:
             'ring': self.deployment_rings[0]['name'] if self.deployment_rings else 'Unknown'
         }
 
+    # ---------------------------------------------------------------------------
+    # App create / update / delete
+    # ---------------------------------------------------------------------------
+
     def _create_or_update_intune_app(self, package: Package, job: Job) -> str:
-        """Create new or update existing Intune Win32 app"""
+        """
+        Ensure a clean, published Win32 app exists in Intune for this package.
+
+        Strategy for existing apps:
+          - publishingState == 'published'  → update metadata then re-upload content
+          - any other state (notPublished, processing, …) → delete the broken shell
+            and create from scratch so we start with a clean object
+        """
         logger.info("Creating/updating Intune app", package_id=package.id)
 
         graph_client = self._get_graph_client()
 
-        # Check if app already exists (by name)
         existing_apps = graph_client.get_win32_apps()
         existing_app = None
-
         for app in existing_apps.get('value', []):
             if app.get('displayName') == package.name:
                 existing_app = app
                 break
 
-        # Prepare app data
         app_data = self._prepare_app_data(package, job)
 
         if existing_app:
-            # Update existing app
-            logger.info("Updating existing app", app_id=existing_app['id'])
-            graph_client.update_win32_app(existing_app['id'], app_data)
+            app_id = existing_app['id']
+            publishing_state = existing_app.get('publishingState', 'notPublished')
+            logger.info(
+                "Found existing app",
+                app_id=app_id,
+                publishing_state=publishing_state,
+            )
 
-            # Create supersedence relationship
-            self._create_supersedence(graph_client, existing_app['id'], package)
-
-            return existing_app['id']
+            if publishing_state == 'published':
+                # Safe to PATCH metadata on a published app
+                logger.info("Updating metadata on published app", app_id=app_id)
+                graph_client.update_win32_app(app_id, app_data)
+            else:
+                # App is in a broken / incomplete state — delete and start fresh
+                logger.warning(
+                    "App is not published — deleting and recreating",
+                    app_id=app_id,
+                    publishing_state=publishing_state,
+                )
+                graph_client.delete_win32_app(app_id)
+                # Brief pause to let the delete propagate before creating the new app
+                time.sleep(3)
+                new_app = graph_client.create_win32_app(app_data)
+                app_id = new_app['id']
+                logger.info("Recreated app", new_app_id=app_id)
         else:
-            # Create new app
             logger.info("Creating new app", name=package.name)
             new_app = graph_client.create_win32_app(app_data)
-            return new_app['id']
+            app_id = new_app['id']
+
+        # Upload .intunewin content and flip publishingState to 'published'
+        self._upload_and_publish(graph_client, app_id, package)
+
+        return app_id
 
     def _prepare_app_data(self, package: Package, job: Job) -> Dict[str, Any]:
-        """Prepare Intune app data structure"""
-        return {
+        """Prepare Intune app data structure (Graph API v1.0 schema)."""
+        rules = self._normalize_rules(package.detection_rules)
+
+        # setupFilePath is required by Graph API — the installer filename inside
+        # the .intunewin package.  Derive from the stored installer_path, or fall
+        # back to the first token of the install command (the executable name).
+        if package.installer_path:
+            setup_file = Path(package.installer_path).name
+        else:
+            setup_file = package.install_command.split()[0] if package.install_command else Path(package.intunewin_path).stem
+
+        vendor = job.vendor or package.vendor or 'Unknown'
+        version = package.version or job.target_version or 'Unknown'
+        hardware_model = job.hardware_model or ''
+        description = f"{package.name} v{version} - {vendor}"
+        if hardware_model:
+            description = f"{package.name} v{version} for {hardware_model} - {vendor}"
+
+        # Build informationUrl from vendor support sites (deterministic, no LLM)
+        information_url = self._get_vendor_support_url(vendor, hardware_model)
+
+        # Build notes from release metadata when available
+        notes_parts = []
+        release_date = job.job_metadata.get('release_date', '')
+        release_notes = job.job_metadata.get('release_notes') or job.release_notes or ''
+        if release_date:
+            notes_parts.append(f"Release date: {release_date}")
+        if release_notes:
+            notes_parts.append(release_notes)
+        if job.job_type and job.job_type.value == 'driver_update' and hardware_model:
+            notes_parts.append(f"Hardware model: {hardware_model}")
+        notes = '\n'.join(notes_parts) if notes_parts else ''
+
+        app_data = {
             '@odata.type': '#microsoft.graph.win32LobApp',
             'displayName': package.name,
-            'description': f"{package.name} v{package.version} - {job.vendor}",
-            'publisher': job.vendor,
+            'description': description,
+            'publisher': vendor,
+            'developer': vendor,
+            'owner': vendor,
             'fileName': Path(package.intunewin_path).name,
+            'setupFilePath': setup_file,
             'installCommandLine': package.install_command,
-            'uninstallCommandLine': package.uninstall_command or '',
+            'uninstallCommandLine': package.uninstall_command or 'cmd /c exit 0',
             'installExperience': {
                 'runAsAccount': 'system',
                 'deviceRestartBehavior': 'suppress'
             },
-            'detectionRules': package.detection_rules or [],
-            'requirementRules': package.requirements or [],
+            'rules': rules,
             'minimumSupportedOperatingSystem': {
                 'v10_1607': True  # Windows 10 1607+
             }
         }
 
-    def _create_supersedence(
-        self,
-        graph_client: GraphAPIClient,
-        existing_app_id: str,
-        new_package: Package
-    ):
-        """Create supersedence relationship between old and new versions"""
-        logger.info("Creating supersedence relationship", old_app_id=existing_app_id)
+        # Only include optional fields when they have values
+        if version and version != 'Unknown':
+            app_data['displayVersion'] = version
+        if information_url:
+            app_data['informationUrl'] = information_url
+        if notes:
+            app_data['notes'] = notes
 
-        # TODO: Implement supersedence using Graph API
-        # This requires uploading the new .intunewin file first
-        # and then creating the supersedence relationship
+        return app_data
 
-        logger.warning("Supersedence creation not fully implemented")
+    @staticmethod
+    def _get_vendor_support_url(vendor: str, hardware_model: str = '') -> str:
+        """Return a vendor-specific support URL. Deterministic — no LLM needed."""
+        vendor_lower = (vendor or '').lower()
+        if vendor_lower == 'dell':
+            return 'https://www.dell.com/support/home'
+        elif vendor_lower == 'hp':
+            return 'https://support.hp.com/drivers'
+        elif vendor_lower == 'lenovo':
+            return 'https://support.lenovo.com/solutions/ht003029'
+        return ''
+
+    def _normalize_rules(self, rules: list) -> list:
+        """Convert legacy beta-schema detection rules to Graph API v1.0 format."""
+        if not rules:
+            return []
+        normalized = []
+        for rule in rules:
+            r = dict(rule)
+            odata = r.get('@odata.type', '')
+            if 'RegistryDetection' in odata:
+                r['@odata.type'] = '#microsoft.graph.win32LobAppRegistryRule'
+                r.setdefault('ruleType', 'detection')
+                if 'detectionType' in r:
+                    r['operationType'] = r.pop('detectionType')
+                if 'detectionValue' in r:
+                    r['comparisonValue'] = r.pop('detectionValue')
+            r.setdefault('ruleType', 'detection')
+            normalized.append(r)
+        return normalized
+
+    # ---------------------------------------------------------------------------
+    # Content upload and publish
+    # ---------------------------------------------------------------------------
+
+    def _upload_and_publish(self, graph_client: GraphAPIClient, app_id: str, package: Package):
+        """
+        Full Win32 content publish flow:
+          1. Parse .intunewin to extract encrypted binary + encryption metadata
+          2. Create a content version
+          3. Create a file entry → get Azure Blob SAS URI
+          4. Upload encrypted binary in chunks
+          5. Commit the file (provide encryption info to Intune)
+          6. PATCH app with committedContentVersion → publishingState becomes 'published'
+        """
+        intunewin_path = package.intunewin_path
+
+        if not Path(intunewin_path).exists():
+            raise Exception(f".intunewin file not found: {intunewin_path}")
+
+        if Path(intunewin_path).stat().st_size == 0:
+            raise Exception(
+                f".intunewin file is empty (was IntuneWinAppUtil.exe present during packaging?): {intunewin_path}"
+            )
+
+        content_info = self._parse_intunewin(intunewin_path)
+        encrypted_path = content_info['encrypted_path']
+
+        try:
+            logger.info("Starting content upload", app_id=app_id)
+
+            # Step 1 – create content version
+            version = graph_client.create_content_version(app_id)
+            version_id = version['id']
+            logger.info("Content version created", version_id=version_id)
+
+            # Step 2 – create file entry (triggers Intune to provision Azure Storage URI)
+            file_entry = graph_client.create_content_file(
+                app_id,
+                version_id,
+                file_name=Path(intunewin_path).stem + ".intunewin",
+                unencrypted_size=content_info['unencrypted_size'],
+                encrypted_size=content_info['encrypted_size'],
+            )
+            file_id = file_entry['id']
+            logger.info("Content file entry created", file_id=file_id)
+
+            # Step 3 – wait for Azure Storage SAS URI
+            azure_uri = graph_client.wait_for_azure_storage_uri(app_id, version_id, file_id)
+
+            # Step 4 – upload encrypted binary to Azure Blob Storage
+            graph_client.upload_to_azure_storage(azure_uri, encrypted_path)
+
+            # Step 5 – commit file with encryption metadata
+            graph_client.commit_content_file(
+                app_id, version_id, file_id,
+                content_info['encryption_info']
+            )
+            graph_client.wait_for_file_commit(app_id, version_id, file_id)
+
+            # Step 6 – commit version to app → triggers publishingState = 'published'
+            graph_client.commit_content_version(app_id, version_id)
+            logger.info("App published successfully", app_id=app_id, version_id=version_id)
+
+        finally:
+            # Clean up the temp extracted file
+            if encrypted_path and Path(encrypted_path).exists():
+                try:
+                    Path(encrypted_path).unlink()
+                except Exception:
+                    pass
+
+    def _parse_intunewin(self, intunewin_path: str) -> Dict[str, Any]:
+        """
+        Extract the encrypted content binary and encryption metadata from a .intunewin file.
+
+        .intunewin is a ZIP containing:
+          - IntunePackage.intunewin  (AES-256-CBC encrypted installer)
+          - Detection.xml            (file sizes + key/IV/MAC metadata)
+        """
+        tmp_path = None
+        try:
+            with zipfile.ZipFile(intunewin_path, 'r') as zf:
+                names = zf.namelist()
+
+                # Locate encrypted content file
+                content_entry = next(
+                    (n for n in names if n.lower().endswith('intunepackage.intunewin')),
+                    None
+                )
+                if not content_entry:
+                    raise Exception(
+                        f"IntunePackage.intunewin not found inside {intunewin_path}. "
+                        f"Found: {names}"
+                    )
+
+                # Locate Detection.xml
+                detection_entry = next(
+                    (n for n in names if n.lower().endswith('detection.xml')),
+                    None
+                )
+                if not detection_entry:
+                    raise Exception(
+                        f"Detection.xml not found inside {intunewin_path}. "
+                        f"Found: {names}"
+                    )
+
+                # Parse Detection.xml for sizes and encryption metadata
+                with zf.open(detection_entry) as xml_fh:
+                    tree = ET.parse(xml_fh)
+                root = tree.getroot()
+
+                unencrypted_size = int(root.findtext('UnencryptedContentSize', '0'))
+                encrypted_size_xml = int(root.findtext('EncryptedContentSize', '0'))
+
+                enc_node = root.find('EncryptionInfo')
+                if enc_node is None:
+                    raise Exception("EncryptionInfo element missing from Detection.xml")
+
+                encryption_info = {
+                    'encryptionKey':        enc_node.findtext('EncryptionKey'),
+                    'macKey':               enc_node.findtext('MacKey'),
+                    'initializationVector': enc_node.findtext('InitializationVector'),
+                    'mac':                  enc_node.findtext('Mac'),
+                    'profileIdentifier':    enc_node.findtext('ProfileIdentifier', 'ProfileVersion1'),
+                    'fileDigest':           enc_node.findtext('FileDigest'),
+                    'fileDigestAlgorithm':  enc_node.findtext('FileDigestAlgorithm', 'SHA256'),
+                }
+
+                # Extract the encrypted binary to a temp file for uploading
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix='.intunewin')
+                import os
+                os.close(tmp_fd)
+
+                with zf.open(content_entry) as src, open(tmp_path, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+
+            encrypted_size_actual = Path(tmp_path).stat().st_size
+
+            return {
+                'encrypted_path':  tmp_path,
+                'unencrypted_size': unencrypted_size,
+                # Prefer size from the file itself; fall back to XML value
+                'encrypted_size':  encrypted_size_actual or encrypted_size_xml,
+                'encryption_info': encryption_info,
+            }
+
+        except Exception:
+            # Clean up temp file if parsing fails
+            if tmp_path and Path(tmp_path).exists():
+                try:
+                    Path(tmp_path).unlink()
+                except Exception:
+                    pass
+            raise
+
+    # ---------------------------------------------------------------------------
+    # Ring assignment and deployment records
+    # ---------------------------------------------------------------------------
 
     def _assign_to_ring(self, intune_app_id: str, package: Package, ring_index: int = 0):
         """Assign app to deployment ring"""
@@ -145,19 +396,27 @@ class DeploymentAgent:
         graph_client = self._get_graph_client()
 
         try:
-            # Assign app to Entra ID group
             graph_client.assign_app_to_group(
                 intune_app_id,
                 ring['entra_group_id'],
                 intent='required'
             )
-
-            # Create deployment record
             self._create_deployment_record(package.id, intune_app_id, ring)
 
         except Exception as e:
             logger.error("Failed to assign to ring", error=str(e))
             raise
+
+    def _create_supersedence(
+        self,
+        graph_client: GraphAPIClient,
+        existing_app_id: str,
+        new_package: Package
+    ):
+        """Create supersedence relationship between old and new versions"""
+        logger.info("Creating supersedence relationship", old_app_id=existing_app_id)
+        # TODO: Implement supersedence using Graph API
+        logger.warning("Supersedence creation not fully implemented")
 
     def _create_deployment_record(self, package_id: int, intune_app_id: str, ring: Dict):
         """Create deployment tracking record"""
@@ -170,20 +429,16 @@ class DeploymentAgent:
                 entra_group_id=ring['entra_group_id'],
                 status=DeploymentStatus.IN_PROGRESS
             )
-
             session.add(deployment)
-
             logger.info("Created deployment record", ring=ring['name'])
 
     def _update_package_deployment_status(self, package_id: int, intune_app_id: str):
         """Update package deployment status"""
         with db_session_scope() as session:
             package = session.query(Package).filter(Package.id == package_id).first()
-
             if package:
                 package.deployed = True
                 package.intune_app_id = intune_app_id
-
                 logger.info("Updated package deployment status", package_id=package_id)
 
     def _get_package(self, package_id: int) -> Package:
@@ -194,33 +449,116 @@ class DeploymentAgent:
                 session.expunge(package)
             return package
 
+    # ---------------------------------------------------------------------------
+    # Ring promotion (future)
+    # ---------------------------------------------------------------------------
+
     def promote_to_next_ring(self, deployment_id: int):
         """Promote deployment to next ring (for future automation)"""
         logger.info("Promoting deployment to next ring", deployment_id=deployment_id)
-
         # TODO: Implement ring promotion logic
-        # 1. Check deployment success metrics
-        # 2. If successful, assign to next ring
-        # 3. Update deployment record
-
         logger.warning("Ring promotion not yet implemented")
+
+    # ---------------------------------------------------------------------------
+    # Driver Update Profiles (Intune-native driver management — ch04 reference)
+    # ---------------------------------------------------------------------------
+
+    def deploy_driver_update_profile(
+        self,
+        job: Job,
+        approval_type: str = 'manual',
+        deferral_days: int = 3,
+    ) -> Dict[str, Any]:
+        """Create an Intune Driver Update Profile and assign it to Ring 0.
+
+        This is the Intune-native approach from ch04 — instead of packaging a
+        CAB as a Win32 app, it creates a Driver Update Profile that lets Intune
+        / Windows Update surface and manage driver updates for the targeted
+        device group.
+
+        Use ``approval_type='manual'`` for firmware/GPU drivers that need
+        review, or ``'automatic'`` with a deferral for routine driver updates.
+
+        Note: The approval type is **immutable** after creation. To change it
+        you must delete and recreate the profile.
+        """
+        logger.info(
+            "Creating driver update profile deployment",
+            job_id=job.id,
+            approval_type=approval_type,
+        )
+
+        hardware_model = job.hardware_model or job.software_title
+        display_name = f"Driver Updates - {hardware_model}"
+        description = (
+            f"Driver update management for {hardware_model} "
+            f"({job.vendor or 'Unknown'}) — {approval_type} approval"
+        )
+
+        graph_client = self._get_graph_client()
+
+        # Check for existing profile with the same name
+        existing = graph_client.list_driver_update_profiles()
+        for profile in existing.get('value', []):
+            if profile.get('displayName') == display_name:
+                logger.info(
+                    "Driver update profile already exists",
+                    profile_id=profile['id'],
+                )
+                return {
+                    'profile_id': profile['id'],
+                    'status': 'already_exists',
+                    'display_name': display_name,
+                }
+
+        profile = graph_client.create_driver_update_profile(
+            display_name=display_name,
+            description=description,
+            approval_type=approval_type,
+            deferral_days=deferral_days,
+        )
+        profile_id = profile['id']
+
+        # Assign to Ring 0 device group
+        if self.deployment_rings:
+            ring = self.deployment_rings[0]
+            graph_client.assign_driver_update_profile(
+                profile_id, ring['entra_group_id']
+            )
+            logger.info(
+                "Driver update profile assigned",
+                profile_id=profile_id,
+                ring=ring['name'],
+            )
+
+        logger.info(
+            "Driver update profile deployment complete",
+            job_id=job.id,
+            profile_id=profile_id,
+        )
+
+        return {
+            'profile_id': profile_id,
+            'status': 'created',
+            'display_name': display_name,
+            'approval_type': approval_type,
+            'note': (
+                'Intune will take 1-2 days to inventory devices and populate '
+                'available driver updates for this profile.'
+            ),
+        }
 
     def get_deployment_status(self, intune_app_id: str) -> Dict[str, Any]:
         """Get deployment status from Intune"""
         logger.info("Fetching deployment status", app_id=intune_app_id)
-
         graph_client = self._get_graph_client()
-
         try:
-            # Get app installation status
             # TODO: Implement status checking via Graph API
-
             return {
                 'app_id': intune_app_id,
                 'status': 'unknown',
                 'note': 'Status checking not fully implemented'
             }
-
         except Exception as e:
             logger.error("Failed to get deployment status", error=str(e))
             return {'error': str(e)}

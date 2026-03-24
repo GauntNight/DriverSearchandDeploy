@@ -189,6 +189,34 @@ def cancel_job(job_id, all_stuck):
 
 
 
+@jobs.command('purge')
+@click.option('--state', default=None,
+              type=click.Choice([s.value for s in JobState]),
+              help='Only delete jobs in this state (default: all states)')
+@click.option('--yes', is_flag=True, help='Skip confirmation prompt')
+def purge_jobs(state, yes):
+    """Delete job records from the database."""
+    engine = OrchestrationEngine()
+
+    # Preview count before deleting
+    if state:
+        preview = len(engine.get_jobs_by_state(JobState(state)))
+    else:
+        preview = len(engine.get_all_jobs())
+
+    if preview == 0:
+        label = f"{state} " if state else ""
+        console.print(f"[yellow]No {label}job records to delete[/yellow]")
+        return
+
+    label = f"{state} " if state else ""
+    if not yes:
+        click.confirm(f"Delete all {preview} {label}job(s) from the database?", abort=True)
+
+    deleted = engine.purge_jobs(state)
+    console.print(f"[bold green]✓[/bold green] Deleted {deleted} job(s) from the database")
+
+
 @cli.group()
 def worker():
     """Manage Celery workers"""

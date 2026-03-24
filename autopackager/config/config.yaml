@@ -119,3 +119,13 @@ jobs:
   max_retries: 3
   retry_delay_seconds: 300
   concurrent_jobs: 5
+
+# Dashboard Configuration
+dashboard:
+  enabled: true
+  host: "0.0.0.0"  # Listen on all interfaces
+  port: 8000
+  auto_refresh_seconds: 5
+  cors_origins:
+    - "http://localhost:8000"
+    - "http://127.0.0.1:8000"
