@@ -210,3 +210,29 @@ async def get_statistics():
     except Exception as e:
         logger.error("Error getting statistics", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.get("/api/activity")
+async def get_recent_activity(
+    limit: Optional[int] = Query(50, ge=1, le=500, description="Maximum number of activity items to return")
+):
+    """
+    Get recent activity timeline
+
+    Returns a chronologically ordered timeline of recent jobs and deployments,
+    providing a unified view of system activity.
+
+    Query Parameters:
+    - limit: Maximum number of activity items to return (default: 50, max: 500)
+    """
+    try:
+        activity = dashboard_service.get_recent_activity(limit=limit)
+
+        return {
+            "activity": activity,
+            "count": len(activity)
+        }
+
+    except Exception as e:
+        logger.error("Error getting recent activity", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
