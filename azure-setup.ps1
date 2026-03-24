@@ -72,6 +72,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $scriptDir
 
 # ------------------------------------------------------------------------------
 # HELPERS
@@ -84,17 +86,21 @@ function Write-Fail { param([string]$Msg) Write-Host "  FAIL $Msg" -ForegroundCo
 function Write-Info { param([string]$Msg) Write-Host "       $Msg" -ForegroundColor Gray }
 
 function Invoke-Az {
-    param([string[]]$Args)
-    $result = & az @Args 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "az $($Args -join ' ') failed: $result"
+    param([string[]]$AzArgs)
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $result = & az @AzArgs 2>&1
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = $savedEAP
+    if ($exitCode -ne 0) {
+        throw "az $($AzArgs -join ' ') failed: $result"
     }
     return $result
 }
 
 function Invoke-AzJson {
-    param([string[]]$Args)
-    $result = Invoke-Az ($Args + @("--output", "json"))
+    param([string[]]$AzArgs)
+    $result = Invoke-Az ($AzArgs + @("--output", "json"))
     return $result | ConvertFrom-Json
 }
 

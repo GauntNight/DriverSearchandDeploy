@@ -161,6 +161,23 @@ function Invoke-WithRetry {
 }
 
 # ------------------------------------------------------------------------------
+# DIAGNOSTICS TRACKER
+# ------------------------------------------------------------------------------
+
+$diagnostics = [ordered]@{
+    "Python"              = @{ Status = "Skipped"; Detail = "" }
+    "Git"                 = @{ Status = "Skipped"; Detail = "" }
+    "VenvAndDeps"         = @{ Status = "Skipped"; Detail = "" }
+    "Redis"               = @{ Status = "Skipped"; Detail = "" }
+    "IntuneWinAppUtil"    = @{ Status = "Skipped"; Detail = "" }
+    "DirectoriesAndDB"    = @{ Status = "Skipped"; Detail = "" }
+    "LlmApiKey"           = @{ Status = "Skipped"; Detail = "" }
+    "AzureSetup"          = @{ Status = "Skipped"; Detail = "" }
+    "EnvFile"             = @{ Status = "Skipped"; Detail = "" }
+    "HelperScripts"       = @{ Status = "Skipped"; Detail = "" }
+}
+
+# ------------------------------------------------------------------------------
 # SELF-ELEVATION CHECK
 # ------------------------------------------------------------------------------
 
@@ -270,6 +287,8 @@ if ($SkipPython) {
     Write-OK "Verified: $ver"
 }
 
+$diagnostics["Python"] = @{ Status = "Pass"; Detail = "$(& $pythonCmd --version 2>&1)" }
+
 # ------------------------------------------------------------------------------
 # STEP 2: GIT (optional but recommended)
 # ------------------------------------------------------------------------------
@@ -294,6 +313,12 @@ if (Test-CommandExists git) {
     } else {
         Write-Warn "Install Git manually from https://git-scm.com/download/win (optional)"
     }
+}
+
+if (Test-CommandExists git) {
+    $diagnostics["Git"] = @{ Status = "Pass"; Detail = "$(git --version)" }
+} else {
+    $diagnostics["Git"] = @{ Status = "Warn"; Detail = "Git not installed (optional)" }
 }
 
 # ------------------------------------------------------------------------------
@@ -334,6 +359,7 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 Write-OK "All Python dependencies installed"
+$diagnostics["VenvAndDeps"] = @{ Status = "Pass"; Detail = "venv created; dependencies installed" }
 
 # ------------------------------------------------------------------------------
 # STEP 4: REDIS FOR WINDOWS
@@ -387,6 +413,12 @@ if (Test-Path $redisExe) {
     }
 }
 
+if (Test-Path $redisExe) {
+    $diagnostics["Redis"] = @{ Status = "Pass"; Detail = "redis-server.exe found at $redisDir" }
+} else {
+    $diagnostics["Redis"] = @{ Status = "Warn"; Detail = "Redis not found; install manually" }
+}
+
 # ------------------------------------------------------------------------------
 # STEP 5: INTUNEWINAPPUTIL.EXE
 # ------------------------------------------------------------------------------
@@ -412,6 +444,12 @@ if (Test-Path $intuneUtil) {
         Write-Info "Download manually from: https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool"
         Write-Info "Place it in the 'tools' folder."
     }
+}
+
+if (Test-Path $intuneUtil) {
+    $diagnostics["IntuneWinAppUtil"] = @{ Status = "Pass"; Detail = "IntuneWinAppUtil.exe present" }
+} else {
+    $diagnostics["IntuneWinAppUtil"] = @{ Status = "Warn"; Detail = "Not downloaded; download manually from GitHub" }
 }
 
 # ------------------------------------------------------------------------------
@@ -471,6 +509,12 @@ if ($initExit -eq 0) {
     Write-Warn "Database init had issues - may need Azure credentials first (run again after .env is set)"
 }
 
+if ($initExit -eq 0) {
+    $diagnostics["DirectoriesAndDB"] = @{ Status = "Pass"; Detail = "Directories created; database initialised" }
+} else {
+    $diagnostics["DirectoriesAndDB"] = @{ Status = "Warn"; Detail = "Directories created; database init needs Azure credentials" }
+}
+
 # ------------------------------------------------------------------------------
 # STEP 7: LLM API KEY
 # ------------------------------------------------------------------------------
@@ -501,6 +545,12 @@ if (-not $LlmApiKey) {
         $LlmApiKey = "your_llm_api_key_here"
         Write-Warn "No key provided. Edit .env later and set LLM_API_KEY."
     }
+}
+
+if ($LlmApiKey -and $LlmApiKey -ne "your_llm_api_key_here") {
+    $diagnostics["LlmApiKey"] = @{ Status = "Pass"; Detail = "API key provided" }
+} else {
+    $diagnostics["LlmApiKey"] = @{ Status = "Warn"; Detail = "No key provided; edit .env to set LLM_API_KEY" }
 }
 
 # ------------------------------------------------------------------------------
@@ -569,6 +619,14 @@ if (-not $SkipAzure) {
     }
 }
 
+if (-not $SkipAzure -and $azureResult -ne $null) {
+    $diagnostics["AzureSetup"] = @{ Status = "Pass"; Detail = "Azure configuration complete" }
+} elseif ($SkipAzure) {
+    $diagnostics["AzureSetup"] = @{ Status = "Warn"; Detail = "Skipped; run azure-setup.ps1 separately" }
+} else {
+    $diagnostics["AzureSetup"] = @{ Status = "Fail"; Detail = "Azure setup failed; run azure-setup.ps1 -OutputEnvFile" }
+}
+
 # ------------------------------------------------------------------------------
 # STEP 9: WRITE / UPDATE .env FILE
 # ------------------------------------------------------------------------------
@@ -599,6 +657,12 @@ if ($SkipAzure -or $azureResult -eq $null) {
         $envContent | Set-Content ".\.env" -Force
     }
     Write-OK ".env written with all credentials"
+}
+
+if (Test-Path ".\.env") {
+    $diagnostics["EnvFile"] = @{ Status = "Pass"; Detail = ".env file present" }
+} else {
+    $diagnostics["EnvFile"] = @{ Status = "Fail"; Detail = ".env file missing; copy .env.template to .env" }
 }
 
 # ------------------------------------------------------------------------------
@@ -662,6 +726,48 @@ Write-OK "Created: start-worker.bat"
 Write-OK "Created: create-job.bat"
 Write-OK "Created: list-jobs.bat"
 Write-OK "Created: launch-all.bat  (starts everything at once)"
+$diagnostics["HelperScripts"] = @{ Status = "Pass"; Detail = "All helper .bat scripts created" }
+
+# ------------------------------------------------------------------------------
+# DIAGNOSTIC REPORT
+# ------------------------------------------------------------------------------
+
+Write-Host ""
+Write-Banner "Installation Diagnostic Report"
+
+$hasFailures = $false
+foreach ($key in $diagnostics.Keys) {
+    $entry = $diagnostics[$key]
+    $status = $entry.Status
+    $detail = $entry.Detail
+    switch ($status) {
+        "Pass"    { Write-Host "  [PASS]  $key" -ForegroundColor Green -NoNewline; Write-Host "  $detail" -ForegroundColor Gray }
+        "Warn"    { Write-Host "  [WARN]  $key" -ForegroundColor Yellow -NoNewline; Write-Host "  $detail" -ForegroundColor Gray }
+        "Fail"    { Write-Host "  [FAIL]  $key" -ForegroundColor Red -NoNewline; Write-Host "  $detail" -ForegroundColor Gray; $hasFailures = $true }
+        "Skipped" { Write-Host "  [SKIP]  $key" -ForegroundColor DarkGray -NoNewline; Write-Host "  $detail" -ForegroundColor Gray }
+    }
+}
+
+if ($hasFailures) {
+    Write-Host ""
+    Write-Host "  One or more steps failed. Remediation hints:" -ForegroundColor Red
+    foreach ($key in $diagnostics.Keys) {
+        if ($diagnostics[$key].Status -eq "Fail") {
+            switch ($key) {
+                "Python"           { Write-Host "    - Python: Install Python 3.9+ from https://www.python.org/downloads/" -ForegroundColor Yellow }
+                "VenvAndDeps"      { Write-Host "    - VenvAndDeps: Run '.\venv\Scripts\pip.exe install -r requirements.txt' manually" -ForegroundColor Yellow }
+                "Redis"            { Write-Host "    - Redis: Download from https://github.com/microsoftarchive/redis/releases" -ForegroundColor Yellow }
+                "IntuneWinAppUtil" { Write-Host "    - IntuneWinAppUtil: Download from https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool" -ForegroundColor Yellow }
+                "DirectoriesAndDB" { Write-Host "    - DirectoriesAndDB: Run '.\venv\Scripts\python.exe cli.py init' after configuring .env" -ForegroundColor Yellow }
+                "AzureSetup"      { Write-Host "    - AzureSetup: Run '.\azure-setup.ps1 -OutputEnvFile' separately" -ForegroundColor Yellow }
+                "EnvFile"         { Write-Host "    - EnvFile: Copy .env.template to .env and fill in credentials" -ForegroundColor Yellow }
+                default           { Write-Host "    - ${key}: $($diagnostics[$key].Detail)" -ForegroundColor Yellow }
+            }
+        }
+    }
+}
+
+Write-Host ""
 
 # ------------------------------------------------------------------------------
 # FINAL SUMMARY
