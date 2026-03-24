@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="AutoPackager Deployment Monitoring Dashboard">
+    <title>AutoPackager Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <h1>AutoPackager Dashboard</h1>
+            <div class="header-info">
+                <span class="last-updated">Last updated: <span id="last-updated-time">--:--:--</span></span>
+                <span class="auto-refresh">Auto-refresh: <span id="refresh-status">enabled</span></span>
+            </div>
+        </header>
+
+        <!-- Statistics Overview Section -->
+        <section class="stats-section">
+            <h2>Overview</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>Jobs</h3>
+                    <div class="stat-value" id="stat-jobs-total">0</div>
+                    <div class="stat-details">
+                        <span class="stat-item">Pending: <span id="stat-jobs-pending">0</span></span>
+                        <span class="stat-item">In Progress: <span id="stat-jobs-inprogress">0</span></span>
+                        <span class="stat-item">Completed: <span id="stat-jobs-completed">0</span></span>
+                        <span class="stat-item">Failed: <span id="stat-jobs-failed">0</span></span>
+                    </div>
+                    <div class="stat-recent">Last 24h: <span id="stat-jobs-recent">0</span></div>
+                </div>
+
+                <div class="stat-card">
+                    <h3>Deployments</h3>
+                    <div class="stat-value" id="stat-deployments-total">0</div>
+                    <div class="stat-details">
+                        <span class="stat-item">Successful: <span id="stat-deployments-successful">0</span></span>
+                        <span class="stat-item">Failed: <span id="stat-deployments-failed">0</span></span>
+                        <span class="stat-item">In Progress: <span id="stat-deployments-inprogress">0</span></span>
+                    </div>
+                    <div class="stat-recent">Last 24h: <span id="stat-deployments-recent">0</span></div>
+                </div>
+
+                <div class="stat-card">
+                    <h3>Packages</h3>
+                    <div class="stat-value" id="stat-packages-total">0</div>
+                    <div class="stat-details">
+                        <span class="stat-item">Tested: <span id="stat-packages-tested">0</span></span>
+                        <span class="stat-item">Deployed: <span id="stat-packages-deployed">0</span></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Main Content Grid -->
+        <div class="main-content">
+            <!-- Jobs Section -->
+            <section class="jobs-section">
+                <div class="section-header">
+                    <h2>Active Jobs</h2>
+                    <div class="section-actions">
+                        <select id="job-filter" class="filter-select">
+                            <option value="">All States</option>
+                            <option value="pending">Pending</option>
+                            <option value="discovering">Discovering</option>
+                            <option value="packaging">Packaging</option>
+                            <option value="testing">Testing</option>
+                            <option value="deploying">Deploying</option>
+                            <option value="completed">Completed</option>
+                            <option value="failed">Failed</option>
+                            <option value="cancelled">Cancelled</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="jobs-list" class="jobs-list">
+                    <div class="loading">Loading jobs...</div>
+                </div>
+            </section>
+
+            <!-- Deployment Rings Section -->
+            <section class="rings-section">
+                <div class="section-header">
+                    <h2>Deployment Rings</h2>
+                </div>
+                <div id="rings-list" class="rings-list">
+                    <div class="loading">Loading deployment rings...</div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Activity Timeline Section -->
+        <section class="activity-section">
+            <div class="section-header">
+                <h2>Recent Activity</h2>
+                <div class="section-actions">
+                    <select id="activity-limit" class="filter-select">
+                        <option value="25">Last 25</option>
+                        <option value="50" selected>Last 50</option>
+                        <option value="100">Last 100</option>
+                    </select>
+                </div>
+            </div>
+            <div id="activity-timeline" class="activity-timeline">
+                <div class="loading">Loading activity...</div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="dashboard-footer">
+            <p>AutoPackager Dashboard v1.0.0 | <a href="/health">System Health</a> | <a href="https://github.com/yourusername/autopackager" target="_blank">Documentation</a></p>
+        </footer>
+    </div>
+
+    <!-- Load dashboard JavaScript -->
+    <script src="/static/dashboard.js"></script>
+</body>
+</html>
