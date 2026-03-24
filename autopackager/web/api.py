@@ -189,3 +189,24 @@ async def get_deployment_rings():
     except Exception as e:
         logger.error("Error getting deployment ring status", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.get("/api/stats")
+async def get_statistics():
+    """
+    Get overall dashboard statistics
+
+    Returns comprehensive statistics including:
+    - Job counts (total, by state, recent 24h)
+    - Deployment counts (total, successful, failed, in progress, recent 24h)
+    - Package counts (total, tested, deployed)
+    - Timestamp of when statistics were generated
+    """
+    try:
+        stats = dashboard_service.get_statistics()
+
+        return stats
+
+    except Exception as e:
+        logger.error("Error getting statistics", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
