@@ -438,6 +438,28 @@ class GraphAPIClient:
         logger.info("Listing driver update profiles")
         return self._beta_get('deviceManagement/windowsDriverUpdateProfiles')
 
+    # ---------------------------------------------------------------------------
+    # Deployment Status (Win32 app install status tracking)
+    # ---------------------------------------------------------------------------
+
+    def get_app_install_summary(self, app_id):
+        """Get install summary for a Win32 app.
+
+        Returns aggregate counts of install status across all targeted devices:
+        - installedDeviceCount
+        - failedDeviceCount
+        - pendingInstallDeviceCount
+        - notApplicableDeviceCount
+
+        Args:
+            app_id: The Intune mobile app ID.
+
+        Returns:
+            Install summary JSON with device counts by status.
+        """
+        logger.info("Fetching app install summary", app_id=app_id)
+        return self.get(f"deviceAppManagement/mobileApps/{app_id}/installSummary")
+
 
 def _expected_blocks(file_size):
     import math
