@@ -178,6 +178,8 @@ Review and customize `autopackager/config/config.yaml`:
 - Configure logging levels
 - Set job retry parameters
 
+**For detailed configuration documentation**, see [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md) for comprehensive field-level reference covering all 11 configuration sections, valid values, environment variable mapping, and common scenarios.
+
 ## Running AutoPackager
 
 ### Start the Celery Worker
