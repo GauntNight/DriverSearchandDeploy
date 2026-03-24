@@ -296,6 +296,8 @@ database:
   path: "data/autopackager.db"
 ```
 
+**For detailed configuration documentation**, see [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md) for comprehensive reference covering all configuration sections, valid values, and environment variable mapping.
+
 ---
 
 ### Part 6: Initialise and Test (15 minutes)
@@ -357,11 +359,11 @@ python cli.py jobs status 1
 
 Before moving to production:
 
-- [ ] Switch to PostgreSQL (not SQLite): update `config.yaml` and re-run `python cli.py init`
+- [ ] Switch to PostgreSQL (not SQLite): update `config.yaml` and re-run `python cli.py init` (see [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md#2-database-configuration))
 - [ ] Configure log rotation for `data/logs/`
 - [ ] Set up monitoring (health checks, error alerts)
 - [ ] Create a database backup strategy
-- [ ] Review deployment ring deferral periods in `config.yaml`
+- [ ] Review deployment ring deferral periods in `config.yaml` (see [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md#7-deployment-rings-configuration))
 - [ ] Test rollback procedures
 - [ ] Document your hardware inventory
 - [ ] Set up automated catalog refresh (Task Scheduler / cron)
