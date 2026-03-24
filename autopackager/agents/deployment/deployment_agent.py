@@ -5,6 +5,7 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 
@@ -607,3 +608,55 @@ class DeploymentAgent:
                 'app_id': intune_app_id,
                 'error': str(e)
             }
+
+    def update_deployment_status(self, deployment_id: int, status_data: Dict[str, Any]):
+        """Update deployment record with latest status data from Intune.
+
+        Takes the status data dict returned by get_deployment_status() and persists
+        it to the Deployment record in the database. Updates install counts, sets
+        the last_status_check timestamp, and stores device-level failure details.
+
+        Args:
+            deployment_id: The deployment record ID to update
+            status_data: Dict containing status data with keys:
+                - installed_count: Number of successful installs
+                - failed_count: Number of failed installs
+                - pending_count: Number of pending installs
+                - not_applicable_count: Number of not-applicable devices
+                - total_targeted: Total number of targeted devices
+                - failed_devices: List of failed device details
+
+        Raises:
+            ValueError: If deployment_id not found
+            Exception: If database update fails
+        """
+        logger.info("Updating deployment status", deployment_id=deployment_id)
+
+        with db_session_scope() as session:
+            deployment = session.query(Deployment).filter(Deployment.id == deployment_id).first()
+            if not deployment:
+                logger.error("Deployment not found", deployment_id=deployment_id)
+                raise ValueError(f"Deployment {deployment_id} not found")
+
+            # Update install counts
+            deployment.successful_installs = status_data.get('installed_count', 0)
+            deployment.failed_installs = status_data.get('failed_count', 0)
+            deployment.pending_installs = status_data.get('pending_count', 0)
+            deployment.not_applicable_installs = status_data.get('not_applicable_count', 0)
+            deployment.target_device_count = status_data.get('total_targeted', 0)
+
+            # Update timestamp
+            deployment.last_status_check = datetime.utcnow()
+
+            # Store failed device details
+            deployment.device_status_details = status_data.get('failed_devices', [])
+
+            logger.info(
+                "Deployment status updated",
+                deployment_id=deployment_id,
+                installed=deployment.successful_installs,
+                failed=deployment.failed_installs,
+                pending=deployment.pending_installs,
+                not_applicable=deployment.not_applicable_installs,
+                total=deployment.target_device_count
+            )
