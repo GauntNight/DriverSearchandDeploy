@@ -505,6 +505,68 @@ class GraphAPIClient:
         logger.info("Fetched all device statuses", app_id=app_id, total_devices=len(all_statuses))
         return all_statuses
 
+    def _parse_install_statuses(self, device_statuses):
+        """Parse device status list into aggregated counts and failed device details.
+
+        Aggregates install status from device-level responses into summary counts
+        for tracking deployment progress. Extracts device details for failed
+        installations to enable troubleshooting.
+
+        Args:
+            device_statuses: List of device status objects from get_app_device_statuses().
+                Each object contains deviceName, deviceId, installState, errorCode, etc.
+
+        Returns:
+            Dict with keys:
+                - installed: Count of devices with successful install
+                - failed: Count of devices with failed install
+                - pending: Count of devices with pending install
+                - not_applicable: Count of devices where app is not applicable
+                - failed_device_details: List of dicts with device info for failed installs
+        """
+        counts = {
+            'installed': 0,
+            'failed': 0,
+            'pending': 0,
+            'not_applicable': 0,
+            'failed_device_details': []
+        }
+
+        for status in device_statuses:
+            install_state = status.get('installState', '').lower()
+
+            if install_state in ('installed', 'success'):
+                counts['installed'] += 1
+            elif install_state in ('failed', 'error'):
+                counts['failed'] += 1
+                # Capture failed device details for troubleshooting
+                counts['failed_device_details'].append({
+                    'device_name': status.get('deviceName'),
+                    'device_id': status.get('deviceId'),
+                    'error_code': status.get('errorCode'),
+                    'install_state': status.get('installState'),
+                    'last_sync': status.get('lastSyncDateTime')
+                })
+            elif install_state in ('pending', 'downloading', 'notinstalled'):
+                counts['pending'] += 1
+            elif install_state in ('notapplicable', 'not_applicable'):
+                counts['not_applicable'] += 1
+            else:
+                # Unknown states treated as pending for safety
+                logger.debug("Unknown install state", state=install_state, device_id=status.get('deviceId'))
+                counts['pending'] += 1
+
+        logger.debug(
+            "Parsed install statuses",
+            total_devices=len(device_statuses),
+            installed=counts['installed'],
+            failed=counts['failed'],
+            pending=counts['pending'],
+            not_applicable=counts['not_applicable']
+        )
+
+        return counts
+
 
 def _expected_blocks(file_size):
     import math
