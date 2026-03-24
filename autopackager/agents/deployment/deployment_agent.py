@@ -549,16 +549,61 @@ class DeploymentAgent:
         }
 
     def get_deployment_status(self, intune_app_id: str) -> Dict[str, Any]:
-        """Get deployment status from Intune"""
+        """Get deployment status from Intune via Graph API.
+
+        Queries Microsoft Graph API for real-time install status of the Win32 app,
+        including successful installs, failed installs, pending installs, and
+        not-applicable devices. Returns aggregated counts plus device-level details
+        for failed installations.
+
+        Args:
+            intune_app_id: The Intune mobile app ID
+
+        Returns:
+            Dict with keys:
+                - app_id: The Intune app ID
+                - installed_count: Number of successful installs
+                - failed_count: Number of failed installs
+                - pending_count: Number of pending installs
+                - not_applicable_count: Number of not-applicable devices
+                - failed_devices: List of failed device details (device name, error code, etc.)
+                - total_targeted: Total number of targeted devices
+                - error: Error message if status check fails
+        """
         logger.info("Fetching deployment status", app_id=intune_app_id)
         graph_client = self._get_graph_client()
+
         try:
-            # TODO: Implement status checking via Graph API
+            # Get detailed per-device status with pagination support
+            device_statuses = graph_client.get_app_device_statuses(intune_app_id)
+
+            # Parse device statuses into aggregated counts and failed device details
+            parsed_status = graph_client._parse_install_statuses(device_statuses)
+
+            result = {
+                'app_id': intune_app_id,
+                'installed_count': parsed_status['installed'],
+                'failed_count': parsed_status['failed'],
+                'pending_count': parsed_status['pending'],
+                'not_applicable_count': parsed_status['not_applicable'],
+                'failed_devices': parsed_status['failed_device_details'],
+                'total_targeted': len(device_statuses)
+            }
+
+            logger.info(
+                "Deployment status retrieved",
+                app_id=intune_app_id,
+                installed=result['installed_count'],
+                failed=result['failed_count'],
+                pending=result['pending_count'],
+                total=result['total_targeted']
+            )
+
+            return result
+
+        except Exception as e:
+            logger.error("Failed to get deployment status", app_id=intune_app_id, error=str(e))
             return {
                 'app_id': intune_app_id,
-                'status': 'unknown',
-                'note': 'Status checking not fully implemented'
+                'error': str(e)
             }
-        except Exception as e:
-            logger.error("Failed to get deployment status", error=str(e))
-            return {'error': str(e)}
