@@ -275,3 +275,37 @@ def deployment_task(self, previous_result, job_id: int):
         else:
             engine.mark_job_failed(job_id, f"Deployment failed: {error_detail}")
             raise
+
+
+@celery_app.task(bind=True, name='autopackager.poll_deployment_status')
+def poll_deployment_status(self):
+    """Poll deployment status for all in-progress deployments"""
+    logger.info("Starting deployment status polling")
+
+    try:
+        # Import here to avoid circular dependencies
+        from autopackager.agents.deployment import DeploymentAgent
+
+        agent = DeploymentAgent()
+
+        # Check all in-progress deployments
+        result = agent.check_all_deployments()
+
+        logger.info(
+            "Deployment status polling completed",
+            total_checked=result.get('total_checked', 0),
+            successful_updates=result.get('successful_updates', 0),
+            failed_updates=result.get('failed_updates', 0),
+            total_installed=result.get('summary', {}).get('total_installed', 0),
+            total_failed=result.get('summary', {}).get('total_failed', 0),
+            total_pending=result.get('summary', {}).get('total_pending', 0),
+            total_not_applicable=result.get('summary', {}).get('total_not_applicable', 0)
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error("Deployment status polling failed", error=str(e))
+
+        # Retry with exponential backoff (2 minutes initial delay)
+        raise self.retry(exc=e, countdown=120, max_retries=3)
