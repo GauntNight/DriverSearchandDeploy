@@ -660,3 +660,134 @@ class DeploymentAgent:
                 not_applicable=deployment.not_applicable_installs,
                 total=deployment.target_device_count
             )
+
+    def check_all_deployments(self) -> Dict[str, Any]:
+        """Check status of all in-progress deployments and update their records.
+
+        Queries all deployments with status IN_PROGRESS from the database,
+        fetches current install status from Intune for each, and persists
+        the updated status data. This method is designed to be called by
+        a periodic Celery task for batch status polling.
+
+        Returns:
+            Dict with keys:
+                - total_checked: Total number of deployments checked
+                - successful_updates: Number of deployments successfully updated
+                - failed_updates: Number of deployments that failed to update
+                - errors: List of error details for failed updates
+                - summary: Aggregated install counts across all deployments
+        """
+        logger.info("Starting batch deployment status check")
+
+        with db_session_scope() as session:
+            # Query all IN_PROGRESS deployments
+            deployments = session.query(Deployment).filter(
+                Deployment.status == DeploymentStatus.IN_PROGRESS
+            ).all()
+
+            total_checked = len(deployments)
+            logger.info("Found in-progress deployments", count=total_checked)
+
+            if total_checked == 0:
+                return {
+                    'total_checked': 0,
+                    'successful_updates': 0,
+                    'failed_updates': 0,
+                    'errors': [],
+                    'summary': {
+                        'total_installed': 0,
+                        'total_failed': 0,
+                        'total_pending': 0,
+                        'total_not_applicable': 0
+                    }
+                }
+
+            successful_updates = 0
+            failed_updates = 0
+            errors = []
+            aggregate_stats = {
+                'total_installed': 0,
+                'total_failed': 0,
+                'total_pending': 0,
+                'total_not_applicable': 0
+            }
+
+            # Check each deployment
+            for deployment in deployments:
+                try:
+                    logger.info(
+                        "Checking deployment status",
+                        deployment_id=deployment.id,
+                        intune_app_id=deployment.intune_app_id,
+                        ring=deployment.ring_name
+                    )
+
+                    # Fetch status from Intune
+                    status_data = self.get_deployment_status(deployment.intune_app_id)
+
+                    # Check for errors in status fetch
+                    if 'error' in status_data:
+                        logger.error(
+                            "Failed to get deployment status",
+                            deployment_id=deployment.id,
+                            error=status_data['error']
+                        )
+                        failed_updates += 1
+                        errors.append({
+                            'deployment_id': deployment.id,
+                            'intune_app_id': deployment.intune_app_id,
+                            'error': status_data['error']
+                        })
+                        continue
+
+                    # Update deployment record with status data
+                    self.update_deployment_status(deployment.id, status_data)
+
+                    # Aggregate statistics
+                    aggregate_stats['total_installed'] += status_data.get('installed_count', 0)
+                    aggregate_stats['total_failed'] += status_data.get('failed_count', 0)
+                    aggregate_stats['total_pending'] += status_data.get('pending_count', 0)
+                    aggregate_stats['total_not_applicable'] += status_data.get('not_applicable_count', 0)
+
+                    successful_updates += 1
+
+                    logger.info(
+                        "Deployment status updated successfully",
+                        deployment_id=deployment.id,
+                        installed=status_data.get('installed_count', 0),
+                        failed=status_data.get('failed_count', 0),
+                        pending=status_data.get('pending_count', 0)
+                    )
+
+                except Exception as e:
+                    logger.error(
+                        "Error checking deployment status",
+                        deployment_id=deployment.id,
+                        error=str(e),
+                        exc_info=True
+                    )
+                    failed_updates += 1
+                    errors.append({
+                        'deployment_id': deployment.id,
+                        'intune_app_id': deployment.intune_app_id,
+                        'error': str(e)
+                    })
+
+        result = {
+            'total_checked': total_checked,
+            'successful_updates': successful_updates,
+            'failed_updates': failed_updates,
+            'errors': errors,
+            'summary': aggregate_stats
+        }
+
+        logger.info(
+            "Batch deployment status check completed",
+            total_checked=total_checked,
+            successful=successful_updates,
+            failed=failed_updates,
+            total_installed=aggregate_stats['total_installed'],
+            total_failed=aggregate_stats['total_failed']
+        )
+
+        return result
