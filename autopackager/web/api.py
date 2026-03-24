@@ -2,6 +2,7 @@
 
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
@@ -46,15 +47,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files directory
-static_dir = Path(__file__).parent / "static"
-if static_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    logger.info(f"Mounted static files from {static_dir}")
-else:
-    logger.warning(f"Static directory not found: {static_dir}")
-
 logger.info("FastAPI application initialized")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Serve the dashboard HTML page"""
+    index_path = Path(__file__).parent / "static" / "index.html"
+    if index_path.exists():
+        with open(index_path, 'r', encoding='utf-8') as f:
+            return HTMLResponse(content=f.read())
+    else:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
 
 
 @app.get("/health")
@@ -236,3 +240,12 @@ async def get_recent_activity(
     except Exception as e:
         logger.error("Error getting recent activity", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+# Mount static files directory (must be last to not interfere with routes)
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    logger.info(f"Mounted static files from {static_dir}")
+else:
+    logger.warning(f"Static directory not found: {static_dir}")
