@@ -49,12 +49,16 @@ class Deployment(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     deployed_at = Column(DateTime)
     completed_at = Column(DateTime)
+    last_status_check = Column(DateTime)
 
     # Error tracking
     error_message = Column(String(2048))
 
     # Metadata
     deployment_metadata = Column('metadata', JSON, default={})
+
+    # Device Status Details
+    device_status_details = Column(JSON, default=list)
 
     def __repr__(self):
         return f"<Deployment {self.id}: Ring {self.ring_id} ({self.status})>"
@@ -77,6 +81,8 @@ class Deployment(Base):
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'deployed_at': self.deployed_at.isoformat() if self.deployed_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+            'last_status_check': self.last_status_check.isoformat() if self.last_status_check else None,
             'error_message': self.error_message,
-            'metadata': self.deployment_metadata
+            'metadata': self.deployment_metadata,
+            'device_status_details': self.device_status_details
         }
