@@ -7,6 +7,35 @@ param(
     [switch]$UseSQLite
 )
 
+# ------------------------------------------------------------------------------
+# DEPRECATION WARNING
+# ------------------------------------------------------------------------------
+Write-Host ""
+Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
+Write-Host "!!                                                          !!" -ForegroundColor Red
+Write-Host "!!   DEPRECATED - This script is no longer maintained       !!" -ForegroundColor Red
+Write-Host "!!                                                          !!" -ForegroundColor Red
+Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
+Write-Host ""
+Write-Host "  This script (setup.ps1) has been replaced by:" -ForegroundColor Yellow
+Write-Host "    .\Install-AutoPackager.ps1" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Install-AutoPackager.ps1 provides:" -ForegroundColor Yellow
+Write-Host "    - Automatic Python & Git installation" -ForegroundColor White
+Write-Host "    - Full Azure / Entra ID configuration" -ForegroundColor White
+Write-Host "    - Redis & IntuneWinAppUtil auto-download" -ForegroundColor White
+Write-Host "    - One-click setup with minimal prompts" -ForegroundColor White
+Write-Host ""
+$continue = Read-Host "  Continue with this DEPRECATED script anyway? (Y/N)"
+if ($continue -notmatch "^[Yy]") {
+    Write-Host ""
+    Write-Host "  To use the new installer, run:" -ForegroundColor Green
+    Write-Host "    .\Install-AutoPackager.ps1" -ForegroundColor Cyan
+    Write-Host ""
+    exit 0
+}
+Write-Host ""
+
 Write-Host "==================================" -ForegroundColor Cyan
 Write-Host "AutoPackager Setup Script v1.0" -ForegroundColor Cyan
 Write-Host "==================================" -ForegroundColor Cyan
