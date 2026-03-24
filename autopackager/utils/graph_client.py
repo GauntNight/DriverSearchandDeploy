@@ -460,6 +460,51 @@ class GraphAPIClient:
         logger.info("Fetching app install summary", app_id=app_id)
         return self.get(f"deviceAppManagement/mobileApps/{app_id}/installSummary")
 
+    def get_app_device_statuses(self, app_id):
+        """Get per-device install status for a Win32 app with pagination support.
+
+        Returns detailed install status for each device that has been targeted:
+        - deviceName
+        - deviceId
+        - installState (installed, failed, pending, etc.)
+        - errorCode
+        - lastSyncDateTime
+
+        Args:
+            app_id: The Intune mobile app ID.
+
+        Returns:
+            List of device status objects aggregated from all pages.
+        """
+        logger.info("Fetching app device statuses", app_id=app_id)
+
+        all_statuses = []
+        next_link = f"deviceAppManagement/mobileApps/{app_id}/deviceStatuses"
+
+        while next_link:
+            if next_link.startswith(self.graph_endpoint):
+                # nextLink is a full URL, make direct request
+                logger.debug("Following pagination link", url=next_link)
+                response = requests.get(next_link, headers=self._get_headers())
+                self._raise_with_details(response)
+                data = response.json()
+            else:
+                # First request or relative endpoint
+                data = self.get(next_link)
+
+            # Collect results from this page
+            statuses = data.get('value', [])
+            all_statuses.extend(statuses)
+
+            # Check for next page
+            next_link = data.get('@odata.nextLink')
+
+            if next_link:
+                logger.debug("Fetched page", statuses_count=len(statuses), total_so_far=len(all_statuses))
+
+        logger.info("Fetched all device statuses", app_id=app_id, total_devices=len(all_statuses))
+        return all_statuses
+
 
 def _expected_blocks(file_size):
     import math
