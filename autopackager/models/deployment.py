@@ -42,6 +42,7 @@ class Deployment(Base):
     successful_installs = Column(Integer, default=0)
     failed_installs = Column(Integer, default=0)
     pending_installs = Column(Integer, default=0)
+    not_applicable_installs = Column(Integer, default=0)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -71,6 +72,7 @@ class Deployment(Base):
             'successful_installs': self.successful_installs,
             'failed_installs': self.failed_installs,
             'pending_installs': self.pending_installs,
+            'not_applicable_installs': self.not_applicable_installs,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'deployed_at': self.deployed_at.isoformat() if self.deployed_at else None,
