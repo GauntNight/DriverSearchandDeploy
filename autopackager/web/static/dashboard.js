@@ -26,8 +26,6 @@ class DashboardApp {
 
         // Start auto-refresh
         this.startAutoRefresh();
-
-        console.log('Dashboard initialized');
     }
 
     /**
@@ -137,22 +135,75 @@ class DashboardApp {
     renderJobCard(job) {
         const createdAt = this.formatDateTime(job.created_at);
         const updatedAt = this.formatDateTime(job.updated_at);
+        const statusCategory = this.getJobStatusCategory(job.state);
+        const statusDisplay = this.getJobStatusDisplay(job.state);
+        const statusIcon = this.getJobStatusIcon(statusCategory);
 
         return `
             <div class="job-card state-${job.state}">
                 <div class="job-header">
-                    <div class="job-id">Job #${job.id}</div>
-                    <div class="job-state state-${job.state}">${job.state}</div>
+                    <div class="job-id">${statusIcon} Job #${job.id}</div>
+                    <div class="job-state state-${job.state}">${statusDisplay}</div>
                 </div>
                 <div class="job-details">
-                    <div>Device: ${this.escapeHtml(job.device_id || 'N/A')}</div>
-                    <div>Manufacturer: ${this.escapeHtml(job.manufacturer || 'N/A')} | Model: ${this.escapeHtml(job.model || 'N/A')}</div>
-                    <div>Created: ${createdAt}</div>
-                    ${job.state !== 'pending' ? `<div>Updated: ${updatedAt}</div>` : ''}
-                    ${job.error_message ? `<div style="color: var(--danger-color); margin-top: 0.5rem;">Error: ${this.escapeHtml(job.error_message)}</div>` : ''}
+                    <div><strong>Software:</strong> ${this.escapeHtml(job.software_title || 'N/A')}</div>
+                    <div><strong>Vendor:</strong> ${this.escapeHtml(job.vendor || 'N/A')} | <strong>Model:</strong> ${this.escapeHtml(job.hardware_model || 'N/A')}</div>
+                    ${job.driver_type ? `<div><strong>Driver Type:</strong> ${this.escapeHtml(job.driver_type)}</div>` : ''}
+                    <div><strong>Created:</strong> ${createdAt}</div>
+                    ${statusCategory !== 'pending' ? `<div><strong>Updated:</strong> ${updatedAt}</div>` : ''}
+                    ${job.error_message ? `<div class="text-danger" style="margin-top: 0.5rem;"><strong>Error:</strong> ${this.escapeHtml(job.error_message)}</div>` : ''}
                 </div>
             </div>
         `;
+    }
+
+    /**
+     * Get job status category (pending, in-progress, completed, failed)
+     */
+    getJobStatusCategory(state) {
+        const inProgressStates = ['discovering', 'packaging', 'testing', 'deploying'];
+
+        if (state === 'pending') {
+            return 'pending';
+        } else if (inProgressStates.includes(state)) {
+            return 'in-progress';
+        } else if (state === 'completed') {
+            return 'completed';
+        } else if (state === 'failed' || state === 'cancelled') {
+            return 'failed';
+        }
+        return 'unknown';
+    }
+
+    /**
+     * Get user-friendly display name for job state
+     */
+    getJobStatusDisplay(state) {
+        const stateMap = {
+            'pending': 'Pending',
+            'discovering': 'Discovering',
+            'packaging': 'Packaging',
+            'testing': 'Testing',
+            'deploying': 'Deploying',
+            'completed': 'Completed',
+            'failed': 'Failed',
+            'cancelled': 'Cancelled'
+        };
+        return stateMap[state] || state.charAt(0).toUpperCase() + state.slice(1);
+    }
+
+    /**
+     * Get icon for job status category
+     */
+    getJobStatusIcon(category) {
+        const iconMap = {
+            'pending': '⏳',
+            'in-progress': '⚙️',
+            'completed': '✅',
+            'failed': '❌',
+            'unknown': '❓'
+        };
+        return iconMap[category] || '';
     }
 
     /**
