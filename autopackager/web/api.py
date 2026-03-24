@@ -10,11 +10,16 @@ from autopackager.utils.config import get_config
 from autopackager.utils.logger import get_logger
 from autopackager.orchestration.engine import OrchestrationEngine
 from autopackager.models.job import JobState
+from autopackager.models.deployment import DeploymentStatus
+from autopackager.services.dashboard_service import DashboardService
 
 logger = get_logger(__name__)
 
 # Initialize orchestration engine
 engine = OrchestrationEngine()
+
+# Initialize dashboard service
+dashboard_service = DashboardService()
 
 # Load configuration
 config = get_config()
@@ -122,4 +127,65 @@ async def get_job(job_id: int):
         raise
     except Exception as e:
         logger.error("Error getting job", job_id=job_id, error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.get("/api/deployments")
+async def list_deployments(
+    status: Optional[str] = Query(None, description="Filter by deployment status"),
+    limit: Optional[int] = Query(100, ge=1, le=1000, description="Maximum number of deployments to return")
+):
+    """
+    List all deployments or filter by status
+
+    Query Parameters:
+    - status: Optional filter by DeploymentStatus (pending, in_progress, successful, failed, superseded)
+    - limit: Maximum number of deployments to return (default: 100, max: 1000)
+    """
+    try:
+        deployment_status = None
+        if status:
+            # Validate status
+            try:
+                deployment_status = DeploymentStatus(status.lower())
+            except ValueError:
+                valid_statuses = [s.value for s in DeploymentStatus]
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}"
+                )
+
+        deployments = dashboard_service.get_deployments(
+            status=deployment_status,
+            limit=limit
+        )
+
+        return {
+            "deployments": deployments,
+            "count": len(deployments),
+            "filter": {"status": status} if status else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error listing deployments", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.get("/api/deployments/rings")
+async def get_deployment_rings():
+    """
+    Get deployment status grouped by ring
+
+    Returns deployment information organized by deployment rings,
+    including device counts and success/failure statistics for each ring.
+    """
+    try:
+        ring_status = dashboard_service.get_deployment_ring_status()
+
+        return ring_status
+
+    except Exception as e:
+        logger.error("Error getting deployment ring status", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
