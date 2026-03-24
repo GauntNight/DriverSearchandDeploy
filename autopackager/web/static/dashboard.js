@@ -298,7 +298,7 @@ class DashboardApp {
      */
     renderActivityItem(item) {
         const type = item.type;
-        const icon = type === 'job' ? 'J' : 'D';
+        const icon = type === 'job' ? '📋' : '🚀';
         const iconClass = type === 'job' ? 'type-job' : 'type-deployment';
         const timestamp = this.formatDateTime(item.timestamp);
 
@@ -306,16 +306,29 @@ class DashboardApp {
         let description = '';
 
         if (type === 'job') {
-            title = `Job #${item.id} - ${item.state}`;
-            description = `${item.manufacturer || 'Unknown'} ${item.model || 'Unknown'}`;
-            if (item.device_id) {
-                description += ` (${item.device_id})`;
+            const state = this.getJobStatusDisplay(item.state);
+            title = `Job #${item.id} - ${state}`;
+
+            const softwareTitle = item.title || 'Unknown Software';
+            const vendor = item.vendor || 'Unknown Vendor';
+            description = `${vendor} - ${softwareTitle}`;
+
+            if (item.job_type) {
+                description += ` (${item.job_type})`;
             }
         } else if (type === 'deployment') {
-            title = `Deployment #${item.id} - ${item.status}`;
-            description = `Package: ${item.package_name || 'Unknown'} | Ring: ${item.ring_name || 'Unknown'}`;
-            if (item.device_count) {
-                description += ` | Devices: ${item.device_count}`;
+            const statusDisplay = item.status.charAt(0).toUpperCase() + item.status.slice(1);
+            title = `Deployment #${item.id} - ${statusDisplay}`;
+
+            const packageInfo = item.package_name
+                ? `${item.package_name} ${item.package_version || ''}`.trim()
+                : 'Unknown Package';
+            const ringName = item.ring_name || 'Unknown Ring';
+            description = `Package: ${packageInfo} | Ring: ${ringName}`;
+
+            const totalDevices = (item.successful_installs || 0) + (item.failed_installs || 0);
+            if (totalDevices > 0) {
+                description += ` | Devices: ${totalDevices} (✓${item.successful_installs || 0} ✗${item.failed_installs || 0})`;
             }
         }
 
