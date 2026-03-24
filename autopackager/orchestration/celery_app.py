@@ -3,6 +3,7 @@
 import sys
 
 from celery import Celery
+from celery.schedules import schedule
 from autopackager.utils.config import get_config
 
 # Load configuration
@@ -35,6 +36,21 @@ celery_app.conf.update(
 # and thread-based soft-timeout signals (SIGUSR1) which are also unsupported on Windows.
 if sys.platform == 'win32':
     celery_app.conf.update(worker_pool='solo')
+
+# Configure Celery Beat Schedule for periodic tasks
+status_polling_config = config.get('status_polling', {})
+polling_enabled = status_polling_config.get('enabled', True)
+polling_interval_minutes = status_polling_config.get('polling_interval_minutes', 15)
+
+# Only add beat schedule if status polling is enabled
+if polling_enabled:
+    celery_app.conf.beat_schedule = {
+        'poll-deployment-status': {
+            'task': 'autopackager.poll_deployment_status',
+            'schedule': schedule(run_every=polling_interval_minutes * 60.0),  # Convert minutes to seconds
+            'options': {'queue': 'default'}
+        },
+    }
 
 # Auto-discover tasks
 celery_app.autodiscover_tasks(['autopackager.orchestration'])

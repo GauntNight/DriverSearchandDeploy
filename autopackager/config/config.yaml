@@ -119,3 +119,10 @@ jobs:
   max_retries: 3
   retry_delay_seconds: 300
   concurrent_jobs: 5
+
+# Status Polling Configuration
+status_polling:
+  enabled: true
+  polling_interval_minutes: 15
+  max_devices_per_poll: 1000
+  retry_on_rate_limit: true

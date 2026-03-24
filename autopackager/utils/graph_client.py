@@ -438,6 +438,135 @@ class GraphAPIClient:
         logger.info("Listing driver update profiles")
         return self._beta_get('deviceManagement/windowsDriverUpdateProfiles')
 
+    # ---------------------------------------------------------------------------
+    # Deployment Status (Win32 app install status tracking)
+    # ---------------------------------------------------------------------------
+
+    def get_app_install_summary(self, app_id):
+        """Get install summary for a Win32 app.
+
+        Returns aggregate counts of install status across all targeted devices:
+        - installedDeviceCount
+        - failedDeviceCount
+        - pendingInstallDeviceCount
+        - notApplicableDeviceCount
+
+        Args:
+            app_id: The Intune mobile app ID.
+
+        Returns:
+            Install summary JSON with device counts by status.
+        """
+        logger.info("Fetching app install summary", app_id=app_id)
+        return self.get(f"deviceAppManagement/mobileApps/{app_id}/installSummary")
+
+    def get_app_device_statuses(self, app_id):
+        """Get per-device install status for a Win32 app with pagination support.
+
+        Returns detailed install status for each device that has been targeted:
+        - deviceName
+        - deviceId
+        - installState (installed, failed, pending, etc.)
+        - errorCode
+        - lastSyncDateTime
+
+        Args:
+            app_id: The Intune mobile app ID.
+
+        Returns:
+            List of device status objects aggregated from all pages.
+        """
+        logger.info("Fetching app device statuses", app_id=app_id)
+
+        all_statuses = []
+        next_link = f"deviceAppManagement/mobileApps/{app_id}/deviceStatuses"
+
+        while next_link:
+            if next_link.startswith(self.graph_endpoint):
+                # nextLink is a full URL, make direct request
+                logger.debug("Following pagination link", url=next_link)
+                response = requests.get(next_link, headers=self._get_headers())
+                self._raise_with_details(response)
+                data = response.json()
+            else:
+                # First request or relative endpoint
+                data = self.get(next_link)
+
+            # Collect results from this page
+            statuses = data.get('value', [])
+            all_statuses.extend(statuses)
+
+            # Check for next page
+            next_link = data.get('@odata.nextLink')
+
+            if next_link:
+                logger.debug("Fetched page", statuses_count=len(statuses), total_so_far=len(all_statuses))
+
+        logger.info("Fetched all device statuses", app_id=app_id, total_devices=len(all_statuses))
+        return all_statuses
+
+    def _parse_install_statuses(self, device_statuses):
+        """Parse device status list into aggregated counts and failed device details.
+
+        Aggregates install status from device-level responses into summary counts
+        for tracking deployment progress. Extracts device details for failed
+        installations to enable troubleshooting.
+
+        Args:
+            device_statuses: List of device status objects from get_app_device_statuses().
+                Each object contains deviceName, deviceId, installState, errorCode, etc.
+
+        Returns:
+            Dict with keys:
+                - installed: Count of devices with successful install
+                - failed: Count of devices with failed install
+                - pending: Count of devices with pending install
+                - not_applicable: Count of devices where app is not applicable
+                - failed_device_details: List of dicts with device info for failed installs
+        """
+        counts = {
+            'installed': 0,
+            'failed': 0,
+            'pending': 0,
+            'not_applicable': 0,
+            'failed_device_details': []
+        }
+
+        for status in device_statuses:
+            install_state = status.get('installState', '').lower()
+
+            if install_state in ('installed', 'success'):
+                counts['installed'] += 1
+            elif install_state in ('failed', 'error'):
+                counts['failed'] += 1
+                # Capture failed device details for troubleshooting
+                counts['failed_device_details'].append({
+                    'device_name': status.get('deviceName'),
+                    'device_id': status.get('deviceId'),
+                    'error_code': status.get('errorCode'),
+                    'install_state': status.get('installState'),
+                    'last_sync': status.get('lastSyncDateTime')
+                })
+            elif install_state in ('pending', 'downloading', 'notinstalled'):
+                counts['pending'] += 1
+            elif install_state in ('notapplicable', 'not_applicable'):
+                counts['not_applicable'] += 1
+            else:
+                # Unknown states treated as pending for safety
+                logger.debug("Unknown install state", state=install_state, device_id=status.get('deviceId'))
+                counts['pending'] += 1
+
+        logger.debug(
+            "Parsed install statuses",
+            total_devices=len(device_statuses),
+            installed=counts['installed'],
+            failed=counts['failed'],
+            pending=counts['pending'],
+            not_applicable=counts['not_applicable']
+        )
+
+        return counts
+
 
 def _expected_blocks(file_size):
     import math
