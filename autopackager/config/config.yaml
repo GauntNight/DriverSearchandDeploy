@@ -57,6 +57,11 @@ discovery_schedule:
   notification_email: "${DISCOVERY_NOTIFICATION_EMAIL}"
   retry_on_failure: true
   max_retries: 3
+  monitored_models:
+    - vendor: "Dell"
+      model: "Latitude 7400"
+      driver_type: "all"
+      current_version: "1.0.0"
 
 # Deployment Rings
 deployment_rings:
