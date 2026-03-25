@@ -328,6 +328,7 @@ DriverSearchandDeploy/
 ### Reference Documentation
 - **Automated Setup Guide**: [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) — script options and flags
 - **Manual Setup Guide**: [SETUP.md](SETUP.md) — detailed manual installation reference
+- **Pipeline Lifecycle**: [docs/PIPELINE_LIFECYCLE.md](docs/PIPELINE_LIFECYCLE.md) — job orchestration state machine and task flow
 - **Technical Whitepaper**: [automated_software_packaging_whitepaper.md](automated_software_packaging_whitepaper.md)
 - **PR/FAQ**: [PRFAQ_ Project AutoPackager.md](PRFAQ_%20Project%20AutoPackager.md)
 - **Windows App Packaging**: [ch11-windows-app-packaging-reference.md](ch11-windows-app-packaging-reference.md) — Win32 app packaging patterns and best practices

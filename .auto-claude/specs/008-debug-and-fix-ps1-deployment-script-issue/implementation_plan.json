@@ -1,0 +1,283 @@
+{
+  "feature": "Debug and Fix PS1 Deployment Script Issues",
+  "workflow_type": "feature",
+  "workflow_rationale": "Multi-file bug fix across 5 interconnected PowerShell/batch installation scripts. Feature workflow enables structured phasing: critical root-cause fixes first (stale references, parameter conflicts), then improvements (deprecation, diagnostics), then integration verification. All changes are in the 'main' service but span the entire installation pipeline.",
+  "phases": [
+    {
+      "id": "phase-1-critical-fixes",
+      "name": "Critical Script Bug Fixes",
+      "type": "implementation",
+      "description": "Fix the two root-cause bugs directly preventing successful installation: stale script reference in validate-windows.bat (directing users to wrong installer) and $Args parameter naming conflict in azure-setup.ps1 (causing StrictMode failures when the script is invoked from Install-AutoPackager.ps1)",
+      "depends_on": [],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-1-1",
+          "description": "Fix validate-windows.bat: update lines 96 and 99 to reference Install-AutoPackager.ps1 instead of legacy setup.ps1 -UseSQLite. Line 96 should become 'echo   .\\Install-AutoPackager.ps1' and line 99 should become 'echo   powershell -ExecutionPolicy Bypass -File .\\Install-AutoPackager.ps1'. The -UseSQLite flag is not needed since Install-AutoPackager.ps1 uses SQLite by default.",
+          "service": "main",
+          "files_to_modify": [
+            "validate-windows.bat"
+          ],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"if (Select-String -Path 'validate-windows.bat' -Pattern 'setup\\.ps1' -Quiet) { Write-Host 'FAIL: stale setup.ps1 reference found'; exit 1 } else { Write-Host 'PASS: no stale references' }\"",
+            "expected": "PASS: no stale references"
+          },
+          "status": "completed",
+          "notes": "Simple text replacement. Line 96: '.\\setup.ps1 -UseSQLite' -> '.\\Install-AutoPackager.ps1'. Line 99: 'powershell -ExecutionPolicy Bypass -File .\\setup.ps1 -UseSQLite' -> 'powershell -ExecutionPolicy Bypass -File .\\Install-AutoPackager.ps1'. Also update line 95 text from 'Next step: Run the setup script:' to 'Next step: Run the installer:' for clarity."
+        },
+        {
+          "id": "subtask-1-2",
+          "description": "Fix azure-setup.ps1: (1) Rename $Args parameter to $AzArgs in Invoke-Az function (lines 87-93) and Invoke-AzJson function (lines 95-99) — 5 occurrences total. (2) Add $scriptDir and Set-Location for directory safety. (3) Add EAP save/restore in Invoke-Az around the 'az' native command call, following the pattern from Install-AutoPackager.ps1 lines 123-128.",
+          "service": "main",
+          "files_to_modify": [
+            "azure-setup.ps1"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "Install-AutoPackager.ps1"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"$e=$null; $null=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'azure-setup.ps1'),[ref]$null,[ref]$e); if($e.Count -eq 0){Write-Host 'PASS: syntax valid'}else{$e|ForEach-Object{Write-Host $_.Message};exit 1}\"",
+            "expected": "PASS: syntax valid"
+          },
+          "status": "completed",
+          "notes": "Renames needed: (1) line 87 param([string[]]$Args) -> param([string[]]$AzArgs), (2) line 88 & az @Args -> & az @AzArgs, (3) line 90 $Args in throw message -> $AzArgs, (4) line 96 param([string[]]$Args) -> param([string[]]$AzArgs), (5) line 97 $Args in expression -> $AzArgs. Add after line 74: '$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path' and 'Set-Location $scriptDir'. In Invoke-Az, wrap the '& az @AzArgs 2>&1' call with $savedEAP save/restore pattern."
+        }
+      ]
+    },
+    {
+      "id": "phase-2-improvements",
+      "name": "Script Deprecation and Enhancement",
+      "type": "implementation",
+      "description": "Deprecate legacy setup.ps1 with a clear redirect banner, enhance Install-AutoPackager.bat with better error context for common failures, and add a diagnostic summary tracking system to Install-AutoPackager.ps1 so users can identify which installation step failed",
+      "depends_on": [
+        "phase-1-critical-fixes"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Add deprecation banner to setup.ps1: insert a prominent warning immediately after the param block (after line 8) that displays in red/yellow text, explains that this script is deprecated in favor of Install-AutoPackager.ps1, and includes a 'Continue anyway? (Y/N)' prompt for backward compatibility. If user chooses N, exit with message showing the correct command to run.",
+          "service": "main",
+          "files_to_modify": [
+            "setup.ps1"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "Install-AutoPackager.ps1"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"$c=Get-Content 'setup.ps1' -Raw; if($c -match 'DEPRECATED' -and $c -match 'Install-AutoPackager'){Write-Host 'PASS: deprecation banner present'}else{Write-Host 'FAIL: missing deprecation banner';exit 1}\"",
+            "expected": "PASS: deprecation banner present"
+          },
+          "status": "completed",
+          "notes": "Insert after line 8 (after param block, before the banner). Use Write-Host with red/yellow colors. Text should say: 'WARNING: This script is DEPRECATED. Please use Install-AutoPackager.ps1 instead.' followed by 'Install-AutoPackager.ps1 includes all features of this script plus: automatic Python/Git installation, Azure setup, UAC elevation, and better error handling.' Then Read-Host 'Continue with legacy setup anyway? (Y/N)'. If not Y, show 'Run instead: .\\Install-AutoPackager.bat' and exit 0."
+        },
+        {
+          "id": "subtask-2-2",
+          "description": "Enhance Install-AutoPackager.bat: (1) Add echo showing which arguments are being passed to the PS1 script for debugging. (2) After the PowerShell call, add specific error messages for common ERRORLEVEL values. (3) Add a check for Group Policy blocking ExecutionPolicy Bypass — detect by checking if powershell returns specific error code or text.",
+          "service": "main",
+          "files_to_modify": [
+            "Install-AutoPackager.bat"
+          ],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"$c=Get-Content 'Install-AutoPackager.bat' -Raw; if($c -match 'Install-AutoPackager\\.ps1' -and $c -match 'ERRORLEVEL'){Write-Host 'PASS: BAT file has correct reference and error handling'}else{Write-Host 'FAIL';exit 1}\"",
+            "expected": "PASS: BAT file has correct reference and error handling"
+          },
+          "status": "completed",
+          "notes": "Current BAT already passes %* correctly and has basic ERRORLEVEL check. Enhancements: (1) Before the powershell call, add 'if not \"%*\"==\"\" echo  Arguments: %*' for debugging. (2) Expand error handling block to check specific error codes: ERRORLEVEL 1 = general failure, suggest running as admin. (3) Add a pre-flight check: 'powershell -NoProfile -Command \"Get-ExecutionPolicy -List\"' to detect if Group Policy restricts execution, and warn the user before attempting the install."
+        },
+        {
+          "id": "subtask-2-3",
+          "description": "Add diagnostic summary section to Install-AutoPackager.ps1: (1) Create a $diagnostics ordered hashtable near the top (after helpers section, around line 162). (2) After each major step completion, record status in $diagnostics. (3) Before the final summary section (before line 670), add a diagnostic report that shows per-step pass/fail status with remediation hints for failures.",
+          "service": "main",
+          "files_to_modify": [
+            "Install-AutoPackager.ps1"
+          ],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"$e=$null; $null=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'Install-AutoPackager.ps1'),[ref]$null,[ref]$e); if($e.Count -eq 0){Write-Host 'PASS: syntax valid'}else{$e|ForEach-Object{Write-Host $_.Message};exit 1}\"",
+            "expected": "PASS: syntax valid"
+          },
+          "status": "completed",
+          "notes": "Diagnostic tracking approach: Add '$diagnostics = [ordered]@{}' after the helpers section. After each step, add entries like: $diagnostics['Python'] = @{Status='OK';Detail='Python 3.12'}. Steps to track: Python, Git, Venv, Dependencies, Redis, IntuneWinAppUtil, Directories, Database, LLM Key, Azure, .env, Helper Scripts. Before final summary, add Write-Banner 'Installation Diagnostics' and loop through $diagnostics showing green OK or red FAIL for each step. If any failed, show 'For troubleshooting, see WINDOWS_TESTING.md'."
+        }
+      ]
+    },
+    {
+      "id": "phase-3-integration",
+      "name": "Integration and Consistency Verification",
+      "type": "integration",
+      "description": "Verify all modified scripts parse without errors, cross-references are correct, venv paths are consistent across all files, and the installation pipeline scripts coordinate properly",
+      "depends_on": [
+        "phase-2-improvements"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-3-1",
+          "description": "Final integration verification: (1) Run PowerShell syntax checks on all 3 PS1 files to confirm no parse errors. (2) Verify validate-windows.bat references Install-AutoPackager.ps1. (3) Verify Install-AutoPackager.bat references Install-AutoPackager.ps1. (4) Verify no $Args parameter declarations remain in azure-setup.ps1 Invoke-Az/Invoke-AzJson. (5) Verify setup.ps1 contains deprecation banner. (6) Verify all venv path references are consistent ('venv' not '.venv'). (7) Verify Install-AutoPackager.ps1 contains diagnostic tracking code.",
+          "service": "main",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "e2e",
+            "steps": [
+              "Run PowerShell parse check on Install-AutoPackager.ps1 - must pass with no errors",
+              "Run PowerShell parse check on azure-setup.ps1 - must pass with no errors",
+              "Run PowerShell parse check on setup.ps1 - must pass with no errors",
+              "Verify validate-windows.bat contains 'Install-AutoPackager.ps1' and not 'setup.ps1'",
+              "Verify Install-AutoPackager.bat contains 'Install-AutoPackager.ps1'",
+              "Verify azure-setup.ps1 uses $AzArgs (not $Args) in function parameters",
+              "Verify setup.ps1 contains DEPRECATED text",
+              "Verify Install-AutoPackager.ps1 contains $diagnostics tracking variable",
+              "Verify all scripts reference 'venv' consistently (not '.venv')"
+            ]
+          },
+          "status": "completed",
+          "notes": "All 9 verification checks passed: (1-3) All 3 PS1 files have valid syntax. (4) validate-windows.bat references Install-AutoPackager.ps1. (5) Install-AutoPackager.bat references Install-AutoPackager.ps1. (6) azure-setup.ps1 uses $AzArgs. (7) setup.ps1 contains DEPRECATED. (8) Install-AutoPackager.ps1 has $diagnostics (24 occurrences). (9) No .venv references in any script."
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_phases": 3,
+    "total_subtasks": 6,
+    "services_involved": [
+      "main"
+    ],
+    "parallelism": {
+      "max_parallel_phases": 1,
+      "parallel_groups": [],
+      "recommended_workers": 1,
+      "speedup_estimate": "Sequential execution - single service with dependent phases. No parallelism benefit."
+    },
+    "startup_command": "source auto-claude/.venv/bin/activate && python auto-claude/run.py --spec 008 --parallel 1"
+  },
+  "verification_strategy": {
+    "risk_level": "medium",
+    "skip_validation": false,
+    "test_creation_phase": "post_implementation",
+    "test_types_required": [
+      "unit",
+      "integration"
+    ],
+    "security_scanning_required": false,
+    "staging_deployment_required": false,
+    "acceptance_criteria": [
+      "All 3 PS1 scripts parse without syntax errors under PowerShell 5.1+",
+      "validate-windows.bat references Install-AutoPackager.ps1 (zero occurrences of setup.ps1)",
+      "azure-setup.ps1 uses $AzArgs (not $Args) in Invoke-Az and Invoke-AzJson functions",
+      "azure-setup.ps1 includes Set-Location $scriptDir for directory safety",
+      "setup.ps1 shows DEPRECATED warning banner before any functional code",
+      "Install-AutoPackager.ps1 provides per-step diagnostic summary on completion",
+      "Install-AutoPackager.bat has enhanced error context for common failures",
+      "All scripts use consistent venv path ('venv' not '.venv')",
+      "Existing functionality preserved - backward compatibility maintained"
+    ],
+    "verification_steps": [
+      {
+        "name": "PS1 Syntax Validation",
+        "command": "powershell -NoProfile -Command \"foreach($f in @('Install-AutoPackager.ps1','azure-setup.ps1','setup.ps1')){$e=$null;$null=[System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$null,[ref]$e);if($e.Count -gt 0){Write-Host \"FAIL: $f\";$e|ForEach-Object{$_.Message};exit 1}else{Write-Host \"OK: $f\"}};Write-Host 'All scripts valid'\"",
+        "expected_outcome": "All scripts valid",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Stale Reference Check",
+        "command": "powershell -NoProfile -Command \"if(Select-String -Path 'validate-windows.bat' -Pattern 'setup\\.ps1' -Quiet){Write-Host 'FAIL';exit 1}else{Write-Host 'PASS: no stale references'}\"",
+        "expected_outcome": "PASS: no stale references",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "$Args Conflict Check",
+        "command": "powershell -NoProfile -Command \"if(Select-String -Path 'azure-setup.ps1' -Pattern 'param\\(\\[string\\[\\]\\]\\$Args\\)' -Quiet){Write-Host 'FAIL: $Args still used';exit 1}else{Write-Host 'PASS: no $Args conflict'}\"",
+        "expected_outcome": "PASS: no $Args conflict",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Deprecation Banner Check",
+        "command": "powershell -NoProfile -Command \"if(Select-String -Path 'setup.ps1' -Pattern 'DEPRECATED' -Quiet){Write-Host 'PASS'}else{Write-Host 'FAIL';exit 1}\"",
+        "expected_outcome": "PASS",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Diagnostic Tracking Check",
+        "command": "powershell -NoProfile -Command \"if(Select-String -Path 'Install-AutoPackager.ps1' -Pattern 'diagnostics' -Quiet){Write-Host 'PASS'}else{Write-Host 'FAIL';exit 1}\"",
+        "expected_outcome": "PASS",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      }
+    ],
+    "reasoning": "Medium risk change requires syntax validation and automated checks for all script modifications. Security scan not needed since no credentials handling is being changed. Staging not needed since changes are to installation scripts, not production runtime code."
+  },
+  "qa_acceptance": {
+    "unit_tests": {
+      "required": true,
+      "commands": [
+        "powershell -NoProfile -Command \"foreach($f in @('Install-AutoPackager.ps1','azure-setup.ps1','setup.ps1')){$e=$null;$null=[System.Management.Automation.Language.Parser]::ParseFile($f,[ref]$null,[ref]$e);if($e.Count -gt 0){$e|ForEach-Object{$_.Message};exit 1}};Write-Host 'All OK'\""
+      ],
+      "minimum_coverage": null
+    },
+    "integration_tests": {
+      "required": true,
+      "commands": [
+        "powershell -NoProfile -Command \"if(Select-String -Path 'validate-windows.bat' -Pattern 'setup\\.ps1' -Quiet){exit 1}else{Write-Host 'OK: no stale refs'}\"",
+        "powershell -NoProfile -Command \"if(Select-String -Path 'azure-setup.ps1' -Pattern 'param\\(\\[string\\[\\]\\]\\$Args\\)' -Quiet){exit 1}else{Write-Host 'OK: no Args conflict'}\""
+      ],
+      "services_to_test": [
+        "main"
+      ]
+    },
+    "e2e_tests": {
+      "required": false,
+      "commands": [],
+      "flows": [
+        "fresh-install-skip-azure: Run Install-AutoPackager.bat, verify it completes",
+        "validation-then-install: Run validate-windows.bat, verify it points to Install-AutoPackager.ps1",
+        "legacy-script-redirect: Run setup.ps1, verify deprecation banner shows",
+        "azure-setup-standalone: Run azure-setup.ps1 with test params, verify no parameter binding errors"
+      ]
+    },
+    "browser_verification": {
+      "required": false,
+      "pages": []
+    },
+    "database_verification": {
+      "required": false,
+      "checks": []
+    }
+  },
+  "qa_signoff": null,
+  "status": "human_review",
+  "planStatus": "review",
+  "xstateState": "human_review",
+  "executionPhase": "complete",
+  "updated_at": "2026-03-24T05:09:04.856Z",
+  "lastEvent": {
+    "eventId": "b70b2e6b-26e8-4049-a730-5da001e1e053",
+    "sequence": 0,
+    "type": "PLANNING_COMPLETE",
+    "timestamp": "2026-03-24T01:16:17.170472+00:00"
+  },
+  "reviewReason": "completed"
+}

@@ -93,9 +93,9 @@ echo.
 echo Your system is ready for AutoPackager setup!
 echo.
 echo Next step: Run the setup script:
-echo   .\setup.ps1 -UseSQLite
+echo   .\Install-AutoPackager.ps1
 echo.
 echo Or if you get execution policy errors:
-echo   powershell -ExecutionPolicy Bypass -File .\setup.ps1 -UseSQLite
+echo   powershell -ExecutionPolicy Bypass -File .\Install-AutoPackager.ps1
 echo.
 pause
