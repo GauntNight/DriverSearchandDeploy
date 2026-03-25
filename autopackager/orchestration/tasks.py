@@ -309,3 +309,204 @@ def poll_deployment_status(self):
 
         # Retry with exponential backoff (2 minutes initial delay)
         raise self.retry(exc=e, countdown=120, max_retries=3)
+
+
+@celery_app.task(bind=True, name='autopackager.continuous_catalog_discovery')
+def continuous_catalog_discovery(self):
+    """Continuous catalog discovery - scan OEM catalogs for new driver versions"""
+    logger.info("Starting continuous catalog discovery")
+
+    try:
+        # Import here to avoid circular dependencies
+        from autopackager.agents.discovery import DiscoveryAgent
+        from autopackager.models.discovery_run import DiscoveryRun
+        from autopackager.models.job import Job
+        from autopackager.utils.database import db_session_scope
+        from autopackager.utils.config import get_config
+        from datetime import datetime
+
+        config = get_config()
+        discovery_config = config.get('discovery_schedule', {})
+
+        # Check if discovery is enabled
+        if not discovery_config.get('enabled', False):
+            logger.info("Continuous catalog discovery is disabled in config")
+            return {'status': 'disabled'}
+
+        # Create discovery run record
+        with db_session_scope() as session:
+            discovery_run = DiscoveryRun(
+                started_at=datetime.utcnow(),
+                catalogs_scanned=0,
+                new_versions_found=0,
+                jobs_created=0,
+                oem_results={}
+            )
+            session.add(discovery_run)
+            session.flush()
+            run_id = discovery_run.id
+
+        agent = DiscoveryAgent()
+        catalogs_scanned = 0
+        new_versions_found = 0
+        jobs_created = 0
+        oem_results = {}
+
+        # Get monitored models from config
+        monitored_models = discovery_config.get('monitored_models', [])
+
+        if not monitored_models:
+            logger.warning("No monitored_models configured in discovery_schedule")
+            # Update discovery run with warning
+            with db_session_scope() as session:
+                run = session.query(DiscoveryRun).filter(DiscoveryRun.id == run_id).first()
+                if run:
+                    run.completed_at = datetime.utcnow()
+                    run.error_message = "No monitored_models configured"
+            return {'status': 'no_models_configured', 'run_id': run_id}
+
+        # Scan each monitored model
+        for model_config in monitored_models:
+            vendor = model_config.get('vendor')
+            hardware_model = model_config.get('model')
+            driver_type = model_config.get('driver_type', 'all')
+
+            if not vendor or not hardware_model:
+                logger.warning("Invalid model config - missing vendor or model", config=model_config)
+                continue
+
+            logger.info(
+                "Scanning catalog for model",
+                vendor=vendor,
+                hardware_model=hardware_model,
+                driver_type=driver_type
+            )
+
+            try:
+                # Create a dummy job object for discovery
+                dummy_job = Job(
+                    id=0,  # Dummy ID
+                    job_type=JobType.DRIVER_UPDATE,
+                    software_title=f"{vendor} {hardware_model} Driver",
+                    vendor=vendor,
+                    hardware_model=hardware_model,
+                    driver_type=driver_type,
+                    current_version=model_config.get('current_version'),
+                    state=JobState.PENDING
+                )
+
+                # Execute discovery
+                result = agent.discover(dummy_job)
+                catalogs_scanned += 1
+
+                # Track OEM-specific results
+                if vendor not in oem_results:
+                    oem_results[vendor] = {'scanned': 0, 'updates_found': 0}
+                oem_results[vendor]['scanned'] += 1
+
+                if result.get('update_available'):
+                    new_versions_found += 1
+                    oem_results[vendor]['updates_found'] += 1
+
+                    target_version = result.get('latest_version')
+                    download_url = result.get('download_url')
+
+                    logger.info(
+                        "New driver version found",
+                        vendor=vendor,
+                        model=hardware_model,
+                        version=target_version
+                    )
+
+                    # Check for duplicate jobs
+                    with db_session_scope() as session:
+                        existing_job = session.query(Job).filter(
+                            Job.vendor == vendor,
+                            Job.hardware_model == hardware_model,
+                            Job.target_version == target_version,
+                            Job.state.notin_([JobState.FAILED, JobState.CANCELLED])
+                        ).first()
+
+                        if existing_job:
+                            logger.info(
+                                "Skipping duplicate job",
+                                vendor=vendor,
+                                model=hardware_model,
+                                version=target_version,
+                                existing_job_id=existing_job.id
+                            )
+                        else:
+                            # Create new packaging job
+                            create_packaging_job.delay(
+                                job_type=JobType.DRIVER_UPDATE.value,
+                                software_title=f"{vendor} {hardware_model} Driver",
+                                vendor=vendor,
+                                hardware_model=hardware_model,
+                                driver_type=driver_type,
+                                current_version=model_config.get('current_version'),
+                                metadata={
+                                    'target_version': target_version,
+                                    'download_url': download_url,
+                                    'release_notes': result.get('release_notes'),
+                                    'discovered_by': 'continuous_catalog_discovery'
+                                }
+                            )
+                            jobs_created += 1
+                            logger.info(
+                                "Created packaging job for new driver version",
+                                vendor=vendor,
+                                model=hardware_model,
+                                version=target_version
+                            )
+
+            except Exception as e:
+                logger.error(
+                    "Failed to discover driver for model",
+                    vendor=vendor,
+                    model=hardware_model,
+                    error=str(e)
+                )
+                # Continue with next model
+                continue
+
+        # Update discovery run with results
+        with db_session_scope() as session:
+            run = session.query(DiscoveryRun).filter(DiscoveryRun.id == run_id).first()
+            if run:
+                run.completed_at = datetime.utcnow()
+                run.catalogs_scanned = catalogs_scanned
+                run.new_versions_found = new_versions_found
+                run.jobs_created = jobs_created
+                run.oem_results = oem_results
+
+        logger.info(
+            "Continuous catalog discovery completed",
+            catalogs_scanned=catalogs_scanned,
+            new_versions_found=new_versions_found,
+            jobs_created=jobs_created,
+            oem_results=oem_results
+        )
+
+        return {
+            'run_id': run_id,
+            'catalogs_scanned': catalogs_scanned,
+            'new_versions_found': new_versions_found,
+            'jobs_created': jobs_created,
+            'oem_results': oem_results
+        }
+
+    except Exception as e:
+        logger.error("Continuous catalog discovery failed", error=str(e))
+
+        # Try to update discovery run with error
+        try:
+            with db_session_scope() as session:
+                run = session.query(DiscoveryRun).filter(DiscoveryRun.id == run_id).first()
+                if run:
+                    run.completed_at = datetime.utcnow()
+                    run.error_message = str(e)
+        except Exception:
+            pass
+
+        # Retry with exponential backoff (5 minutes initial delay)
+        raise self.retry(exc=e, countdown=300, max_retries=3)
