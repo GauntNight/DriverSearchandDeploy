@@ -1,0 +1,110 @@
+# AutoPackager Configuration
+
+# Database Configuration
+database:
+  type: "postgresql"
+  host: "localhost"
+  port: 5432
+  name: "autopackager"
+  user: "autopackager_user"
+  password: "${DB_PASSWORD}"
+
+# Redis Configuration (for Celery)
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+
+# Microsoft Intune / Graph API
+intune:
+  tenant_id: "${AZURE_TENANT_ID}"
+  client_id: "${AZURE_CLIENT_ID}"
+  client_secret: "${AZURE_CLIENT_SECRET}"
+  graph_api_version: "v1.0"
+  graph_endpoint: "https://graph.microsoft.com"
+
+# LLM Configuration
+llm:
+  provider: "openai"  # openai, azure_openai, or anthropic
+  api_key: "${LLM_API_KEY}"
+  model: "gpt-4-turbo-preview"
+  temperature: 0.2
+  max_tokens: 4096
+
+# OEM Driver Catalogs
+oem_catalogs:
+  dell:
+    enabled: true
+    catalog_url: "https://downloads.dell.com/catalog/DriverPackCatalog.cab"
+    catalog_path: "data/catalogs/dell"
+  hp:
+    enabled: true
+    catalog_url: "https://hpia.hpcloud.hp.com/ref/platformlist.cab"
+    catalog_path: "data/catalogs/hp"
+  lenovo:
+    enabled: true
+    catalog_url: "https://download.lenovo.com/cdrt/td/catalogv2.xml"
+    catalog_path: "data/catalogs/lenovo"
+
+# Discovery Schedule Configuration
+discovery_schedule:
+  enabled: true
+  interval_hours: 24
+  catalogs:
+    - dell
+    - hp
+    - lenovo
+  notification_email: "${DISCOVERY_NOTIFICATION_EMAIL}"
+  retry_on_failure: true
+  max_retries: 3
+  monitored_models:
+    - vendor: "Dell"
+      model: "Latitude 7400"
+      driver_type: "all"
+      current_version: "1.0.0"
+
+# Deployment Rings
+deployment_rings:
+  - name: "IT Pilot"
+    ring_id: "ring0"
+    entra_group_id: "${RING0_GROUP_ID}"
+    deferral_days: 0
+  - name: "Early Adopters"
+    ring_id: "ring1"
+    entra_group_id: "${RING1_GROUP_ID}"
+    deferral_days: 3
+  - name: "Broad Deployment"
+    ring_id: "ring2"
+    entra_group_id: "${RING2_GROUP_ID}"
+    deferral_days: 7
+  - name: "Critical Systems"
+    ring_id: "ring3"
+    entra_group_id: "${RING3_GROUP_ID}"
+    deferral_days: 14
+
+# Paths
+paths:
+  downloads: "data/downloads"
+  packages: "data/packages"
+  logs: "data/logs"
+  psadt_template: "scripts/psadt"
+  intunewin_util: "tools/IntuneWinAppUtil.exe"
+
+# Testing Configuration
+testing:
+  enabled: true
+  vm_provider: "local"  # local or azure
+  snapshot_name: "clean_windows_11"
+  timeout_minutes: 30
+
+# Logging
+logging:
+  level: "INFO"
+  format: "json"
+  file: "data/logs/autopackager.log"
+
+# Job Settings
+jobs:
+  max_retries: 3
+  retry_delay_seconds: 300
+  concurrent_jobs: 5

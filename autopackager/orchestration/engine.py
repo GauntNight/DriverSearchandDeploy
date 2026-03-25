@@ -67,6 +67,51 @@ class OrchestrationEngine:
                 session.expunge(job)
             return job
 
+    def job_exists(
+        self,
+        job_type: JobType,
+        software_title: str,
+        vendor: str,
+        current_version: Optional[str] = None,
+        hardware_model: Optional[str] = None,
+        driver_type: Optional[str] = None
+    ) -> bool:
+        """Check if a duplicate job already exists in non-terminal state"""
+        with db_session_scope() as session:
+            # Exclude terminal states
+            terminal_states = [JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED]
+
+            query = session.query(Job).filter(
+                Job.job_type == job_type,
+                Job.software_title == software_title,
+                Job.vendor == vendor,
+                Job.state.notin_(terminal_states)
+            )
+
+            # Add optional filters if provided
+            if current_version is not None:
+                query = query.filter(Job.current_version == current_version)
+
+            if hardware_model is not None:
+                query = query.filter(Job.hardware_model == hardware_model)
+
+            if driver_type is not None:
+                query = query.filter(Job.driver_type == driver_type)
+
+            existing_job = query.first()
+
+            if existing_job:
+                logger.info(
+                    "Duplicate job found",
+                    existing_job_id=existing_job.id,
+                    job_type=job_type.value,
+                    software_title=software_title,
+                    vendor=vendor
+                )
+                return True
+
+            return False
+
     def update_job_state(
         self,
         job_id: int,
