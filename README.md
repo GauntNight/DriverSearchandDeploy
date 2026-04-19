@@ -335,7 +335,11 @@ DriverSearchandDeploy/
 
 ## License
 
-MIT
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+
+## Repository History Notice
+
+This repository was sanitized for public release. Git history prior to the initial public release may contain development artifacts (e.g., temporary files, debug output, or iterative changes). If you require a completely clean history, consider using [BFG Repo Cleaner](https://rtyley.github.io/bfg-repo-cleaner/) or [git filter-repo](https://github.com/newren/git-filter-repo).
 
 ## Credits
 
