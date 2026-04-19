@@ -335,7 +335,7 @@ DriverSearchandDeploy/
 
 ## License
 
-Internal use only - Enterprise project
+MIT
 
 ## Credits
 
