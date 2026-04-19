@@ -1,8 +1,8 @@
 # Windows Application Packaging & Deployment via Intune Graph API
 
 > Reference extracted from *Microsoft Intune Cookbook, 2nd Edition* (Andrew Taylor, Packt, Feb 2026), Chapter 11.
-> Structured for use with AutoPackager and Claude Code scripting workflows.
-> GitHub companion: https://github.com/PacktPublishing/Microsoft-Intune-Cookbook-Second-Edition/tree/main/Chapter-11
+> Structured for use with AutoPackager and Claude Code scripting workflows. Go buy his work - it's amazingly helpful.
+> GitHub companion: https://github.com/PacktPublishing/Microsoft-Intune-Cookbook-Second-Edition/tree/main/Chapter-11 
 
 ---
 
