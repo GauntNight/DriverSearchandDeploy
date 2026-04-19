@@ -82,3 +82,4 @@ htmlcov/
 .worktrees/
 .security-key
 logs/security/
+verification-results.txt
