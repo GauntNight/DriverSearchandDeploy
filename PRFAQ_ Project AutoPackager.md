@@ -1,7 +1,7 @@
 # PRFAQ: Project AutoPackager
 ## An Autonomous Software Packaging Factory for Enterprise Intune Deployment
 
-**Author:** Manus AI  
+**Author:** Manus AI written for Claude Code
 **Date:** January 16, 2026
 
 ---
