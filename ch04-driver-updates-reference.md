@@ -1,7 +1,7 @@
 # Windows Driver Updates Management via Intune Graph API
 
 > Reference extracted from *Microsoft Intune Cookbook, 2nd Edition* (Andrew Taylor, Packt, Feb 2026), Chapter 4.
-> Structured for use with Claude Code scripting workflows against production Intune tenants.
+> Structured for use with Claude Code scripting workflows against production Intune tenants. Go buy his work - it's amazingly helpful.
 
 ---
 
