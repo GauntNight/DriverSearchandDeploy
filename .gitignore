@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 venv/
+.venv/
 venv_test/
 env/
 ENV/
@@ -68,6 +69,7 @@ htmlcov/
 # Temporary files
 *.tmp
 *.bak
+*.backup
 *.cache
 
 # Auto Claude data directory
@@ -80,3 +82,4 @@ htmlcov/
 .worktrees/
 .security-key
 logs/security/
+verification-results.txt

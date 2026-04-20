@@ -1,7 +1,7 @@
 # Technical Whitepaper: Project AutoPackager
 ## An Autonomous Software Packaging Factory for Enterprise Intune Deployment
 
-**Author:** Manus AI  
+**Author:** AutoPackager Contributors  
 **Date:** January 16, 2026
 
 ---

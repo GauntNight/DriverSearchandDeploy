@@ -1,0 +1,81 @@
+=== AUTO-BUILD PROGRESS ===
+
+Project: Sanitize Repository for Public Git Release
+Workspace: .auto-claude/worktrees/tasks/012-sanitize-repository-for-public-git-release
+Started: 2026-04-19
+
+Workflow Type: feature
+Rationale: Task involves creating new files (LICENSE), editing multiple existing files, updating .gitignore, and untracking accidentally-committed files. Maps well to feature workflow with clear deliverables.
+
+Session 1 (Planner):
+- Completed deep codebase investigation
+- Verified all sensitive data findings from spec
+- Created implementation_plan.json (3 phases, 7 subtasks)
+- Created init.sh (environment check script)
+- Created build-progress.txt
+
+Investigation Findings:
+- 3 files contain "Manus AI" references (confirmed: __init__.py, PRFAQ, whitepaper)
+- 1 file contains "yourusername" placeholder (confirmed: index.html)
+- 32 files in .venv/ are tracked (including 26 .exe binaries and pyvenv.cfg with local username)
+- 4 files in .auto-claude/specs/ are tracked (006-* and 008-* build artifacts)
+- 1 config backup tracked (config.yaml.backup)
+- 1 ephemeral test output tracked (verification-results.txt)
+- .gitignore has venv/ but NOT .venv/ — critical gap
+- .gitignore missing *.backup pattern
+- No hardcoded API keys found in any tracked file
+- No real email addresses found in tracked source files
+- All GUIDs are obvious placeholders (00000000-..., 12345678-..., a1b2c3d4-...)
+- All secrets use ${ENV_VAR} interpolation — already clean
+- Verification reports (MANUAL_TEST_REPORT, E2E-VERIFICATION, BEAT_INTEGRATION) are clean
+- CHANGELOG.md and WINDOWS_TESTING.md are clean
+- .auto-claude-security.json and .claude_settings.json already untracked (gitignore working)
+- README License section says "MIT" and Credits says "Built with AI assistance" — needs minor expansion
+
+Phase Summary:
+- Phase 1 (Gitignore Fix and File Untracking): 2 subtasks, depends on []
+  - subtask-1-1: Update .gitignore (add .venv/, *.backup)
+  - subtask-1-2: Untrack .venv/, .auto-claude/specs, config.yaml.backup, verification-results.txt
+- Phase 2 (License Creation and Attribution Cleanup): 3 subtasks, depends on []
+  - subtask-2-1: Create MIT LICENSE file
+  - subtask-2-2: Replace "Manus AI" and fix "yourusername" URL (4 files)
+  - subtask-2-3: Update README.md license/credits, add git history advisory
+- Phase 3 (Security Audit and Final Verification): 2 subtasks, depends on [phase-1, phase-2]
+  - subtask-3-1: Comprehensive sensitive data scan
+  - subtask-3-2: Verify all untracking complete, imports and CLI still work
+
+Services Involved:
+- main: Single-service Python/FastAPI application (all source, config, docs, scripts)
+
+Parallelism Analysis:
+- Max parallel phases: 2 (Phase 1 and Phase 2 can run concurrently)
+- Recommended workers: 1 (sequential recommended for clean commit history)
+- Parallel groups: [phase-1-gitignore-untrack, phase-2-license-attribution]
+
+=== STARTUP COMMAND ===
+
+To continue building this spec, run:
+
+  source auto-claude/.venv/bin/activate && python auto-claude/run.py --spec 012 --parallel 1
+
+Example:
+  source auto-claude/.venv/bin/activate && python auto-claude/run.py --spec 012 --parallel 1
+
+=== END SESSION 1 ===
+
+=== SUBTASK 3-1: Comprehensive Sensitive Data Scan ===
+Status: PASS — All checks clean
+
+Scan Results:
+1. Hardcoded API keys (sk-, api_key=): 0 found ✓
+2. Real email addresses: 0 found ✓
+3. 'Manus AI' references outside .auto-claude/: 0 found ✓
+4. 'yourusername' references outside .auto-claude/: 0 found ✓
+5. Real tenant/client IDs (non-placeholder GUIDs): 0 found ✓
+   - All GUIDs are obvious placeholders (a1b2c3d4-..., 12345678-1234-..., 00000000-...)
+6. PII or corporate names: 0 found ✓
+7. Report files (MANUAL_TEST_REPORT, E2E-VERIFICATION, BEAT_INTEGRATION): Clean ✓
+8. CHANGELOG.md and WINDOWS_TESTING.md: Clean ✓
+9. Secrets in config/setup docs: All use ${ENV_VAR} interpolation or placeholder values ✓
+
+=== END SUBTASK 3-1 ===
