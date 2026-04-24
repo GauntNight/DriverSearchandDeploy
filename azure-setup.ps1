@@ -104,6 +104,14 @@ function Invoke-AzJson {
     return $result | ConvertFrom-Json
 }
 
+function Invoke-AzSilent {
+    param([string[]]$AzArgs)
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    & az @AzArgs --output none 2>&1 | Out-Null
+    $ErrorActionPreference = $savedEAP
+}
+
 # ------------------------------------------------------------------------------
 # BANNER
 # ------------------------------------------------------------------------------
@@ -195,12 +203,26 @@ try {
     # --allow-no-subscriptions is required for M365/Intune-only tenants that have
     # no Azure Pay-As-You-Go subscription. Without it, az login returns an empty
     # array and the script crashes trying to index $loginResult[0].
-    $loginResult = Invoke-AzJson @("login", "--tenant", $TenantId, "--allow-no-subscriptions")
+    # az login is interactive and needs special output handling - use inline EAP
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $loginResult = az login --tenant $TenantId --allow-no-subscriptions --output json 2>&1
+    $loginExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $savedEAP
+    if ($loginExitCode -ne 0) { throw "az login failed: $loginResult" }
+    $loginResult = $loginResult | ConvertFrom-Json
 
     # When there are no subscriptions the result may be an empty array or the
     # account info is in a different shape - use az ad signed-in-user show instead.
     try {
-        $accountInfo = Invoke-AzJson @("ad", "signed-in-user", "show")
+        # Inside nested try/catch fallback - use inline EAP
+        $savedEAP2 = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        $userResult = az ad signed-in-user show --output json 2>&1
+        $userExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $savedEAP2
+        if ($userExitCode -ne 0) { throw "az ad signed-in-user show failed: $userResult" }
+        $accountInfo = $userResult | ConvertFrom-Json
         $accountName = $accountInfo.userPrincipalName
     } catch {
         # Fallback: try to pull name from the login result if it has entries
@@ -219,10 +241,10 @@ try {
 # Set active tenant context. Skip if no subscriptions (Intune-only tenants).
 $savedEAP = $ErrorActionPreference
 $ErrorActionPreference = "SilentlyContinue"
-$currentSub = az account show --query id -o tsv 2>$null
+$currentSub = az account show --query id -o tsv 2>&1
 $ErrorActionPreference = $savedEAP
 if ($currentSub) {
-    az account set --subscription $currentSub 2>$null
+    Invoke-AzSilent @("account", "set", "--subscription", $currentSub)
 }
 
 # ------------------------------------------------------------------------------
@@ -329,11 +351,7 @@ foreach ($permName in $requiredPermissions) {
 # Add permissions
 Write-Info "Adding API permissions to App Registration..."
 try {
-    az ad app permission add `
-        --id $ClientId `
-        --api $graphAppId `
-        --api-permissions $permissionsToAdd `
-        --output none
+    Invoke-AzSilent (@("ad", "app", "permission", "add", "--id", $ClientId, "--api", $graphAppId, "--api-permissions") + $permissionsToAdd)
     Write-OK "API permissions added"
 } catch {
     # May fail if already added - check existing
@@ -343,7 +361,7 @@ try {
 # Grant admin consent
 Write-Info "Granting tenant-wide admin consent..."
 try {
-    az ad app permission admin-consent --id $ClientId --output none
+    Invoke-AzSilent @("ad", "app", "permission", "admin-consent", "--id", $ClientId)
     Write-OK "Admin consent granted"
 } catch {
     Write-Warn "Admin consent failed - you may need Global Admin role."
