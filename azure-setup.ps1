@@ -104,6 +104,14 @@ function Invoke-AzJson {
     return $result | ConvertFrom-Json
 }
 
+function Invoke-AzSilent {
+    param([string[]]$AzArgs)
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    & az @AzArgs --output none 2>&1 | Out-Null
+    $ErrorActionPreference = $savedEAP
+}
+
 # ------------------------------------------------------------------------------
 # BANNER
 # ------------------------------------------------------------------------------
@@ -160,7 +168,7 @@ if (-not $azAvailable) {
         exit 1
     }
 } else {
-    $azVersion = (az version --output json | ConvertFrom-Json)."azure-cli"
+    $azVersion = (Invoke-AzJson @("version"))."azure-cli"
     Write-OK "Azure CLI $azVersion"
 }
 
@@ -195,12 +203,26 @@ try {
     # --allow-no-subscriptions is required for M365/Intune-only tenants that have
     # no Azure Pay-As-You-Go subscription. Without it, az login returns an empty
     # array and the script crashes trying to index $loginResult[0].
-    $loginResult = az login --tenant $TenantId --allow-no-subscriptions --output json | ConvertFrom-Json
+    # az login is interactive and needs special output handling - use inline EAP
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $loginResult = az login --tenant $TenantId --allow-no-subscriptions --output json 2>&1
+    $loginExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $savedEAP
+    if ($loginExitCode -ne 0) { throw "az login failed: $loginResult" }
+    $loginResult = $loginResult | ConvertFrom-Json
 
     # When there are no subscriptions the result may be an empty array or the
     # account info is in a different shape - use az ad signed-in-user show instead.
     try {
-        $accountInfo = az ad signed-in-user show --output json | ConvertFrom-Json
+        # Inside nested try/catch fallback - use inline EAP
+        $savedEAP2 = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        $userResult = az ad signed-in-user show --output json 2>&1
+        $userExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $savedEAP2
+        if ($userExitCode -ne 0) { throw "az ad signed-in-user show failed: $userResult" }
+        $accountInfo = $userResult | ConvertFrom-Json
         $accountName = $accountInfo.userPrincipalName
     } catch {
         # Fallback: try to pull name from the login result if it has entries
@@ -219,10 +241,10 @@ try {
 # Set active tenant context. Skip if no subscriptions (Intune-only tenants).
 $savedEAP = $ErrorActionPreference
 $ErrorActionPreference = "SilentlyContinue"
-$currentSub = az account show --query id -o tsv 2>$null
+$currentSub = az account show --query id -o tsv 2>&1
 $ErrorActionPreference = $savedEAP
 if ($currentSub) {
-    az account set --subscription $currentSub 2>$null
+    Invoke-AzSilent @("account", "set", "--subscription", $currentSub)
 }
 
 # ------------------------------------------------------------------------------
@@ -235,29 +257,25 @@ if ($CreateAppRegistration) {
     Write-Info "Creating App Registration: $AppName"
 
     # Check if already exists
-    $existingApp = az ad app list --display-name $AppName --output json | ConvertFrom-Json
+    $existingApp = Invoke-AzJson @("ad", "app", "list", "--display-name", $AppName)
     if ($existingApp.Count -gt 0) {
         Write-Warn "App '$AppName' already exists. Using existing registration."
         $ClientId = $existingApp[0].appId
         Write-OK "App ID: $ClientId"
     } else {
-        $newApp = az ad app create --display-name $AppName --output json | ConvertFrom-Json
+        $newApp = Invoke-AzJson @("ad", "app", "create", "--display-name", $AppName)
         $ClientId = $newApp.appId
         Write-OK "Created App Registration: $AppName"
         Write-OK "Client ID: $ClientId"
 
         # Create a service principal for the app
-        $sp = az ad sp create --id $ClientId --output json | ConvertFrom-Json
+        $sp = Invoke-AzJson @("ad", "sp", "create", "--id", $ClientId)
         Write-OK "Created Service Principal"
     }
 
     # Create a client secret
     Write-Info "Creating client secret (valid for 2 years)..."
-    $secretResult = az ad app credential reset `
-        --id $ClientId `
-        --display-name "AutoPackager-Secret" `
-        --years 2 `
-        --output json | ConvertFrom-Json
+    $secretResult = Invoke-AzJson @("ad", "app", "credential", "reset", "--id", $ClientId, "--display-name", "AutoPackager-Secret", "--years", "2")
     $ClientSecret = $secretResult.password
     Write-OK "Client secret created"
     Write-Warn "SAVE THIS SECRET NOW - it cannot be retrieved again:"
@@ -281,7 +299,7 @@ if ($CreateAppRegistration) {
 
     # Validate the app exists
     try {
-        $app = az ad app show --id $ClientId --output json | ConvertFrom-Json
+        $app = Invoke-AzJson @("ad", "app", "show", "--id", $ClientId)
         Write-OK "Validated App: $($app.displayName)"
     } catch {
         Write-Fail "App Registration not found for Client ID: $ClientId"
@@ -290,10 +308,10 @@ if ($CreateAppRegistration) {
     }
 
     # Ensure service principal exists
-    $sp = az ad sp show --id $ClientId --output json 2>$null | ConvertFrom-Json
+    $sp = try { Invoke-AzJson @("ad", "sp", "show", "--id", $ClientId) } catch { $null }
     if (-not $sp) {
         Write-Info "Creating service principal for App Registration..."
-        $sp = az ad sp create --id $ClientId --output json | ConvertFrom-Json
+        $sp = Invoke-AzJson @("ad", "sp", "create", "--id", $ClientId)
         Write-OK "Service principal created"
     } else {
         Write-OK "Service principal exists"
@@ -310,7 +328,7 @@ $graphAppId = "00000003-0000-0000-c000-000000000000"
 
 # Dynamically look up permission IDs from Microsoft Graph service principal
 Write-Info "Looking up permission IDs from Microsoft Graph..."
-$graphSP = az ad sp show --id $graphAppId --output json | ConvertFrom-Json
+$graphSP = Invoke-AzJson @("ad", "sp", "show", "--id", $graphAppId)
 
 $requiredPermissions = @(
     "DeviceManagementApps.ReadWrite.All",
@@ -333,11 +351,7 @@ foreach ($permName in $requiredPermissions) {
 # Add permissions
 Write-Info "Adding API permissions to App Registration..."
 try {
-    az ad app permission add `
-        --id $ClientId `
-        --api $graphAppId `
-        --api-permissions $permissionsToAdd `
-        --output none
+    Invoke-AzSilent (@("ad", "app", "permission", "add", "--id", $ClientId, "--api", $graphAppId, "--api-permissions") + $permissionsToAdd)
     Write-OK "API permissions added"
 } catch {
     # May fail if already added - check existing
@@ -347,7 +361,7 @@ try {
 # Grant admin consent
 Write-Info "Granting tenant-wide admin consent..."
 try {
-    az ad app permission admin-consent --id $ClientId --output none
+    Invoke-AzSilent @("ad", "app", "permission", "admin-consent", "--id", $ClientId)
     Write-OK "Admin consent granted"
 } catch {
     Write-Warn "Admin consent failed - you may need Global Admin role."
@@ -356,7 +370,7 @@ try {
 
 # Verify permissions
 Write-Info "Verifying permissions..."
-$perms = az ad app permission list --id $ClientId --output json | ConvertFrom-Json
+$perms = Invoke-AzJson @("ad", "app", "permission", "list", "--id", $ClientId)
 if ($perms.Count -gt 0) {
     Write-OK "Permissions configured ($($perms.Count) permission set(s))"
 } else {
@@ -380,17 +394,13 @@ $groupIds = @{}
 
 foreach ($ring in $rings) {
     # Check if group already exists
-    $existing = az ad group list --display-name $ring.Name --output json | ConvertFrom-Json
+    $existing = Invoke-AzJson @("ad", "group", "list", "--display-name", $ring.Name)
     if ($existing.Count -gt 0) {
         $groupId = $existing[0].id
         Write-Warn "$($ring.Name) already exists (ID: $groupId)"
         $groupIds[$ring.Nickname] = $groupId
     } else {
-        $newGroup = az ad group create `
-            --display-name $ring.Name `
-            --mail-nickname $ring.Nickname `
-            --description $ring.Description `
-            --output json | ConvertFrom-Json
+        $newGroup = Invoke-AzJson @("ad", "group", "create", "--display-name", $ring.Name, "--mail-nickname", $ring.Nickname, "--description", $ring.Description)
         $groupId = $newGroup.id
         Write-OK "Created: $($ring.Name) (ID: $groupId)"
         $groupIds[$ring.Nickname] = $groupId

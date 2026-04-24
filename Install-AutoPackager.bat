@@ -26,6 +26,16 @@ echo.
 :: Change to the directory containing this batch file
 cd /d "%~dp0"
 
+:: Verify the PowerShell installer script exists alongside this batch file
+if not exist "%~dp0Install-AutoPackager.ps1" (
+    echo.
+    echo  [ERROR] Install-AutoPackager.ps1 not found in "%~dp0".
+    echo  Ensure the PowerShell script is in the same folder as this batch file.
+    echo.
+    pause
+    exit /b 1
+)
+
 :: Run the PowerShell script with execution policy bypass
 :: -NoProfile   : skip user profile (faster, avoids profile conflicts)
 :: -ExecutionPolicy Bypass : allow unsigned scripts for this session only

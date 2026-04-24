@@ -14,8 +14,8 @@ echo  =============================================
 echo.
 
 :: Activate virtualenv if present
-if exist "venv\Scripts\activate.bat" (
-    call venv\Scripts\activate.bat
+if exist ".venv\Scripts\activate.bat" (
+    call .venv\Scripts\activate.bat
 )
 
 :: Initialize the database

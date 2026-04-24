@@ -109,6 +109,8 @@ function Test-CommandExists {
     return $null -ne (Get-Command $Command -ErrorAction SilentlyContinue)
 }
 
+$script:storeStubDetected = $false
+
 function Get-PythonCommand {
     # Returns the python command name if Python 3.9+ is found, else $null.
     # Guards against the Windows Store "App Execution Alias" stub:
@@ -126,7 +128,15 @@ function Get-PythonCommand {
             $exitCode = $LASTEXITCODE
             $ErrorActionPreference = $savedEAP
 
-            if ($exitCode -ne 0) { continue }   # Store stub or broken install
+            if ($exitCode -ne 0) {
+                # Detect Windows Store stub specifically
+                $cmdPath = (Get-Command $cmd -ErrorAction SilentlyContinue).Source
+                if ($cmdPath -and $cmdPath -match 'WindowsApps') {
+                    Write-Warn "Windows Store Python stub detected for '$cmd' - skipped (disable in Settings > App execution aliases)"
+                    $script:storeStubDetected = $true
+                }
+                continue
+            }
             if ($ver -match "Python (\d+)\.(\d+)") {
                 $major = [int]$Matches[1]
                 $minor = [int]$Matches[2]
@@ -287,7 +297,8 @@ if ($SkipPython) {
     Write-OK "Verified: $ver"
 }
 
-$diagnostics["Python"] = @{ Status = "Pass"; Detail = "$(& $pythonCmd --version 2>&1)" }
+$stubInfo = if ($script:storeStubDetected) { " (Windows Store stub detected and skipped)" } else { "" }
+$diagnostics["Python"] = @{ Status = "Pass"; Detail = "$(& $pythonCmd --version 2>&1)$stubInfo" }
 
 # ------------------------------------------------------------------------------
 # STEP 2: GIT (optional but recommended)
@@ -328,11 +339,11 @@ if (Test-CommandExists git) {
 $step++
 Write-Banner "Step $step/$totalSteps  Python Virtual Environment and Dependencies"
 
-if (Test-Path ".\venv\Scripts\python.exe") {
+if (Test-Path ".\.venv\Scripts\python.exe") {
     Write-OK "Virtual environment already exists"
 } else {
-    Write-Info "Creating virtual environment in .\venv ..."
-    & $pythonCmd -m venv venv
+    Write-Info "Creating virtual environment in .\.venv ..."
+    & $pythonCmd -m venv .venv
     if ($LASTEXITCODE -ne 0) {
         Write-Fail "Failed to create virtual environment"
         exit 1
@@ -340,8 +351,8 @@ if (Test-Path ".\venv\Scripts\python.exe") {
     Write-OK "Virtual environment created"
 }
 
-$venvPython = ".\venv\Scripts\python.exe"
-$venvPip    = ".\venv\Scripts\pip.exe"
+$venvPython = ".\.venv\Scripts\python.exe"
+$venvPip    = ".\.venv\Scripts\pip.exe"
 
 Write-Info "Upgrading pip..."
 & $venvPython -m pip install --upgrade pip --quiet
@@ -354,12 +365,12 @@ if ($LASTEXITCODE -ne 0) {
     & $venvPip install -r requirements.txt --no-warn-script-location
     if ($LASTEXITCODE -ne 0) {
         Write-Fail "Dependency installation failed."
-        Write-Info "Run manually to see errors:  .\venv\Scripts\pip.exe install -r requirements.txt"
+        Write-Info "Run manually to see errors:  .\.venv\Scripts\pip.exe install -r requirements.txt"
         exit 1
     }
 }
 Write-OK "All Python dependencies installed"
-$diagnostics["VenvAndDeps"] = @{ Status = "Pass"; Detail = "venv created; dependencies installed" }
+$diagnostics["VenvAndDeps"] = @{ Status = "Pass"; Detail = ".venv created; dependencies installed" }
 
 # ------------------------------------------------------------------------------
 # STEP 4: REDIS FOR WINDOWS
@@ -684,7 +695,7 @@ tools\redis\redis-server.exe redis.conf
 @"
 @echo off
 echo Activating virtual environment...
-call venv\Scripts\activate.bat
+call .venv\Scripts\activate.bat
 echo Starting Celery worker (Ctrl+C to stop)...
 python cli.py worker start
 "@ | Out-File -FilePath "start-worker.bat" -Encoding ASCII
@@ -692,14 +703,14 @@ python cli.py worker start
 # create-job.bat
 @"
 @echo off
-call venv\Scripts\activate.bat
+call .venv\Scripts\activate.bat
 python cli.py create-driver-job %*
 "@ | Out-File -FilePath "create-job.bat" -Encoding ASCII
 
 # list-jobs.bat
 @"
 @echo off
-call venv\Scripts\activate.bat
+call .venv\Scripts\activate.bat
 python cli.py jobs list %*
 "@ | Out-File -FilePath "list-jobs.bat" -Encoding ASCII
 
@@ -712,7 +723,7 @@ echo Starting Redis in a new window...
 start "Redis Server" cmd /k "tools\redis\redis-server.exe redis.conf"
 timeout /t 2 /nobreak >nul
 echo Starting Celery Worker in a new window...
-start "Celery Worker" cmd /k "call venv\Scripts\activate.bat && python cli.py worker start"
+start "Celery Worker" cmd /k "call .venv\Scripts\activate.bat && python cli.py worker start"
 echo.
 echo Both services started.
 echo To create a driver job, run:
@@ -755,10 +766,10 @@ if ($hasFailures) {
         if ($diagnostics[$key].Status -eq "Fail") {
             switch ($key) {
                 "Python"           { Write-Host "    - Python: Install Python 3.9+ from https://www.python.org/downloads/" -ForegroundColor Yellow }
-                "VenvAndDeps"      { Write-Host "    - VenvAndDeps: Run '.\venv\Scripts\pip.exe install -r requirements.txt' manually" -ForegroundColor Yellow }
+                "VenvAndDeps"      { Write-Host "    - VenvAndDeps: Run '.\.venv\Scripts\pip.exe install -r requirements.txt' manually" -ForegroundColor Yellow }
                 "Redis"            { Write-Host "    - Redis: Download from https://github.com/microsoftarchive/redis/releases" -ForegroundColor Yellow }
                 "IntuneWinAppUtil" { Write-Host "    - IntuneWinAppUtil: Download from https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool" -ForegroundColor Yellow }
-                "DirectoriesAndDB" { Write-Host "    - DirectoriesAndDB: Run '.\venv\Scripts\python.exe cli.py init' after configuring .env" -ForegroundColor Yellow }
+                "DirectoriesAndDB" { Write-Host "    - DirectoriesAndDB: Run '.\.venv\Scripts\python.exe cli.py init' after configuring .env" -ForegroundColor Yellow }
                 "AzureSetup"      { Write-Host "    - AzureSetup: Run '.\azure-setup.ps1 -OutputEnvFile' separately" -ForegroundColor Yellow }
                 "EnvFile"         { Write-Host "    - EnvFile: Copy .env.template to .env and fill in credentials" -ForegroundColor Yellow }
                 default           { Write-Host "    - ${key}: $($diagnostics[$key].Detail)" -ForegroundColor Yellow }
@@ -779,7 +790,7 @@ Write-Host "|                Installation Complete!                    |" -Foreg
 Write-Host "+----------------------------------------------------------+" -ForegroundColor Green
 Write-Host ""
 Write-Host " What was installed:" -ForegroundColor White
-Write-Host "   Python virtual environment  ->.\venv" -ForegroundColor Gray
+Write-Host "   Python virtual environment  ->.\.venv" -ForegroundColor Gray
 Write-Host "   Redis for Windows           ->.\tools\redis\" -ForegroundColor Gray
 Write-Host "   IntuneWinAppUtil.exe        ->.\tools\" -ForegroundColor Gray
 Write-Host "   SQLite database             ->.\data\autopackager.db" -ForegroundColor Gray
