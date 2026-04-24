@@ -76,10 +76,10 @@ Write-Host ""
 # Step 2: Create Virtual Environment
 Write-Host "[2/8] Creating Python virtual environment..." -ForegroundColor Yellow
 
-if (Test-Path "venv") {
+if (Test-Path ".venv") {
     Write-Host "  Virtual environment already exists, skipping..." -ForegroundColor Yellow
 } else {
-    python -m venv venv
+    python -m venv .venv
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Failed to create virtual environment" -ForegroundColor Red
         exit 1
@@ -93,7 +93,7 @@ Write-Host ""
 Write-Host "[3/8] Installing Python dependencies..." -ForegroundColor Yellow
 
 # Activate venv
-& .\venv\Scripts\Activate.ps1
+& .\.venv\Scripts\Activate.ps1
 
 # Upgrade pip quietly
 python -m pip install --upgrade pip --quiet
@@ -255,12 +255,12 @@ Write-Host "   .\tools\redis\redis-server.exe" -ForegroundColor Cyan
 Write-Host ""
 
 Write-Host "3. Start Celery Worker (in a new PowerShell window):" -ForegroundColor White
-Write-Host "   .\venv\Scripts\Activate.ps1" -ForegroundColor Cyan
+Write-Host "   .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
 Write-Host "   python cli.py worker start" -ForegroundColor Cyan
 Write-Host ""
 
 Write-Host "4. Create your first driver job (in another PowerShell window):" -ForegroundColor White
-Write-Host "   .\venv\Scripts\Activate.ps1" -ForegroundColor Cyan
+Write-Host "   .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
 Write-Host "   python cli.py create-driver-job --vendor dell --model ""Latitude 5420""" -ForegroundColor Cyan
 Write-Host ""
 
@@ -285,7 +285,7 @@ tools\redis\redis-server.exe redis.conf
 @"
 @echo off
 echo Activating Python virtual environment...
-call venv\Scripts\activate.bat
+call .venv\Scripts\activate.bat
 echo Starting Celery Worker...
 python cli.py worker start
 "@ | Out-File -FilePath "start-worker.bat" -Encoding ASCII
@@ -293,14 +293,14 @@ python cli.py worker start
 # create-job.bat
 @"
 @echo off
-call venv\Scripts\activate.bat
+call .venv\Scripts\activate.bat
 python cli.py create-driver-job %*
 "@ | Out-File -FilePath "create-job.bat" -Encoding ASCII
 
 # list-jobs.bat
 @"
 @echo off
-call venv\Scripts\activate.bat
+call .venv\Scripts\activate.bat
 python cli.py jobs list %*
 "@ | Out-File -FilePath "list-jobs.bat" -Encoding ASCII
 
