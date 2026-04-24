@@ -109,6 +109,8 @@ function Test-CommandExists {
     return $null -ne (Get-Command $Command -ErrorAction SilentlyContinue)
 }
 
+$script:storeStubDetected = $false
+
 function Get-PythonCommand {
     # Returns the python command name if Python 3.9+ is found, else $null.
     # Guards against the Windows Store "App Execution Alias" stub:
@@ -126,7 +128,15 @@ function Get-PythonCommand {
             $exitCode = $LASTEXITCODE
             $ErrorActionPreference = $savedEAP
 
-            if ($exitCode -ne 0) { continue }   # Store stub or broken install
+            if ($exitCode -ne 0) {
+                # Detect Windows Store stub specifically
+                $cmdPath = (Get-Command $cmd -ErrorAction SilentlyContinue).Source
+                if ($cmdPath -and $cmdPath -match 'WindowsApps') {
+                    Write-Warn "Windows Store Python stub detected for '$cmd' - skipped (disable in Settings > App execution aliases)"
+                    $script:storeStubDetected = $true
+                }
+                continue
+            }
             if ($ver -match "Python (\d+)\.(\d+)") {
                 $major = [int]$Matches[1]
                 $minor = [int]$Matches[2]
@@ -287,7 +297,8 @@ if ($SkipPython) {
     Write-OK "Verified: $ver"
 }
 
-$diagnostics["Python"] = @{ Status = "Pass"; Detail = "$(& $pythonCmd --version 2>&1)" }
+$stubInfo = if ($script:storeStubDetected) { " (Windows Store stub detected and skipped)" } else { "" }
+$diagnostics["Python"] = @{ Status = "Pass"; Detail = "$(& $pythonCmd --version 2>&1)$stubInfo" }
 
 # ------------------------------------------------------------------------------
 # STEP 2: GIT (optional but recommended)
