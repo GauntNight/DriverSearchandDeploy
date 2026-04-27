@@ -7,6 +7,7 @@ from sqlalchemy import func, desc
 from autopackager.models.job import Job, JobState, JobType
 from autopackager.models.deployment import Deployment, DeploymentStatus
 from autopackager.models.package import Package
+from autopackager.models.discovery_run import DiscoveryRun
 from autopackager.utils.database import db_session_scope
 from autopackager.utils.logger import get_logger
 from autopackager.utils.config import get_config
@@ -87,6 +88,40 @@ class DashboardService:
                 Deployment.created_at >= twenty_four_hours_ago
             ).scalar() or 0
 
+            # Discovery run statistics
+            total_discovery_runs = session.query(func.count(DiscoveryRun.id)).scalar() or 0
+
+            completed_discovery_runs = session.query(
+                func.count(DiscoveryRun.id)
+            ).filter(
+                DiscoveryRun.completed_at.isnot(None)
+            ).scalar() or 0
+
+            failed_discovery_runs = session.query(
+                func.count(DiscoveryRun.id)
+            ).filter(
+                DiscoveryRun.error_message.isnot(None)
+            ).scalar() or 0
+
+            recent_discovery_runs = session.query(
+                func.count(DiscoveryRun.id)
+            ).filter(
+                DiscoveryRun.started_at >= twenty_four_hours_ago
+            ).scalar() or 0
+
+            # Aggregate discovery metrics
+            total_catalogs_scanned = session.query(
+                func.sum(DiscoveryRun.catalogs_scanned)
+            ).scalar() or 0
+
+            total_versions_found = session.query(
+                func.sum(DiscoveryRun.new_versions_found)
+            ).scalar() or 0
+
+            total_jobs_from_discovery = session.query(
+                func.sum(DiscoveryRun.jobs_created)
+            ).scalar() or 0
+
             stats = {
                 'jobs': {
                     'total': total_jobs,
@@ -104,6 +139,15 @@ class DashboardService:
                     'total': total_packages,
                     'tested': tested_packages,
                     'deployed': deployed_packages
+                },
+                'discovery_runs': {
+                    'total': total_discovery_runs,
+                    'completed': completed_discovery_runs,
+                    'failed': failed_discovery_runs,
+                    'recent_24h': recent_discovery_runs,
+                    'total_catalogs_scanned': total_catalogs_scanned,
+                    'total_versions_found': total_versions_found,
+                    'total_jobs_created': total_jobs_from_discovery
                 },
                 'timestamp': datetime.utcnow().isoformat()
             }
@@ -388,3 +432,41 @@ class DashboardService:
 
             logger.debug("Fleet coverage fetched", vendor_count=len(coverage))
             return result
+
+    def get_discovery_runs(
+        self,
+        limit: Optional[int] = None,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Get discovery runs with optional limit and offset"""
+        logger.debug("Fetching discovery runs", limit=limit)
+
+        with db_session_scope() as session:
+            query = session.query(DiscoveryRun).order_by(desc(DiscoveryRun.started_at))
+
+            if offset > 0:
+                query = query.offset(offset)
+
+            if limit:
+                query = query.limit(limit)
+
+            runs = query.all()
+
+            # Convert to dictionaries
+            result = [run.to_dict() for run in runs]
+
+            logger.debug("Discovery runs fetched", count=len(result))
+            return result
+
+    def get_discovery_run_by_id(self, run_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single discovery run by ID"""
+        logger.debug("Fetching discovery run by ID", run_id=run_id)
+
+        with db_session_scope() as session:
+            run = session.query(DiscoveryRun).filter(DiscoveryRun.id == run_id).first()
+
+            if not run:
+                logger.warning("Discovery run not found", run_id=run_id)
+                return None
+
+            return run.to_dict()

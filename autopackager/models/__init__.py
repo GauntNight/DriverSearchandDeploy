@@ -3,6 +3,7 @@
 from .job import Job, JobState, JobType
 from .deployment import Deployment, DeploymentStatus
 from .package import Package
+from .discovery_run import DiscoveryRun
 
 __all__ = [
     'Job',
@@ -10,5 +11,6 @@ __all__ = [
     'JobType',
     'Deployment',
     'DeploymentStatus',
-    'Package'
+    'Package',
+    'DiscoveryRun'
 ]
