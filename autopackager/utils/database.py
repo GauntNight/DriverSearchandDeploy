@@ -52,11 +52,13 @@ def init_db(create_tables=True):
         from autopackager.models.job import Base as JobBase
         from autopackager.models.package import Base as PackageBase
         from autopackager.models.deployment import Base as DeploymentBase
+        from autopackager.models.discovery_run import Base as DiscoveryRunBase
 
         logger.info("Creating database tables")
         JobBase.metadata.create_all(_engine)
         PackageBase.metadata.create_all(_engine)
         DeploymentBase.metadata.create_all(_engine)
+        DiscoveryRunBase.metadata.create_all(_engine)
 
     return _engine
 
