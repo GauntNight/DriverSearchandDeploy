@@ -46,7 +46,8 @@ tests/
 ├── integration/                   # Integration tests (component interactions)
 │   ├── test_celery_tasks.py       # Celery task execution
 │   ├── test_orchestration_engine.py # End-to-end job orchestration
-│   └── test_full_pipeline.py      # Complete pipeline workflows
+│   ├── test_full_pipeline.py      # Complete pipeline workflows
+│   └── test_continuous_discovery.py # Continuous catalog discovery + DiscoveryRun
 │
 ├── cli/                           # CLI command tests
 │   └── test_cli_commands.py       # Click CLI testing

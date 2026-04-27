@@ -60,11 +60,15 @@ The initial phase focuses on automating driver and BIOS updates for Dell, HP, an
 - ✅ Orchestration engine with Celery task queue
 - ✅ Discovery agent for version checking
 - ✅ Packaging agent for .intunewin creation
-- ✅ Testing agent with smoke tests
+- ✅ Testing agent with smoke tests and optional VM-based validation (Hyper-V or Azure)
 - ✅ Deployment agent with Intune Graph API integration
 - ✅ Deployment ring support (Ring 0-3)
 - ✅ Database tracking with PostgreSQL / SQLite
-- ✅ CLI interface for job management
+- ✅ CLI interface for job management (`init`, `create-driver-job`, `jobs list/status/cancel/purge`, `worker start/purge`)
+- ✅ Web dashboard for real-time deployment monitoring (FastAPI + REST API)
+- ✅ Continuous catalog discovery (Celery Beat scheduled OEM catalog scanning)
+- ✅ Deployment status polling (auto-syncs Intune device install state)
+- ✅ Comprehensive automated test suite (unit, integration, CLI, API)
 
 ## Quick Start
 
@@ -277,19 +281,25 @@ AutoPackager uses a phased rollout strategy:
 DriverSearchandDeploy/
 ├── autopackager/           # Main application
 │   ├── agents/            # Discovery, Packaging, Testing, Deployment
-│   ├── config/            # Configuration files
-│   ├── models/            # Database models (Job, Package, Deployment)
-│   ├── orchestration/     # Celery tasks and engine
-│   └── utils/             # Config, logging, database, Graph client
-├── data/                  # Runtime data (downloads, packages, logs)
-├── scripts/               # Helper scripts
-├── tools/                 # IntuneWinAppUtil.exe, Redis
+│   ├── config/            # Configuration files (config.yaml)
+│   ├── models/            # Database models (Job, Package, Deployment, DiscoveryRun)
+│   ├── orchestration/     # Celery app, tasks, and orchestration engine
+│   ├── services/          # Dashboard data aggregation service
+│   ├── utils/             # Config, logging, database, Graph client
+│   └── web/               # FastAPI dashboard (api.py + static/)
+├── data/                  # Runtime data (downloads, packages, logs, catalogs)
+├── docs/                  # Architecture documentation (PIPELINE_LIFECYCLE.md)
+├── scripts/               # Example helper scripts
+├── tests/                 # pytest suite (unit, integration, cli, api, fixtures)
+├── tools/                 # IntuneWinAppUtil.exe, Redis (created by installer)
 ├── cli.py                 # Command-line interface
 ├── Install-AutoPackager.bat  # Double-click launcher (handles elevation)
 ├── Install-AutoPackager.ps1  # One-click Windows installer
 ├── azure-setup.ps1           # Automated Azure configuration
 ├── setup.ps1                 # Legacy Windows setup script
 ├── setup.sh                  # Linux/Mac setup script
+├── start-dashboard.bat       # Launch FastAPI dashboard (Windows)
+├── start-dashboard.sh        # Launch FastAPI dashboard (Linux/Mac)
 └── requirements.txt       # Python dependencies
 ```
 
@@ -328,10 +338,31 @@ DriverSearchandDeploy/
 ### Reference Documentation
 - **Automated Setup Guide**: [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) — script options and flags
 - **Manual Setup Guide**: [SETUP.md](SETUP.md) — detailed manual installation reference
+- **Configuration Reference**: [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md) — every `config.yaml` field with valid values, defaults, and scenarios
 - **Pipeline Lifecycle**: [docs/PIPELINE_LIFECYCLE.md](docs/PIPELINE_LIFECYCLE.md) — job orchestration state machine and task flow
+- **Test Suite Guide**: [tests/README.md](tests/README.md) — pytest layout, fixtures, and coverage targets
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md) — release history
 - **Technical Whitepaper**: [automated_software_packaging_whitepaper.md](automated_software_packaging_whitepaper.md)
 - **PR/FAQ**: [PRFAQ_ Project AutoPackager.md](PRFAQ_%20Project%20AutoPackager.md)
+- **Driver Updates Reference**: [ch04-driver-updates-reference.md](ch04-driver-updates-reference.md) — Intune driver update profiles and Graph API endpoints
 - **Windows App Packaging**: [ch11-windows-app-packaging-reference.md](ch11-windows-app-packaging-reference.md) — Win32 app packaging patterns and best practices
+
+### Web Dashboard
+
+A FastAPI dashboard exposes real-time job, deployment, and discovery state.
+
+```bash
+# Linux/Mac
+./start-dashboard.sh
+
+# Windows
+.\start-dashboard.bat
+
+# Manual (any platform)
+python -m uvicorn autopackager.web.api:app --host 0.0.0.0 --port 8000
+```
+
+Then open <http://localhost:8000>. Interactive API docs are available at `/docs` (Swagger UI) and `/redoc`.
 
 ## License
 
@@ -344,4 +375,4 @@ This repository was sanitized for public release. Git history prior to the initi
 ## Credits
 
 Built with AI assistance
-Version 1.1.0 - Phase 1 with One-Click Installer
+Version 1.2.0 — Phase 1 with One-Click Installer, Web Dashboard, and Continuous Catalog Discovery

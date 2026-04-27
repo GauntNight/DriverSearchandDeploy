@@ -394,8 +394,20 @@ python cli.py jobs status <id>
 python cli.py jobs list --state completed
 python cli.py jobs list --state failed
 
+# Cancel a job (or every non-terminal job with --all-stuck)
+python cli.py jobs cancel <id>
+
+# Delete job rows from the database (optional --state filter)
+python cli.py jobs purge --yes
+
+# Drain queued Celery tasks
+python cli.py worker purge --yes
+
 # Show version
 python cli.py version
+
+# Start the FastAPI web dashboard
+python -m uvicorn autopackager.web.api:app --host 0.0.0.0 --port 8000
 ```
 
 Windows helper scripts (created by installer):

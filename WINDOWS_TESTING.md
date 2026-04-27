@@ -425,4 +425,5 @@ Then follow the on-screen instructions to:
 ---
 
 **Windows Setup**: ✅ Fully Tested & Validated
-**AutoPackager Version**: 0.1.0 - Phase 1
+**AutoPackager Version**: 1.2.0 - Phase 1
+**Note**: This guide covers the legacy `setup.ps1` script. The recommended path for new installs is `Install-AutoPackager.ps1` / `Install-AutoPackager.bat` — see [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md).

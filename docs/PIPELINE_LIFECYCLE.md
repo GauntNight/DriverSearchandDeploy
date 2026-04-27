@@ -30,7 +30,7 @@ Jobs progress through the following states (defined in `autopackager/models/job.
 | `deploying` | Deployment agent publishing to Intune and assigning to Ring 0 |
 | `completed` | Job finished successfully - package deployed to Intune |
 | `failed` | Job failed after exhausting retries (see error_message field) |
-| `cancelled` | Job manually cancelled by operator (not yet implemented) |
+| `cancelled` | Job manually cancelled by operator via `python cli.py jobs cancel <job-id>` (or `--all-stuck` to cancel every non-terminal job) |
 
 ### State Transition Diagram
 
@@ -244,7 +244,7 @@ Jobs progress through the following states (defined in `autopackager/models/job.
 testing:
   enabled: true
   vm_testing_enabled: false  # Set to true for full VM validation
-  vm_provider: "hyperv"  # or "azure"
+  vm_provider: "local"  # "local" (Hyper-V) or "azure"
   timeout_minutes: 30
 ```
 
@@ -492,34 +492,25 @@ Logs are written to:
 
 ## Job Cancellation
 
-### Current State (Phase 1)
+### Current State
 
-Job cancellation is **partially implemented**:
-- `JobState.CANCELLED` enum exists
-- No CLI command or API endpoint to trigger cancellation
-- Celery tasks do not poll for cancellation
+Job cancellation is implemented at the database level via the CLI:
+
+```bash
+# Cancel a specific job
+python cli.py jobs cancel <job-id>
+
+# Cancel every job currently in pending/discovering/packaging/testing/deploying
+python cli.py jobs cancel --all-stuck
+```
+
+The command sets `job.state = CANCELLED` via `OrchestrationEngine.update_job_state()`. Already-running Celery tasks for that job continue to completion — cancellation prevents downstream stages from picking the job back up but does not abort an in-flight task.
 
 ### Roadmap (Future Phases)
 
-**CLI Interface:**
-```bash
-python cli.py jobs cancel <job-id>
-```
-
-**Implementation Strategy:**
-1. Update `job.state = CANCELLED` in database
-2. Each Celery task checks state before execution:
-   ```python
-   if engine.get_job(job_id).state == JobState.CANCELLED:
-       logger.info("Job cancelled by user")
-       return {"cancelled": True}
-   ```
-3. Celery chain stops propagating to next stage
-
-**Cleanup on Cancel:**
-- Delete downloaded installer files
-- Remove partially created packages
-- Rollback database records (optional, configurable)
+- Inline cancellation checks at the start of each Celery task so an in-flight stage exits early if the job has been cancelled.
+- Cleanup on cancel — delete downloaded installer files and partially-created packages.
+- Web dashboard control to cancel jobs without dropping to the CLI.
 
 ---
 
@@ -602,14 +593,18 @@ AutoPackager includes a **periodic task** to poll Intune deployment status:
 
 **Celery Beat Schedule:**
 ```python
-# Runs every 15 minutes (configurable)
-celery_app.conf.beat_schedule = {
-    'poll-deployment-status': {
-        'task': 'autopackager.poll_deployment_status',
-        'schedule': crontab(minute='*/15'),
-    },
+# Built dynamically in autopackager/orchestration/celery_app.py.
+# Polling cadence is driven by config.yaml -> status_polling.polling_interval_minutes.
+from celery.schedules import schedule
+
+celery_app.conf.beat_schedule['poll-deployment-status'] = {
+    'task': 'autopackager.poll_deployment_status',
+    'schedule': schedule(run_every=polling_interval_minutes * 60.0),
+    'options': {'queue': 'default'},
 }
 ```
+
+A second Beat entry, `continuous-catalog-discovery`, is registered when `discovery_schedule.enabled: true`. It runs `autopackager.continuous_catalog_discovery` every `discovery_schedule.interval_hours` and creates packaging jobs for any newly-discovered driver versions in `monitored_models`.
 
 **What It Does:**
 1. Query Graph API for all deployed apps
@@ -733,8 +728,9 @@ python cli.py jobs status <job-id>
 
 **Recovery:**
 - Fix underlying issue (permissions, network, config)
-- Delete failed job: `python cli.py jobs delete <job-id>`
-- Create new job with same parameters
+- Cancel a stuck job: `python cli.py jobs cancel <job-id>` (or `--all-stuck`)
+- Purge old job records: `python cli.py jobs purge --state failed`
+- Create a new job with the corrected parameters
 
 ---
 
