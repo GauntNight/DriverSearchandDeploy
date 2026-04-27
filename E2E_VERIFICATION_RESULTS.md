@@ -51,7 +51,7 @@
 
 ### ⚠️ Step 6: API Endpoint Verification
 - **Status:** SKIPPED (Server not running)
-- API server not running at `http://localhost:5000`
+- API server not running at `http://localhost:8000`
 - Endpoints implemented and ready:
   - `GET /api/discovery/runs`
   - `GET /api/discovery/runs/{run_id}`
@@ -116,8 +116,9 @@
    # Start Celery Beat (scheduler)
    celery -A autopackager.orchestration.celery_app beat --loglevel=info
 
-   # Start Flask API Dashboard
-   python -m autopackager.web.app
+   # Start FastAPI dashboard
+   python -m uvicorn autopackager.web.api:app --host 0.0.0.0 --port 8000
+   # Or use the bundled launcher: ./start-dashboard.sh / .\start-dashboard.bat
    ```
 
 2. **Verify Scheduled Execution:**
@@ -127,7 +128,7 @@
 
 3. **Monitor Discovery Runs:**
    - Check logs: `data/logs/autopackager.log`
-   - API endpoint: `http://localhost:5000/api/discovery/runs`
+   - API endpoint: `http://localhost:8000/api/discovery/runs`
    - Database: Query `discovery_runs` table
 
 4. **Configure Real Hardware Models:**

@@ -2,7 +2,7 @@
 
 > Reference documentation for `autopackager/config/config.yaml`
 > Structured for IT administrators deploying AutoPackager in production environments.
-> All 11 configuration sections documented with environment variable mapping, valid values, and common scenarios.
+> All 13 configuration sections documented with environment variable mapping, valid values, and common scenarios.
 
 ---
 
@@ -38,7 +38,7 @@ The resulting loaded config will have actual values substituted.
 
 **Gotcha:** If an environment variable is **not defined**, the substitution leaves the placeholder unchanged (e.g., `"${MISSING_VAR}"`). This causes runtime errors. Always verify your `.env` file against `.env.template` before deployment.
 
-### Configuration Sections (11 Total)
+### Configuration Sections (13 Total)
 
 | Section | Purpose | Environment Variables Required |
 |---------|---------|-------------------------------|
@@ -53,6 +53,8 @@ The resulting loaded config will have actual values substituted.
 | `logging` | Log format and verbosity | None |
 | `jobs` | Job retry and concurrency | None |
 | `status_polling` | Device status polling intervals | None |
+| `discovery_schedule` | Continuous catalog discovery schedule and monitored hardware models | `DISCOVERY_NOTIFICATION_EMAIL` (optional) |
+| `dashboard` | Optional FastAPI web dashboard CORS overrides | None |
 
 ---
 
@@ -935,7 +937,117 @@ status_polling:
 
 ---
 
-## 13. Environment Variable Mapping Reference
+## 13. Discovery Schedule Configuration
+
+Controls the **continuous catalog discovery** background task. When enabled, Celery Beat runs `autopackager.continuous_catalog_discovery` on a fixed interval, scanning each configured OEM catalog for new driver versions and creating packaging jobs for any new versions found in `monitored_models`. Implementation lives in `autopackager/orchestration/tasks.py` (`continuous_catalog_discovery`) and is wired into Beat in `autopackager/orchestration/celery_app.py`.
+
+### Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `true` | Master toggle. When `false`, the task is not registered with Beat and will return `{'status': 'disabled'}` if invoked manually. |
+| `interval_hours` | number | `24` | How often (in hours) Beat triggers the discovery task. Fractional values are allowed for testing (e.g., `0.0167` ≈ 1 minute). |
+| `catalogs` | list | `[dell, hp, lenovo]` | Informational list of OEMs the task is expected to scan. Actual scanning is driven by `monitored_models`. |
+| `notification_email` | string | `${DISCOVERY_NOTIFICATION_EMAIL}` | Optional email for future notifications. Currently informational. |
+| `retry_on_failure` | boolean | `true` | Whether the Celery task retries with exponential backoff on uncaught exceptions. |
+| `max_retries` | integer | `3` | Maximum Celery retries before giving up for the current run. |
+| `monitored_models` | list of objects | (one Dell sample) | Models to scan on every run. Each item: `vendor`, `model`, `driver_type` (use `"all"` for everything), `current_version`. |
+
+### Default Configuration
+
+```yaml
+discovery_schedule:
+  enabled: true
+  interval_hours: 24
+  catalogs:
+    - dell
+    - hp
+    - lenovo
+  notification_email: "${DISCOVERY_NOTIFICATION_EMAIL}"
+  retry_on_failure: true
+  max_retries: 3
+  monitored_models:
+    - vendor: "Dell"
+      model: "Latitude 7400"
+      driver_type: "all"
+      current_version: "1.0.0"
+```
+
+### How It Works
+
+1. Beat fires `autopackager.continuous_catalog_discovery` every `interval_hours`.
+2. The task creates a `DiscoveryRun` row (`discovery_runs` table) to track the scan.
+3. For each entry in `monitored_models`, it calls the `DiscoveryAgent` against the matching OEM catalog.
+4. If a newer version is found, it checks the `jobs` table for a non-terminal job at the same `vendor`/`hardware_model`/`target_version`. If none exists, it enqueues `create_packaging_job` and the standard pipeline takes over.
+5. The `DiscoveryRun` is updated with `catalogs_scanned`, `new_versions_found`, `jobs_created`, and a per-OEM breakdown in `oem_results`.
+
+### Example — Disable Continuous Discovery
+
+```yaml
+discovery_schedule:
+  enabled: false
+```
+
+Use when you only want operator-driven jobs created via `python cli.py create-driver-job`.
+
+### Example — Multiple Models, Faster Cadence
+
+```yaml
+discovery_schedule:
+  enabled: true
+  interval_hours: 6
+  monitored_models:
+    - vendor: "Dell"
+      model: "Latitude 5420"
+      driver_type: "all"
+      current_version: "1.0.0"
+    - vendor: "HP"
+      model: "EliteBook 850 G8"
+      driver_type: "network"
+      current_version: "2.1.0"
+    - vendor: "Lenovo"
+      model: "ThinkPad X1 Carbon Gen 9"
+      driver_type: "chipset"
+      current_version: "1.5.0"
+```
+
+**Gotcha:** Beat needs to be running separately from the worker. Start it with:
+
+```bash
+celery -A autopackager.orchestration.celery_app beat --loglevel=info
+```
+
+A worker alone will not trigger scheduled tasks.
+
+**Gotcha:** Inspect run history through the dashboard (`GET /api/discovery/runs`, or the `Discovery` panel in the web UI) or directly in the database via `SELECT * FROM discovery_runs ORDER BY started_at DESC;`.
+
+---
+
+## 14. Dashboard Configuration (Optional)
+
+Controls the FastAPI web dashboard exposed at `autopackager/web/api.py`. The dashboard works without any explicit `dashboard:` block — defaults are used. Add the section only if you need to customise CORS origins.
+
+### Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cors_origins` | list of strings | `["http://localhost:8000", "http://127.0.0.1:8000"]` | Origins allowed by the FastAPI CORS middleware. |
+
+### Example — Permit a Reverse Proxy
+
+```yaml
+dashboard:
+  cors_origins:
+    - "http://localhost:8000"
+    - "http://127.0.0.1:8000"
+    - "https://autopackager.contoso.local"
+```
+
+**Note:** Bind host and port are controlled by the launch script / `uvicorn` invocation, not by this config block. The bundled `start-dashboard.sh` honours `DASHBOARD_HOST`, `DASHBOARD_PORT`, and `DASHBOARD_WORKERS` environment variables.
+
+---
+
+## 15. Environment Variable Mapping Reference
 
 Complete mapping of `.env` variables to `config.yaml` placeholders.
 
@@ -956,31 +1068,21 @@ Complete mapping of `.env` variables to `config.yaml` placeholders.
 
 ### Validating .env File
 
-To verify your `.env` file has all required variables, run:
+There is no built-in `validate-config` command yet. The recommended quick check is to load the resolved config and look for unsubstituted `${VAR_NAME}` placeholders:
 
 ```bash
-python cli.py validate-config
+python -c "from autopackager.utils.config import get_config; \
+import json, re; cfg = get_config(); \
+text = json.dumps(cfg); \
+unresolved = sorted(set(re.findall(r'\\$\\{([^}]+)\\}', text))); \
+print('OK' if not unresolved else 'Missing env vars: ' + ', '.join(unresolved))"
 ```
 
-This command:
-1. Loads `config.yaml`
-2. Checks for unresolved `${VAR_NAME}` placeholders
-3. Reports missing environment variables
-
-**Example output:**
-```
-✓ Database configuration valid
-✓ Redis configuration valid
-✗ Intune configuration invalid: AZURE_CLIENT_SECRET not set
-✓ LLM configuration valid
-✗ Deployment Rings configuration invalid: RING2_GROUP_ID not set
-```
-
-Fix missing variables in `.env`, then re-run until all checks pass.
+If any variables are reported, add them to `.env` and re-run. As a sanity check on credentials, `python cli.py init` will surface database/Graph configuration problems on first use.
 
 ---
 
-## 14. Common Configuration Scenarios
+## 16. Common Configuration Scenarios
 
 ### Scenario A: Small Business (< 100 Devices, Single Server)
 
@@ -1154,13 +1256,13 @@ status_polling:
 
 ---
 
-## 15. Configuration Gotchas & Best Practices
+## 17. Configuration Gotchas & Best Practices
 
 ### ✅ Best Practices
 
 1. **Always use environment variables for secrets** — Never hardcode `client_secret`, `api_key`, or `password` in `config.yaml`. Use `${VAR_NAME}` placeholders.
 
-2. **Validate config before production** — Run `python cli.py validate-config` after any changes to catch typos or missing variables.
+2. **Validate config before production** — After any change, load the resolved config (see *Validating .env File* above) to catch unresolved `${VAR_NAME}` placeholders, then run `python cli.py init` to confirm the database and credentials are wired up correctly.
 
 3. **Start with SQLite, migrate to PostgreSQL** — Use SQLite for initial testing (simpler setup), switch to PostgreSQL for production (better concurrency, HA support).
 
@@ -1179,7 +1281,7 @@ status_polling:
 
 ### ❌ Common Gotchas
 
-1. **Missing environment variables fail silently** — If `.env` doesn't define `${RING2_GROUP_ID}`, the config loads with the literal string `"${RING2_GROUP_ID}"`, causing cryptic Graph API errors later. Use `validate-config` to catch this.
+1. **Missing environment variables fail silently** — If `.env` doesn't define `${RING2_GROUP_ID}`, the config loader (`Template.safe_substitute` in `autopackager/utils/config.py`) leaves the literal string `"${RING2_GROUP_ID}"` in place, causing cryptic Graph API errors later. Use the unresolved-placeholder check in *Validating .env File* to catch this before runtime.
 
 2. **Client secret expiry causes sudden failures** — App Registration secrets expire (default 1-2 years). Set calendar reminders to rotate before expiry.
 
@@ -1201,24 +1303,34 @@ status_polling:
 
 ---
 
-## 16. Validation & Troubleshooting
+## 18. Validation & Troubleshooting
 
 ### Validate Configuration
+
+There is no dedicated CLI validator yet. To sanity-check `config.yaml` and `.env` together:
 
 ```bash
 # Activate virtual environment (if not already active)
 .\venv\Scripts\activate  # Windows
 source venv/bin/activate  # Linux/macOS
 
-# Validate config
-python cli.py validate-config
+# Load and inspect resolved config (catches YAML syntax errors and unresolved ${VAR_NAME} placeholders)
+python -c "from autopackager.utils.config import get_config; \
+import json, re; cfg = get_config(); \
+text = json.dumps(cfg); \
+unresolved = sorted(set(re.findall(r'\\$\\{([^}]+)\\}', text))); \
+print('OK' if not unresolved else 'Missing env vars: ' + ', '.join(unresolved))"
+
+# Then exercise the database and credentials end-to-end
+python cli.py init
 ```
 
-**What it checks:**
-- YAML syntax errors
-- Missing environment variables
-- Invalid field values (e.g., `database.type: "mysql"` — not supported)
-- Missing required fields
+**What this catches:**
+- YAML syntax errors (raised by the `yaml.safe_load` call inside `get_config()`)
+- Unresolved environment variable placeholders
+- Database connection / schema problems (surfaced by `python cli.py init`)
+
+It does **not** validate semantics like `database.type: "mysql"` — invalid field values surface at runtime when SQLAlchemy or the Graph client tries to use them.
 
 ### Troubleshooting Steps
 
@@ -1269,7 +1381,7 @@ python cli.py validate-config
 
 ---
 
-## 17. Further Reading
+## 19. Further Reading
 
 - **SETUP.md** — Manual installation steps (database setup, Redis, Azure App Registration)
 - **IMPLEMENTATION_GUIDE.md** — Automated setup via `Install-AutoPackager.ps1`

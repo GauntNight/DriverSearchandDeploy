@@ -226,7 +226,40 @@ python cli.py jobs status <job-id>
 
 # Filter by state
 python cli.py jobs list --state completed
+
+# Cancel a stuck job (or every non-terminal job with --all-stuck)
+python cli.py jobs cancel <job-id>
+
+# Drain all queued Celery tasks
+python cli.py worker purge --yes
 ```
+
+### Web Dashboard
+
+For a real-time view of jobs, deployments, deployment rings, and discovery runs, start the FastAPI dashboard:
+
+```bash
+# Linux/Mac
+./start-dashboard.sh
+
+# Windows
+.\start-dashboard.bat
+
+# Manual (any platform)
+python -m uvicorn autopackager.web.api:app --host 0.0.0.0 --port 8000
+```
+
+Open <http://localhost:8000>. Swagger UI is at `/docs`, ReDoc at `/redoc`.
+
+### Optional: Continuous Catalog Discovery
+
+To have AutoPackager scan OEM catalogs on a schedule and auto-create packaging jobs for new driver versions, leave `discovery_schedule.enabled: true` in `config.yaml`, populate `monitored_models`, and start Celery Beat alongside the worker:
+
+```bash
+celery -A autopackager.orchestration.celery_app beat --loglevel=info
+```
+
+See [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md) section 13 (Discovery Schedule Configuration) for details.
 
 ## Directory Structure
 
@@ -234,18 +267,24 @@ python cli.py jobs list --state completed
 DriverSearchandDeploy/
 ├── autopackager/              # Main application code
 │   ├── agents/               # Discovery, Packaging, Testing, Deployment agents
-│   ├── config/               # Configuration files
-│   ├── models/               # Database models
-│   ├── orchestration/        # Celery tasks and orchestration engine
-│   └── utils/                # Utilities (config, logging, database, Graph API)
+│   ├── config/               # config.yaml
+│   ├── models/               # Database models (Job, Package, Deployment, DiscoveryRun)
+│   ├── orchestration/        # Celery app, tasks, and orchestration engine
+│   ├── services/             # Dashboard data aggregation service
+│   ├── utils/                # Utilities (config, logging, database, Graph API)
+│   └── web/                  # FastAPI dashboard (api.py + static/)
 ├── data/                     # Runtime data
 │   ├── downloads/            # Downloaded installers
 │   ├── packages/             # Created packages
 │   ├── logs/                 # Application logs
 │   └── catalogs/             # OEM driver catalogs
-├── scripts/                  # Helper scripts
-├── tools/                    # External tools (IntuneWinAppUtil.exe)
+├── docs/                     # Architecture documentation (PIPELINE_LIFECYCLE.md)
+├── scripts/                  # Example helper scripts
+├── tests/                    # pytest suite (unit, integration, cli, api, fixtures)
+├── tools/                    # External tools (IntuneWinAppUtil.exe, Redis)
 ├── cli.py                    # Command-line interface
+├── start-dashboard.sh        # Launch FastAPI dashboard (Linux/Mac)
+├── start-dashboard.bat       # Launch FastAPI dashboard (Windows)
 ├── requirements.txt          # Python dependencies
 └── .env                      # Environment variables (not in git)
 ```
@@ -255,8 +294,17 @@ DriverSearchandDeploy/
 ### Run Unit Tests
 
 ```bash
-pytest autopackager/tests/
+# Full suite with coverage report (uses pytest.ini + .coveragerc defaults)
+pytest
+
+# Or by category
+pytest tests/unit/
+pytest tests/integration/
+pytest tests/cli/
+pytest tests/api/
 ```
+
+See [tests/README.md](tests/README.md) for the full test guide (markers, fixtures, mocking strategy).
 
 ### Test OEM Catalog Discovery
 

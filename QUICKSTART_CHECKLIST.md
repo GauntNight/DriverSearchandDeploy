@@ -100,7 +100,7 @@ Complete these if you are not using the automated installer.
 - [ ] Celery worker started
   - Windows: `.\start-worker.bat`
   - Linux: `python cli.py worker start`
-  - Verified 6 tasks registered in output
+  - Verified all 8 tasks registered in output (`create_packaging_job`, `process_job`, `discovery_task`, `packaging_task`, `testing_task`, `deployment_task`, `poll_deployment_status`, `continuous_catalog_discovery`)
 
 ### Test Device
 
@@ -117,6 +117,17 @@ Complete these if you are not using the automated installer.
   - Job ID: `___________________________________`
 - [ ] Monitored job status until `completed`
 - [ ] Package visible in Intune admin center
+
+---
+
+## Web Dashboard (Optional)
+
+- [ ] Started the FastAPI dashboard:
+  - Linux/Mac: `./start-dashboard.sh`
+  - Windows: `.\start-dashboard.bat`
+  - Manual: `python -m uvicorn autopackager.web.api:app --host 0.0.0.0 --port 8000`
+- [ ] Opened http://localhost:8000 and confirmed jobs/deployments/discovery panels populate
+- [ ] Reviewed API docs at http://localhost:8000/docs
 
 ---
 
