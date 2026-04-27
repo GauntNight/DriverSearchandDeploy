@@ -341,6 +341,11 @@ class TestLoggerUtility:
         """Test logging setup with file output"""
         log_file = tmp_path / "logs" / "test.log"
 
+        # Configure the mock to return a proper handler with a level attribute
+        mock_handler_instance = Mock()
+        mock_handler_instance.level = 20  # logging.INFO
+        mock_file_handler.return_value = mock_handler_instance
+
         setup_logging(log_level='INFO', log_file=str(log_file))
 
         # Verify directory was created
