@@ -88,6 +88,40 @@ class DashboardService:
                 Deployment.created_at >= twenty_four_hours_ago
             ).scalar() or 0
 
+            # Discovery run statistics
+            total_discovery_runs = session.query(func.count(DiscoveryRun.id)).scalar() or 0
+
+            completed_discovery_runs = session.query(
+                func.count(DiscoveryRun.id)
+            ).filter(
+                DiscoveryRun.completed_at.isnot(None)
+            ).scalar() or 0
+
+            failed_discovery_runs = session.query(
+                func.count(DiscoveryRun.id)
+            ).filter(
+                DiscoveryRun.error_message.isnot(None)
+            ).scalar() or 0
+
+            recent_discovery_runs = session.query(
+                func.count(DiscoveryRun.id)
+            ).filter(
+                DiscoveryRun.started_at >= twenty_four_hours_ago
+            ).scalar() or 0
+
+            # Aggregate discovery metrics
+            total_catalogs_scanned = session.query(
+                func.sum(DiscoveryRun.catalogs_scanned)
+            ).scalar() or 0
+
+            total_versions_found = session.query(
+                func.sum(DiscoveryRun.new_versions_found)
+            ).scalar() or 0
+
+            total_jobs_from_discovery = session.query(
+                func.sum(DiscoveryRun.jobs_created)
+            ).scalar() or 0
+
             stats = {
                 'jobs': {
                     'total': total_jobs,
@@ -105,6 +139,15 @@ class DashboardService:
                     'total': total_packages,
                     'tested': tested_packages,
                     'deployed': deployed_packages
+                },
+                'discovery_runs': {
+                    'total': total_discovery_runs,
+                    'completed': completed_discovery_runs,
+                    'failed': failed_discovery_runs,
+                    'recent_24h': recent_discovery_runs,
+                    'total_catalogs_scanned': total_catalogs_scanned,
+                    'total_versions_found': total_versions_found,
+                    'total_jobs_created': total_jobs_from_discovery
                 },
                 'timestamp': datetime.utcnow().isoformat()
             }

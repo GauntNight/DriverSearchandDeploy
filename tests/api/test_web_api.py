@@ -322,6 +322,15 @@ class TestStatisticsEndpoint:
                 'jobs': {'total': 0, 'by_state': {}, 'recent_24h': 0},
                 'deployments': {'total': 0, 'successful': 0, 'failed': 0, 'in_progress': 0, 'recent_24h': 0},
                 'packages': {'total': 0, 'tested': 0, 'deployed': 0},
+                'discovery_runs': {
+                    'total': 0,
+                    'completed': 0,
+                    'failed': 0,
+                    'recent_24h': 0,
+                    'total_catalogs_scanned': 0,
+                    'total_versions_found': 0,
+                    'total_jobs_created': 0
+                },
                 'timestamp': datetime.utcnow().isoformat()
             }
 
@@ -331,6 +340,7 @@ class TestStatisticsEndpoint:
             data = response.json()
             assert data['jobs']['total'] == 0
             assert data['deployments']['total'] == 0
+            assert data['discovery_runs']['total'] == 0
 
     def test_get_statistics_with_data(self, test_client):
         """Test getting statistics with data"""
@@ -339,6 +349,15 @@ class TestStatisticsEndpoint:
                 'jobs': {'total': 100, 'by_state': {'completed': 70}, 'recent_24h': 15},
                 'deployments': {'total': 50, 'successful': 40, 'failed': 5, 'in_progress': 5, 'recent_24h': 10},
                 'packages': {'total': 45, 'tested': 40, 'deployed': 35},
+                'discovery_runs': {
+                    'total': 25,
+                    'completed': 23,
+                    'failed': 2,
+                    'recent_24h': 5,
+                    'total_catalogs_scanned': 150,
+                    'total_versions_found': 78,
+                    'total_jobs_created': 42
+                },
                 'timestamp': datetime.utcnow().isoformat()
             }
             mock_service.get_statistics.return_value = stats
@@ -349,6 +368,9 @@ class TestStatisticsEndpoint:
             data = response.json()
             assert data['jobs']['total'] == 100
             assert data['deployments']['successful'] == 40
+            assert data['discovery_runs']['total'] == 25
+            assert data['discovery_runs']['completed'] == 23
+            assert data['discovery_runs']['total_catalogs_scanned'] == 150
 
     def test_get_statistics_handles_exception(self, test_client):
         """Test that statistics endpoint handles exceptions gracefully"""

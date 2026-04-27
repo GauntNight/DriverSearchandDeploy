@@ -250,6 +250,7 @@ async def get_statistics():
     - Job counts (total, by state, recent 24h)
     - Deployment counts (total, successful, failed, in progress, recent 24h)
     - Package counts (total, tested, deployed)
+    - Discovery run counts (total, completed, failed, recent 24h, aggregate metrics)
     - Timestamp of when statistics were generated
     """
     try:
