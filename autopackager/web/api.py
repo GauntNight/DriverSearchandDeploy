@@ -218,6 +218,29 @@ async def list_discovery_runs(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@app.get("/api/discovery/runs/{run_id}")
+async def get_discovery_run(run_id: int):
+    """
+    Get a specific discovery run by ID
+
+    Path Parameters:
+    - run_id: The discovery run ID to retrieve
+    """
+    try:
+        run = dashboard_service.get_discovery_run_by_id(run_id)
+
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Discovery run {run_id} not found")
+
+        return run
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error getting discovery run", run_id=run_id, error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
 @app.get("/api/stats")
 async def get_statistics():
     """

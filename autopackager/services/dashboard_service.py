@@ -414,3 +414,16 @@ class DashboardService:
 
             logger.debug("Discovery runs fetched", count=len(result))
             return result
+
+    def get_discovery_run_by_id(self, run_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single discovery run by ID"""
+        logger.debug("Fetching discovery run by ID", run_id=run_id)
+
+        with db_session_scope() as session:
+            run = session.query(DiscoveryRun).filter(DiscoveryRun.id == run_id).first()
+
+            if not run:
+                logger.warning("Discovery run not found", run_id=run_id)
+                return None
+
+            return run.to_dict()
