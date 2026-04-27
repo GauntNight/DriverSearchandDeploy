@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DriverPackManifest version="1.0">
+    <DriverPackage name="Latitude 5420 Win10 Driver Pack"
+                   dellVersion="A10"
+                   path="FOLDER01234567M/1/Latitude_5420_Win10_A10_12345.cab"
+                   releaseNotes="This driver pack provides Windows 10 drivers for Dell Latitude 5420"
+                   dateTime="2024-03-15T10:30:00"
+                   size="524288000">
+        <SupportedSystems>
+            <Brand name="Latitude">
+                <Model name="Latitude 5420"/>
+                <Model name="Latitude 5420 2-in-1"/>
+            </Brand>
+        </SupportedSystems>
+    </DriverPackage>
+
+    <DriverPackage name="Latitude 7420 Win10 Driver Pack"
+                   dellVersion="A08"
+                   path="FOLDER01234568M/1/Latitude_7420_Win10_A08_67890.cab"
+                   releaseNotes="This driver pack provides Windows 10 drivers for Dell Latitude 7420"
+                   dateTime="2024-02-20T14:15:00"
+                   size="487424000">
+        <SupportedSystems>
+            <Brand name="Latitude">
+                <Model name="Latitude 7420"/>
+            </Brand>
+        </SupportedSystems>
+    </DriverPackage>
+
+    <DriverPackage name="OptiPlex 7090 Win11 Driver Pack"
+                   dellVersion="A12"
+                   path="FOLDER01234569M/1/OptiPlex_7090_Win11_A12_11223.cab"
+                   releaseNotes="This driver pack provides Windows 11 drivers for Dell OptiPlex 7090"
+                   dateTime="2024-04-10T09:00:00"
+                   size="612352000">
+        <SupportedSystems>
+            <Brand name="OptiPlex">
+                <Model name="OptiPlex 7090 Tower"/>
+                <Model name="OptiPlex 7090 SFF"/>
+                <Model name="OptiPlex 7090 Micro"/>
+            </Brand>
+        </SupportedSystems>
+    </DriverPackage>
+
+    <DriverPackage name="Precision 5570 Win11 Driver Pack"
+                   dellVersion="A15"
+                   path="FOLDER01234570M/1/Precision_5570_Win11_A15_33445.cab"
+                   releaseNotes="This driver pack provides Windows 11 drivers for Dell Precision 5570 Mobile Workstation"
+                   dateTime="2024-04-25T11:45:00"
+                   size="758972000">
+        <SupportedSystems>
+            <Brand name="Precision">
+                <Model name="Precision 5570"/>
+            </Brand>
+        </SupportedSystems>
+    </DriverPackage>
+</DriverPackManifest>

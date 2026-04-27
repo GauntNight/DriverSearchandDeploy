@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ImagePal version="5.0">
+    <Platform SystemName="HP EliteBook 840 G8 Notebook PC"
+              ProductCode="8736"
+              OSReleaseIdList="21H1,21H2,22H2"
+              PlatformId="8736">
+        <OS name="Windows 10 x64">
+            <OSBuildId>21H2</OSBuildId>
+        </OS>
+    </Platform>
+
+    <Platform SystemName="HP EliteBook 850 G8 Notebook PC"
+              ProductCode="8737"
+              OSReleaseIdList="21H1,21H2,22H2"
+              PlatformId="8737">
+        <OS name="Windows 10 x64">
+            <OSBuildId>21H2</OSBuildId>
+        </OS>
+    </Platform>
+
+    <Platform SystemName="HP ProBook 450 G9 Notebook PC"
+              ProductCode="8AF8"
+              OSReleaseIdList="21H2,22H2"
+              PlatformId="8AF8">
+        <OS name="Windows 11 x64">
+            <OSBuildId>22H2</OSBuildId>
+        </OS>
+    </Platform>
+
+    <Platform SystemName="HP ZBook Firefly 14 G9 Mobile Workstation"
+              ProductCode="8B9C"
+              OSReleaseIdList="21H2,22H2"
+              PlatformId="8B9C">
+        <OS name="Windows 11 x64">
+            <OSBuildId>22H2</OSBuildId>
+        </OS>
+    </Platform>
+
+    <Platform SystemName="HP EliteDesk 800 G8 Desktop Mini PC"
+              ProductCode="8910"
+              OSReleaseIdList="21H1,21H2,22H2"
+              PlatformId="8910">
+        <OS name="Windows 10 x64">
+            <OSBuildId>21H2</OSBuildId>
+        </OS>
+    </Platform>
+</ImagePal>

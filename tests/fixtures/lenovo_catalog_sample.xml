@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Products>
+    <Product name="ThinkPad X1 Carbon Gen 9" type="20XW">
+        <Driver name="Intel Chipset Driver"
+                category="Chipset"
+                version="10.1.19444.8378"
+                date="2024-03-15"
+                size="5242880"
+                rebootType="3">
+            <URL>https://download.lenovo.com/pccbbs/mobiles/n2vwi15w.exe</URL>
+        </Driver>
+        <Driver name="Realtek Audio Driver"
+                category="Audio"
+                version="6.0.9387.1"
+                date="2024-02-28"
+                size="156234567"
+                rebootType="3">
+            <URL>https://download.lenovo.com/pccbbs/mobiles/n2vwi16w.exe</URL>
+        </Driver>
+        <Driver name="Intel Graphics Driver"
+                category="Video"
+                version="30.0.101.1404"
+                date="2024-04-01"
+                size="423456789"
+                rebootType="3">
+            <URL>https://download.lenovo.com/pccbbs/mobiles/n2vwi17w.exe</URL>
+        </Driver>
+    </Product>
+
+    <Product name="ThinkPad T14 Gen 2" type="20W0">
+        <Driver name="Intel Chipset Driver"
+                category="Chipset"
+                version="10.1.19444.8378"
+                date="2024-03-10"
+                size="5242880"
+                rebootType="3">
+            <URL>https://download.lenovo.com/pccbbs/mobiles/n2vwi18w.exe</URL>
+        </Driver>
+        <Driver name="AMD Radeon Graphics Driver"
+                category="Video"
+                version="31.0.14051.5006"
+                date="2024-03-20"
+                size="678901234"
+                rebootType="3">
+            <URL>https://download.lenovo.com/pccbbs/mobiles/n2vwi19w.exe</URL>
+        </Driver>
+    </Product>
+
+    <Product name="ThinkCentre M90a Gen 3" type="11VJ">
+        <Driver name="Intel Chipset Driver"
+                category="Chipset"
+                version="10.1.19444.8378"
+                date="2024-04-05"
+                size="5242880"
+                rebootType="3">
+            <URL>https://download.lenovo.com/pccbbs/desktops/n2vwi20w.exe</URL>
+        </Driver>
+        <Driver name="Realtek LAN Driver"
+                category="Networking"
+                version="10.58.324.2022"
+                date="2024-03-25"
+                size="12345678"
+                rebootType="3">
+            <URL>https://download.lenovo.com/pccbbs/desktops/n2vwi21w.exe</URL>
+        </Driver>
+    </Product>
+
+    <Product name="ThinkStation P360 Tiny" type="30FN">
+        <Driver name="Intel Chipset Driver"
+                category="Chipset"
+                version="10.1.19444.8378"
+                date="2024-04-20"
+                size="5242880"
+                rebootType="3">
+            <URL>https://download.lenovo.com/pccbbs/workstations/n2vwi22w.exe</URL>
+        </Driver>
+        <Driver name="NVIDIA Quadro Graphics Driver"
+                category="Video"
+                version="537.42"
+                date="2024-04-15"
+                size="987654321"
+                rebootType="3">
+            <URL>https://download.lenovo.com/pccbbs/workstations/n2vwi23w.exe</URL>
+        </Driver>
+    </Product>
+</Products>
