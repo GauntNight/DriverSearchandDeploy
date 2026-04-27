@@ -195,6 +195,29 @@ async def get_deployment_rings():
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@app.get("/api/discovery/runs")
+async def list_discovery_runs(
+    limit: Optional[int] = Query(100, ge=1, le=1000, description="Maximum number of discovery runs to return")
+):
+    """
+    List all discovery runs
+
+    Query Parameters:
+    - limit: Maximum number of discovery runs to return (default: 100, max: 1000)
+    """
+    try:
+        runs = dashboard_service.get_discovery_runs(limit=limit)
+
+        return {
+            "runs": runs,
+            "count": len(runs)
+        }
+
+    except Exception as e:
+        logger.error("Error listing discovery runs", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
 @app.get("/api/stats")
 async def get_statistics():
     """
