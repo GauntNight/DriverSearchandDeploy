@@ -616,23 +616,134 @@ class TestDiscoveryAgentUtilities(unittest.TestCase):
 
     def test_compare_versions_returns_true_when_different(self):
         """Test version comparison returns true when versions differ"""
-        result = self.agent._compare_versions('A00', 'A01')
+        result = self.agent._compare_versions('1.0.0', '1.0.1', vendor='dell')
         self.assertTrue(result)
 
     def test_compare_versions_returns_false_when_same(self):
         """Test version comparison returns false when versions are same"""
-        result = self.agent._compare_versions('A01', 'A01')
+        result = self.agent._compare_versions('A01', 'A01', vendor='dell')
         self.assertFalse(result)
 
     def test_compare_versions_returns_true_when_current_is_none(self):
         """Test version comparison returns true when current version is None"""
-        result = self.agent._compare_versions(None, 'A01')
+        result = self.agent._compare_versions(None, 'A01', vendor='dell')
         self.assertTrue(result)
 
     def test_compare_versions_handles_empty_string(self):
         """Test version comparison handles empty string"""
-        result = self.agent._compare_versions('', 'A01')
+        result = self.agent._compare_versions('', 'A01', vendor='dell')
         self.assertTrue(result)
+
+    def test_compare_versions_dell_a_series(self):
+        """Test Dell A-series version comparison (A00 < A01, A13 < A14)"""
+        # A00 is older than A01
+        result = self.agent._compare_versions('A00', 'A01', vendor='dell')
+        self.assertTrue(result)
+
+        # A13 is older than A14
+        result = self.agent._compare_versions('A13', 'A14', vendor='dell')
+        self.assertTrue(result)
+
+        # A14 is NOT older than A13
+        result = self.agent._compare_versions('A14', 'A13', vendor='dell')
+        self.assertFalse(result)
+
+        # A00 is NOT older than A00
+        result = self.agent._compare_versions('A00', 'A00', vendor='dell')
+        self.assertFalse(result)
+
+    def test_compare_versions_dell_semantic(self):
+        """Test Dell semantic version comparison (1.14.2 < 1.15.0)"""
+        # 1.14.2 is older than 1.15.0
+        result = self.agent._compare_versions('1.14.2', '1.15.0', vendor='dell')
+        self.assertTrue(result)
+
+        # 1.15.0 is NOT older than 1.14.2
+        result = self.agent._compare_versions('1.15.0', '1.14.2', vendor='dell')
+        self.assertFalse(result)
+
+        # 1.99.99 is older than 2.0.0
+        result = self.agent._compare_versions('1.99.99', '2.0.0', vendor='dell')
+        self.assertTrue(result)
+
+    def test_compare_versions_hp_sp_prefix(self):
+        """Test HP SP-prefixed version comparison (SP142354 < SP142355)"""
+        # SP142354 is older than SP142355
+        result = self.agent._compare_versions('SP142354', 'SP142355', vendor='hp')
+        self.assertTrue(result)
+
+        # SP99999 is older than SP100000
+        result = self.agent._compare_versions('SP99999', 'SP100000', vendor='hp')
+        self.assertTrue(result)
+
+        # SP142355 is NOT older than SP142354
+        result = self.agent._compare_versions('SP142355', 'SP142354', vendor='hp')
+        self.assertFalse(result)
+
+        # SP142355 is NOT older than SP142355
+        result = self.agent._compare_versions('SP142355', 'SP142355', vendor='hp')
+        self.assertFalse(result)
+
+    def test_compare_versions_hp_standard(self):
+        """Test HP standard version comparison (1.2.2 < 1.2.3)"""
+        # 1.2.2 is older than 1.2.3
+        result = self.agent._compare_versions('1.2.2', '1.2.3', vendor='hp')
+        self.assertTrue(result)
+
+        # 1.2.3 is NOT older than 1.2.2
+        result = self.agent._compare_versions('1.2.3', '1.2.2', vendor='hp')
+        self.assertFalse(result)
+
+    def test_compare_versions_lenovo_multisegment(self):
+        """Test Lenovo multi-segment version comparison"""
+        # 1.81.0.23 is older than 1.82.0.24
+        result = self.agent._compare_versions('1.81.0.23', '1.82.0.24', vendor='lenovo')
+        self.assertTrue(result)
+
+        # 10.1.18838.8282 is older than 10.1.18838.8283
+        result = self.agent._compare_versions('10.1.18838.8282', '10.1.18838.8283', vendor='lenovo')
+        self.assertTrue(result)
+
+        # 1.82.0.24 is NOT older than 1.81.0.23
+        result = self.agent._compare_versions('1.82.0.24', '1.81.0.23', vendor='lenovo')
+        self.assertFalse(result)
+
+        # Equal versions
+        result = self.agent._compare_versions('1.82.0.24', '1.82.0.24', vendor='lenovo')
+        self.assertFalse(result)
+
+    def test_compare_versions_padding_normalization(self):
+        """Test that padding differences are normalized (01.02 == 1.2)"""
+        # 01.02 should equal 1.2
+        result = self.agent._compare_versions('01.02', '1.2', vendor='dell')
+        self.assertFalse(result)
+
+        # 1.2 should equal 01.02
+        result = self.agent._compare_versions('1.2', '01.02', vendor='dell')
+        self.assertFalse(result)
+
+    def test_compare_versions_with_vendor_routing(self):
+        """Test that vendor parameter correctly routes to appropriate parser"""
+        # Dell A-series should work with dell vendor
+        result = self.agent._compare_versions('A00', 'A01', vendor='dell')
+        self.assertTrue(result)
+
+        # HP SP-prefix should work with hp vendor
+        result = self.agent._compare_versions('SP100', 'SP101', vendor='hp')
+        self.assertTrue(result)
+
+        # Lenovo multi-segment should work with lenovo vendor
+        result = self.agent._compare_versions('1.0.0.1', '1.0.0.2', vendor='lenovo')
+        self.assertTrue(result)
+
+    def test_compare_versions_without_vendor(self):
+        """Test that version comparison works without vendor parameter"""
+        # Should still work with standard semantic versions
+        result = self.agent._compare_versions('1.0.0', '1.0.1')
+        self.assertTrue(result)
+
+        result = self.agent._compare_versions('1.0.1', '1.0.0')
+        self.assertFalse(result)
 
     def test_is_cache_stale_returns_true_for_nonexistent_file(self):
         """Test cache staleness check returns true for nonexistent file"""
