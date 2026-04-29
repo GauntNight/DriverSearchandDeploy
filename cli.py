@@ -3,12 +3,15 @@
 AutoPackager CLI - Command Line Interface for AutoPackager
 """
 
+import sys
+
 import click
 from rich.console import Console
 from rich.table import Table
 from pathlib import Path
 
 from autopackager.orchestration.engine import OrchestrationEngine
+from autopackager.utils.azure_validator import AzureValidator, AzureConfigurationError, ValidationResult
 from autopackager.models.job import JobType, JobState
 from autopackager.utils.config import get_config
 from autopackager.utils.database import init_db
@@ -259,6 +262,67 @@ def start_worker(concurrency):
         console.print("\n[yellow]Worker stopped[/yellow]")
     except Exception as e:
         console.print(f"[bold red]✗[/bold red] Failed to start worker: {str(e)}")
+
+
+@cli.command()
+def validate_azure():
+    """Validate Azure/Intune configuration for deployment"""
+    console.print("[bold blue]Validating Azure configuration...[/bold blue]\n")
+
+    validator = AzureValidator()
+    try:
+        results = validator.validate_all()
+    except AzureConfigurationError as e:
+        results = e.results
+
+    # Display results table
+    table = Table(title="Azure Validation Results")
+    table.add_column("Check", style="cyan")
+    table.add_column("Status", style="white")
+    table.add_column("Details", style="white")
+
+    has_failure = False
+    for result in results:
+        if result.passed:
+            status = "[bold green]PASS[/bold green]"
+        else:
+            status = "[bold red]FAIL[/bold red]"
+            has_failure = True
+
+        table.add_row(
+            result.check_name,
+            status,
+            result.details or result.message
+        )
+
+    console.print(table)
+
+    if has_failure:
+        console.print("\n[bold red]✗[/bold red] One or more validation checks failed.")
+
+        if click.confirm("\nWould you like to see remediation steps?", default=True):
+            console.print("\n[bold yellow]Remediation Steps[/bold yellow]")
+            console.print("─" * 50)
+
+            console.print("\n[bold]1. Set required environment variables:[/bold]")
+            console.print("   AZURE_TENANT_ID     - Your Azure AD tenant ID")
+            console.print("   AZURE_CLIENT_ID     - Application (client) ID")
+            console.print("   AZURE_CLIENT_SECRET - Application client secret")
+
+            console.print("\n[bold]2. Register an app in Azure Portal:[/bold]")
+            console.print("   https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade")
+
+            console.print("\n[bold]3. Or use az CLI commands:[/bold]")
+            console.print("   az ad app create --display-name AutoPackager")
+            console.print("   az ad app credential reset --id <app-id>")
+
+            console.print("\n[bold]4. Run the setup script:[/bold]")
+            console.print("   .\\azure-setup.ps1")
+
+        sys.exit(1)
+    else:
+        console.print("\n[bold green]✓[/bold green] All Azure validation checks passed.")
+        sys.exit(0)
 
 
 @cli.command()

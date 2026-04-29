@@ -467,9 +467,10 @@ class TestTestingTask:
 class TestDeploymentTask:
     """Tests for deployment_task Celery task"""
 
+    @patch('autopackager.utils.azure_validator.AzureValidator')
     @patch('autopackager.agents.deployment.DeploymentAgent')
     @patch('autopackager.orchestration.tasks.OrchestrationEngine')
-    def test_deployment_task_success(self, mock_engine_class, mock_agent_class):
+    def test_deployment_task_success(self, mock_engine_class, mock_agent_class, mock_validator_class):
         """Test successful deployment task"""
         mock_engine = Mock()
         mock_engine_class.return_value = mock_engine
@@ -505,9 +506,10 @@ class TestDeploymentTask:
         assert result['intune_app_id'] == 'app-123'
         assert result['completed'] is True
 
+    @patch('autopackager.utils.azure_validator.AzureValidator')
     @patch('autopackager.agents.deployment.DeploymentAgent')
     @patch('autopackager.orchestration.tasks.OrchestrationEngine')
-    def test_deployment_task_retry_on_failure(self, mock_engine_class, mock_agent_class):
+    def test_deployment_task_retry_on_failure(self, mock_engine_class, mock_agent_class, mock_validator_class):
         """Test deployment task retries on failure"""
         mock_engine = Mock()
         mock_engine_class.return_value = mock_engine
@@ -548,9 +550,10 @@ class TestDeploymentTask:
         mock_engine.update_job_state.assert_not_called()
         assert result == previous_result
 
+    @patch('autopackager.utils.azure_validator.AzureValidator')
     @patch('autopackager.agents.deployment.DeploymentAgent')
     @patch('autopackager.orchestration.tasks.OrchestrationEngine')
-    def test_deployment_task_handles_http_error(self, mock_engine_class, mock_agent_class):
+    def test_deployment_task_handles_http_error(self, mock_engine_class, mock_agent_class, mock_validator_class):
         """Test deployment task handles HTTP errors gracefully"""
         mock_engine = Mock()
         mock_engine_class.return_value = mock_engine
@@ -838,6 +841,7 @@ class TestContinuousCatalogDiscovery:
 class TestTaskChaining:
     """Tests for Celery task chaining behavior"""
 
+    @patch('autopackager.utils.azure_validator.AzureValidator')
     @patch('autopackager.agents.deployment.DeploymentAgent')
     @patch('autopackager.agents.testing.TestingAgent')
     @patch('autopackager.agents.packaging.PackagingAgent')
@@ -845,7 +849,7 @@ class TestTaskChaining:
     @patch('autopackager.orchestration.tasks.OrchestrationEngine')
     def test_full_pipeline_success(
         self, mock_engine_class, mock_discovery_class, mock_packaging_class,
-        mock_testing_class, mock_deployment_class
+        mock_testing_class, mock_deployment_class, mock_validator_class
     ):
         """Test full pipeline execution from discovery to deployment"""
         # Setup engine

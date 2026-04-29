@@ -283,6 +283,105 @@ def sample_vm_test_result():
     }
 
 
+# Azure Validator Fixtures
+@pytest.fixture
+def mock_azure_validator():
+    """Create a mock AzureValidator with configurable pass/fail behavior
+
+    Usage:
+        def test_pass(mock_azure_validator):
+            validator = mock_azure_validator(pass_all=True)
+
+        def test_fail(mock_azure_validator):
+            validator = mock_azure_validator(
+                pass_all=False,
+                fail_methods=['validate_authentication']
+            )
+    """
+    def _factory(pass_all=True, fail_methods=None):
+        from autopackager.utils.azure_validator import AzureValidator
+        validator = Mock(spec=AzureValidator)
+
+        fail_methods = fail_methods or []
+
+        success_result = {'success': True, 'message': 'Validation passed'}
+        failure_result = {'success': False, 'message': 'Validation failed'}
+
+        for method_name in ['validate_config', 'validate_authentication',
+                            'validate_graph_access', 'validate_deployment_rings']:
+            method = getattr(validator, method_name)
+            if not pass_all or method_name in fail_methods:
+                method.return_value = failure_result
+            else:
+                method.return_value = success_result
+
+        if pass_all and not fail_methods:
+            validator.validate_all.return_value = {
+                'success': True,
+                'results': {
+                    'config': success_result,
+                    'authentication': success_result,
+                    'graph_access': success_result,
+                    'deployment_rings': success_result
+                }
+            }
+        else:
+            validator.validate_all.return_value = {
+                'success': False,
+                'results': {
+                    name: failure_result if name in [m.replace('validate_', '') for m in fail_methods]
+                    else success_result
+                    for name in ['config', 'authentication', 'graph_access', 'deployment_rings']
+                }
+            }
+
+        return validator
+
+    return _factory
+
+
+@pytest.fixture
+def valid_azure_config():
+    """Create a complete, valid config dict matching config.yaml structure"""
+    return {
+        'intune': {
+            'tenant_id': 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+            'client_id': 'f9e8d7c6-b5a4-3210-fedc-ba9876543210',
+            'client_secret': 'test-azure-client-secret-value',
+            'graph_endpoint': 'https://graph.microsoft.com',
+            'api_version': 'v1.0',
+            'authority': 'https://login.microsoftonline.com/a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+            'scope': ['https://graph.microsoft.com/.default']
+        },
+        'deployment_rings': [
+            {
+                'name': 'IT Pilot',
+                'ring_id': 'ring0',
+                'entra_group_id': 'aabbccdd-1122-3344-5566-778899001122',
+                'deferral_days': 0
+            },
+            {
+                'name': 'Early Adopters',
+                'ring_id': 'ring1',
+                'entra_group_id': 'bbccddee-2233-4455-6677-889900112233',
+                'deferral_days': 3
+            },
+            {
+                'name': 'Broad Deployment',
+                'ring_id': 'ring2',
+                'entra_group_id': 'ccddeeff-3344-5566-7788-990011223344',
+                'deferral_days': 7
+            },
+            {
+                'name': 'Critical Systems',
+                'ring_id': 'ring3',
+                'entra_group_id': 'ddeeff00-4455-6677-8899-001122334455',
+                'deferral_days': 14
+            }
+        ]
+    }
+
+
 # Cleanup Fixtures
 @pytest.fixture(autouse=True)
 def reset_singletons():

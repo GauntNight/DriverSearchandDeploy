@@ -1,0 +1,354 @@
+{
+  "feature": "Azure Pre-Deployment Validation Gate",
+  "workflow_type": "feature",
+  "workflow_rationale": "This is a new capability that does not exist in the codebase. The system currently has no pre-deployment validation logic — GraphAPIClient simply attempts authentication in its constructor and raises a raw exception on failure. This feature adds a new module (azure_validator.py), a new CLI command (validate-azure), modifications to the deployment pipeline to insert a blocking validation gate, and comprehensive test coverage.",
+  "phases": [
+    {
+      "id": "phase-1-core-validator",
+      "name": "Core Validator Module",
+      "type": "implementation",
+      "description": "Create the AzureValidator class, ValidationResult dataclass, AzureConfigurationError exception, and config.py helper. This is the foundation all other phases depend on.",
+      "depends_on": [],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-1-1",
+          "description": "Add validate_config_fields() helper to autopackager/utils/config.py that checks required keys exist and are not placeholder/empty values (e.g., strings still containing '${', 'your_*_here', or empty strings after env var substitution fails).",
+          "service": "main",
+          "files_to_modify": [
+            "autopackager/utils/config.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "autopackager/utils/config.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from autopackager.utils.config import validate_config_fields; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-1-2",
+          "description": "Create autopackager/utils/azure_validator.py with: (1) ValidationResult dataclass with fields: check_name, passed, message, details. (2) AzureConfigurationError exception class that accepts a list of ValidationResults and formats them into a human-readable message. (3) AzureValidator class with validate_config(), validate_authentication(), validate_graph_access(), validate_deployment_rings(), and validate_all() methods. The validator must be self-contained — it creates its own MSAL app and makes its own HTTP calls, independent of GraphAPIClient. Follow get_logger(__name__) pattern. Use get_config() singleton. Redact secrets in log output.",
+          "service": "main",
+          "files_to_modify": [],
+          "files_to_create": [
+            "autopackager/utils/azure_validator.py"
+          ],
+          "patterns_from": [
+            "autopackager/utils/graph_client.py",
+            "autopackager/utils/config.py",
+            "autopackager/utils/logger.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from autopackager.utils.azure_validator import AzureValidator, ValidationResult, AzureConfigurationError; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-pipeline-integration",
+      "name": "Deployment Pipeline Integration",
+      "type": "implementation",
+      "description": "Insert the blocking validation gate into the deployment pipeline — both the DeploymentAgent methods and the Celery deployment task.",
+      "depends_on": [
+        "phase-1-core-validator"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Modify DeploymentAgent in deployment_agent.py: (1) Add a _validate_azure_config() private method that instantiates AzureValidator and calls validate_all(). If any critical check fails (config, auth, or graph access), raise AzureConfigurationError with all failure details. Ring validation failures are warnings, not blockers. (2) Call _validate_azure_config() at the TOP of deploy() method (before package lookup, before _get_graph_client). (3) Call _validate_azure_config() at the TOP of deploy_driver_update_profile() method (before graph_client usage). Import AzureValidator and AzureConfigurationError at the top of the file.",
+          "service": "main",
+          "files_to_modify": [
+            "autopackager/agents/deployment/deployment_agent.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "autopackager/agents/deployment/deployment_agent.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from autopackager.agents.deployment.deployment_agent import DeploymentAgent; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-2",
+          "description": "Modify deployment_task() in orchestration/tasks.py: (1) Before the existing DeploymentAgent import, add a validation step that runs AzureValidator.validate_all(). (2) If validation fails, catch AzureConfigurationError and call engine.mark_job_failed() with the error details. Do NOT trigger Celery retry (config errors won't self-heal). (3) Return an error dict instead of raising, so the task finishes without retry. Import AzureValidator and AzureConfigurationError.",
+          "service": "main",
+          "files_to_modify": [
+            "autopackager/orchestration/tasks.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "autopackager/orchestration/tasks.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from autopackager.orchestration.tasks import deployment_task; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-cli-command",
+      "name": "CLI Validate-Azure Command",
+      "type": "implementation",
+      "description": "Add the validate-azure CLI command with Rich table output and guided remediation prompts.",
+      "depends_on": [
+        "phase-1-core-validator"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-3-1",
+          "description": "Add 'validate-azure' command to cli.py under the main cli group: (1) Import AzureValidator and ValidationResult. (2) Create a new @cli.command() called validate_azure that instantiates AzureValidator and calls validate_all(). (3) Display results as a Rich Table with columns: Check, Status (PASS/FAIL with colored markup), Details. (4) On any failure, display guided remediation section with: which env vars to set, Azure portal URL (https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade), az CLI commands (az ad app create, az ad app credential reset), and reference to azure-setup.ps1. (5) Exit with code 0 on all pass, code 1 on any failure. Use sys.exit() for exit codes. Use click.confirm() to ask if user wants to see remediation steps.",
+          "service": "main",
+          "files_to_modify": [
+            "cli.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "cli.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from cli import validate_azure; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-4-test-suite",
+      "name": "Test Suite",
+      "type": "implementation",
+      "description": "Create comprehensive unit tests for validation logic and integration tests for CLI command and deployment pipeline integration.",
+      "depends_on": [
+        "phase-2-pipeline-integration",
+        "phase-3-cli-command"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-4-1",
+          "description": "Add test fixtures to tests/conftest.py: (1) mock_azure_validator fixture that returns a Mock of AzureValidator with configurable pass/fail behavior. (2) valid_azure_config fixture that returns a complete, valid config dict matching the config.yaml structure (intune section + deployment_rings) with realistic test values.",
+          "service": "main",
+          "files_to_modify": [
+            "tests/conftest.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/conftest.py",
+            "tests/fixtures/mock_graph_api.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"import tests.conftest; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-4-2",
+          "description": "Create tests/test_azure_validator.py with unit tests covering: (1) test_validate_config_all_fields_present — valid config passes. (2) test_validate_config_missing_tenant_id — missing tenant_id detected. (3) test_validate_config_missing_client_id — missing client_id detected. (4) test_validate_config_missing_client_secret — missing client_secret detected. (5) test_validate_config_placeholder_values — placeholder strings like '${AZURE_TENANT_ID}' or 'your_tenant_id_here' detected. (6) test_validate_authentication_success — mock MSAL returning access_token. (7) test_validate_authentication_invalid_secret — mock MSAL returning error. (8) test_validate_authentication_invalid_tenant — mock MSAL tenant not found. (9) test_validate_graph_access_success — mock requests.get returning 200. (10) test_validate_graph_access_forbidden — mock 403 response. (11) test_validate_graph_access_network_error — mock ConnectionError. (12) test_validate_deployment_rings_all_valid — all groups exist. (13) test_validate_deployment_rings_missing_group — one group missing. (14) test_validate_deployment_rings_empty_config — empty rings list is warning. (15) test_validate_all_aggregates_results — validate_all combines all checks. (16) test_azure_configuration_error_contains_details — exception message formatting. (17) test_deployment_agent_validates_before_deploy — deploy() calls validation. (18) test_deployment_task_no_retry_on_config_error — Celery task fails without retry. Use unittest.mock.patch for MSAL and requests. Follow existing test patterns from test_deployment_agent.py.",
+          "service": "main",
+          "files_to_modify": [],
+          "files_to_create": [
+            "tests/test_azure_validator.py"
+          ],
+          "patterns_from": [
+            "tests/unit/test_deployment_agent.py",
+            "tests/fixtures/mock_graph_api.py",
+            "tests/conftest.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m pytest tests/test_azure_validator.py -v --no-header -q 2>&1 | head -30",
+            "expected": "All tests pass (no FAILED lines in output)"
+          },
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-5-integration-verification",
+      "name": "Integration Verification",
+      "type": "integration",
+      "description": "Verify end-to-end that the validation gate works correctly: existing tests still pass, new tests pass, CLI command works, and deployment pipeline blocks on bad config.",
+      "depends_on": [
+        "phase-4-test-suite"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-5-1",
+          "description": "Run the full test suite to verify no regressions. Ensure all existing tests pass alongside the new azure_validator tests. Fix any import errors or test failures introduced by the changes.",
+          "all_services": true,
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "python -m pytest tests/ -v --no-header -q 2>&1 | tail -20",
+            "expected": "All tests pass, no failures or errors"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-5-2",
+          "description": "Verify CLI validate-azure command runs without import errors. Test with --help flag to confirm command is registered. Verify Rich table output format is correct by running with mocked config.",
+          "all_services": true,
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "python cli.py validate-azure --help",
+            "expected": "Help text displayed without errors"
+          },
+          "status": "completed"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_phases": 5,
+    "total_subtasks": 9,
+    "services_involved": [
+      "main"
+    ],
+    "parallelism": {
+      "max_parallel_phases": 2,
+      "parallel_groups": [
+        {
+          "phases": [
+            "phase-2-pipeline-integration",
+            "phase-3-cli-command"
+          ],
+          "reason": "Both depend only on phase-1-core-validator and modify different files (deployment_agent.py+tasks.py vs cli.py)"
+        }
+      ],
+      "recommended_workers": 1,
+      "speedup_estimate": "Minimal — single service, subtasks within phases are sequential. Phases 2 and 3 could theoretically parallel but share the same service context."
+    },
+    "startup_command": "source auto-claude/.venv/bin/activate && python auto-claude/run.py --spec 013 --parallel 1"
+  },
+  "verification_strategy": {
+    "risk_level": "high",
+    "skip_validation": false,
+    "test_creation_phase": "post_implementation",
+    "test_types_required": [
+      "unit",
+      "integration"
+    ],
+    "security_scanning_required": true,
+    "staging_deployment_required": false,
+    "acceptance_criteria": [
+      "All existing tests pass (no regressions)",
+      "New azure_validator tests cover: valid config, missing fields, placeholder values, auth failure, graph access failure, ring validation, expired secrets, network errors",
+      "CLI validate-azure command displays Rich table with pass/fail per check",
+      "DeploymentAgent.deploy() raises AzureConfigurationError on validation failure",
+      "Celery deployment_task marks job as failed without retry on config error",
+      "No secrets logged in plain text (client_secret must be redacted)",
+      "Remediation messages are accurate and actionable"
+    ],
+    "verification_steps": [
+      {
+        "name": "Unit Tests — Azure Validator",
+        "command": "python -m pytest tests/test_azure_validator.py -v",
+        "expected_outcome": "All tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Full Test Suite — No Regressions",
+        "command": "python -m pytest tests/ -v",
+        "expected_outcome": "All tests pass, including existing tests",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Import Check — All New Modules",
+        "command": "python -c \"from autopackager.utils.azure_validator import AzureValidator, ValidationResult, AzureConfigurationError; from autopackager.utils.config import validate_config_fields; print('All imports OK')\"",
+        "expected_outcome": "All imports OK",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "CLI Command Registration",
+        "command": "python cli.py validate-azure --help",
+        "expected_outcome": "Help text displayed without errors",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Secret Redaction Check",
+        "command": "grep -rn 'client_secret' autopackager/utils/azure_validator.py | grep -v 'redact\\|mask\\|\\*\\*\\*\\|secret_display\\|REDACTED' | head -5",
+        "expected_outcome": "No plain-text secret logging found",
+        "type": "security",
+        "required": true,
+        "blocking": true
+      }
+    ],
+    "reasoning": "High risk because this feature handles Azure credentials (Application ID, Client Secret, Tenant ID) and authentication tokens — all security-sensitive data. Security scan is required to ensure no credential leakage in logs or error messages. Unit tests needed for validation logic, integration tests needed for deployment pipeline and CLI integration."
+  },
+  "qa_acceptance": {
+    "unit_tests": {
+      "required": true,
+      "commands": [
+        "python -m pytest tests/test_azure_validator.py -v"
+      ],
+      "minimum_coverage": null
+    },
+    "integration_tests": {
+      "required": true,
+      "commands": [
+        "python -m pytest tests/ -v -k 'azure_validator or deployment'"
+      ],
+      "services_to_test": [
+        "main"
+      ]
+    },
+    "e2e_tests": {
+      "required": false,
+      "commands": [],
+      "flows": []
+    },
+    "browser_verification": {
+      "required": false,
+      "pages": []
+    },
+    "database_verification": {
+      "required": false,
+      "checks": []
+    }
+  },
+  "qa_signoff": null,
+  "status": "human_review",
+  "planStatus": "review",
+  "xstateState": "human_review",
+  "executionPhase": "complete",
+  "updated_at": "2026-04-29T16:46:46.139Z",
+  "lastEvent": {
+    "eventId": "b689237f-c55c-4aa0-9b78-14fab08e6a11",
+    "sequence": 0,
+    "type": "PLANNING_COMPLETE",
+    "timestamp": "2026-04-29T16:25:41.546485+00:00"
+  },
+  "reviewReason": "completed"
+}

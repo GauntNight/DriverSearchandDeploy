@@ -229,6 +229,17 @@ def deployment_task(self, previous_result, job_id: int):
     engine.update_job_state(job_id, JobState.DEPLOYING)
 
     try:
+        # Validate Azure configuration before attempting deployment
+        from autopackager.utils.azure_validator import AzureValidator, AzureConfigurationError
+
+        try:
+            AzureValidator().validate_all()
+        except AzureConfigurationError as e:
+            error_msg = f"Azure configuration validation failed: {str(e)}"
+            logger.error("Deployment blocked by validation", job_id=job_id, error=error_msg)
+            engine.mark_job_failed(job_id, error_msg)
+            return {"job_id": job_id, "error": error_msg, "validation_failed": True}
+
         # Import here to avoid circular dependencies
         from autopackager.agents.deployment import DeploymentAgent
 
