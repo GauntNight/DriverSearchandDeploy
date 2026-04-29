@@ -69,11 +69,17 @@ class TestValidateConfig(unittest.TestCase):
         self.assertIn('client_secret', result.message)
 
     def test_validate_config_placeholder_values(self):
-        """Placeholder strings like '${AZURE_TENANT_ID}' are detected."""
+        """Placeholder strings like '${AZURE_TENANT_ID}' or 'your_tenant_id_here' are detected."""
         validator = _build_validator(tenant_id='${AZURE_TENANT_ID}')
         result = validator.validate_config()
         self.assertFalse(result.passed)
         self.assertIn('tenant_id', result.message)
+
+        # Also detect your_*_here pattern
+        validator2 = _build_validator(tenant_id='your_tenant_id_here')
+        result2 = validator2.validate_config()
+        self.assertFalse(result2.passed)
+        self.assertIn('tenant_id', result2.message)
 
 
 class TestValidateAuthentication(unittest.TestCase):

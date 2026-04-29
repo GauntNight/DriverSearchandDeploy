@@ -11,7 +11,7 @@ from rich.table import Table
 from pathlib import Path
 
 from autopackager.orchestration.engine import OrchestrationEngine
-from autopackager.utils.azure_validator import AzureValidator, ValidationResult
+from autopackager.utils.azure_validator import AzureValidator, AzureConfigurationError, ValidationResult
 from autopackager.models.job import JobType, JobState
 from autopackager.utils.config import get_config
 from autopackager.utils.database import init_db
@@ -270,7 +270,10 @@ def validate_azure():
     console.print("[bold blue]Validating Azure configuration...[/bold blue]\n")
 
     validator = AzureValidator()
-    results = validator.validate_all()
+    try:
+        results = validator.validate_all()
+    except AzureConfigurationError as e:
+        results = e.results
 
     # Display results table
     table = Table(title="Azure Validation Results")

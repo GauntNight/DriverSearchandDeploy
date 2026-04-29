@@ -1,5 +1,6 @@
 """Azure Configuration and Connectivity Validator"""
 
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -67,7 +68,17 @@ class AzureValidator:
         missing = []
         for field_name in ("tenant_id", "client_id", "client_secret"):
             value = getattr(self, field_name, "")
-            if not value or value.startswith("${") or not value.strip():
+            if not value or not value.strip():
+                missing.append(field_name)
+            elif value.startswith("${"):
+                missing.append(field_name)
+            elif re.match(r'^your_\w+_here$', value, re.IGNORECASE):
+                missing.append(field_name)
+            elif re.match(r'^<.+>$', value):
+                missing.append(field_name)
+            elif re.match(r'^TODO', value, re.IGNORECASE):
+                missing.append(field_name)
+            elif re.match(r'^CHANGE_ME$', value, re.IGNORECASE):
                 missing.append(field_name)
 
         if missing:
