@@ -1,6 +1,7 @@
 """Configuration Management"""
 
 import os
+import re
 import yaml
 from pathlib import Path
 from dotenv import load_dotenv
@@ -40,6 +41,57 @@ def load_config(config_path=None):
     config = substitute_env_vars(config)
 
     return config
+
+
+def validate_config_fields(config, required_fields):
+    """Validate that required config fields exist and are not placeholder/empty values.
+
+    Args:
+        config: Dictionary of configuration values to validate.
+        required_fields: List of dot-notation key paths (e.g. ['azure.tenant_id', 'app.name']).
+
+    Returns:
+        List of error strings for any invalid fields. Empty list means all valid.
+    """
+    placeholder_patterns = [
+        re.compile(r'\$\{'),           # Un-substituted env vars like ${VAR}
+        re.compile(r'^your_\w+_here$', re.IGNORECASE),  # Placeholder values
+        re.compile(r'^<.+>$'),         # Angle-bracket placeholders like <your-value>
+        re.compile(r'^TODO', re.IGNORECASE),  # TODO placeholders
+        re.compile(r'^CHANGE_ME$', re.IGNORECASE),
+    ]
+
+    errors = []
+    for field_path in required_fields:
+        keys = field_path.split('.')
+        value = config
+        found = True
+        for key in keys:
+            if isinstance(value, dict) and key in value:
+                value = value[key]
+            else:
+                errors.append(f"Missing required config field: {field_path}")
+                found = False
+                break
+
+        if not found:
+            continue
+
+        # Check for empty/None values
+        if value is None or (isinstance(value, str) and value.strip() == ''):
+            errors.append(f"Config field '{field_path}' is empty")
+            continue
+
+        # Check for placeholder patterns in string values
+        if isinstance(value, str):
+            for pattern in placeholder_patterns:
+                if pattern.search(value):
+                    errors.append(
+                        f"Config field '{field_path}' contains a placeholder value: {value}"
+                    )
+                    break
+
+    return errors
 
 
 def get_config():
