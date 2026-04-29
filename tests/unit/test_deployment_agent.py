@@ -38,6 +38,11 @@ class TestDeploymentAgentCore(unittest.TestCase):
         with patch('autopackager.agents.deployment.deployment_agent.get_config', return_value=self.mock_config):
             self.agent = DeploymentAgent()
 
+        # Mock Azure validation so unit tests don't require real Azure credentials
+        self.validate_patcher = patch.object(self.agent, '_validate_azure_config')
+        self.mock_validate_azure = self.validate_patcher.start()
+        self.addCleanup(self.validate_patcher.stop)
+
         # Sample job
         self.job = Mock(spec=Job)
         self.job.id = 1

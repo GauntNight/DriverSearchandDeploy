@@ -233,7 +233,7 @@ def deployment_task(self, previous_result, job_id: int):
         from autopackager.utils.azure_validator import AzureValidator, AzureConfigurationError
 
         try:
-            AzureValidator.validate_all()
+            AzureValidator().validate_all()
         except AzureConfigurationError as e:
             error_msg = f"Azure configuration validation failed: {str(e)}"
             logger.error("Deployment blocked by validation", job_id=job_id, error=error_msg)

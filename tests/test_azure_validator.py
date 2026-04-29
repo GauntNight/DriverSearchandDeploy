@@ -288,7 +288,7 @@ class TestDeploymentTaskNoRetryOnConfigError(unittest.TestCase):
             ValidationResult(check_name='config', passed=False, message='Missing tenant_id'),
         ]
         with patch('autopackager.utils.azure_validator.AzureValidator') as mock_validator_cls:
-            mock_validator_cls.validate_all.side_effect = AzureConfigurationError(failed_results)
+            mock_validator_cls.return_value.validate_all.side_effect = AzureConfigurationError(failed_results)
 
             result = deployment_task.run(None, 1)
 
