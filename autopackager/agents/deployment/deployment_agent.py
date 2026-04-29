@@ -14,6 +14,7 @@ from autopackager.models.package import Package
 from autopackager.models.deployment import Deployment, DeploymentStatus
 from autopackager.utils.config import get_config
 from autopackager.utils.database import db_session_scope
+from autopackager.utils.azure_validator import AzureConfigurationError, AzureValidator
 from autopackager.utils.graph_client import GraphAPIClient
 from autopackager.utils.logger import get_logger
 
@@ -28,6 +29,43 @@ class DeploymentAgent:
         self.deployment_rings = self.config.get('deployment_rings', [])
         self.graph_client = None
 
+    def _validate_azure_config(self) -> None:
+        """Validate Azure/Intune configuration before deployment.
+
+        Runs all Azure validation checks. Configuration, authentication, and
+        Graph API access failures are critical and will raise
+        AzureConfigurationError. Deployment ring validation failures are
+        logged as warnings but do not block deployment.
+        """
+        validator = AzureValidator()
+
+        results = []
+        critical_failures = []
+
+        for check_name, check_fn in [
+            ('config', validator.validate_config),
+            ('auth', validator.validate_authentication),
+            ('graph_access', validator.validate_graph_access),
+        ]:
+            result = check_fn()
+            results.append(result)
+            if not result.passed:
+                critical_failures.append(result)
+
+        ring_result = validator.validate_deployment_rings()
+        results.append(ring_result)
+        if not ring_result.passed:
+            logger.warning(
+                "Deployment ring validation failed (non-blocking)",
+                check=ring_result.check_name,
+                message=ring_result.message,
+            )
+
+        if critical_failures:
+            raise AzureConfigurationError(results)
+
+        logger.info("Azure configuration validation passed")
+
     def _get_graph_client(self) -> GraphAPIClient:
         """Get or create Graph API client"""
         if self.graph_client is None:
@@ -39,6 +77,8 @@ class DeploymentAgent:
         Main deployment method - publishes package to Intune and assigns Ring 0
         """
         logger.info("Starting deployment", job_id=job.id)
+
+        self._validate_azure_config()
 
         package_id = job.job_metadata.get('package_id')
         if not package_id:
@@ -488,6 +528,8 @@ class DeploymentAgent:
             job_id=job.id,
             approval_type=approval_type,
         )
+
+        self._validate_azure_config()
 
         hardware_model = job.hardware_model or job.software_title
         display_name = f"Driver Updates - {hardware_model}"
