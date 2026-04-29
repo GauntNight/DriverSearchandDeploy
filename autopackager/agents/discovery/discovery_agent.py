@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional
 from autopackager.models.job import Job, JobType
 from autopackager.utils.config import get_config
 from autopackager.utils.logger import get_logger
+from autopackager.utils.version_comparison import VersionComparator
 
 logger = get_logger(__name__)
 
@@ -20,6 +21,7 @@ class DiscoveryAgent:
     def __init__(self):
         self.config = get_config()
         self.oem_catalogs = self.config['oem_catalogs']
+        self.version_comparator = VersionComparator()
 
     def discover(self, job: Job) -> Dict[str, Any]:
         """
@@ -76,7 +78,7 @@ class DiscoveryAgent:
             download_url = f"{base_url}/{driver_pack.get('path', '')}"
 
             # Compare versions
-            update_available = self._compare_versions(job.current_version, latest_version)
+            update_available = self._compare_versions(job.current_version, latest_version, job.vendor)
 
             return {
                 'update_available': update_available,
@@ -201,7 +203,7 @@ class DiscoveryAgent:
             download_url = driver_info.get('url', '')
 
             # Compare versions
-            update_available = self._compare_versions(job.current_version, latest_version)
+            update_available = self._compare_versions(job.current_version, latest_version, job.vendor)
 
             return {
                 'update_available': update_available,
@@ -316,7 +318,7 @@ class DiscoveryAgent:
             download_url = driver_info.get('url', '')
 
             # Compare versions
-            update_available = self._compare_versions(job.current_version, latest_version)
+            update_available = self._compare_versions(job.current_version, latest_version, job.vendor)
 
             return {
                 'update_available': update_available,
@@ -423,14 +425,31 @@ class DiscoveryAgent:
         logger.warning("Software discovery not yet implemented (Phase 2)")
         return {'update_available': False, 'note': 'Software discovery Phase 2'}
 
-    def _compare_versions(self, current: Optional[str], latest: str) -> bool:
-        """Compare version strings to determine if update is available"""
-        if not current:
-            return True
+    def _compare_versions(self, current: Optional[str], latest: str, vendor: Optional[str] = None) -> bool:
+        """Compare version strings to determine if update is available
 
-        # Simple string comparison for now
-        # TODO: Implement proper version comparison (semver)
-        return current != latest
+        Args:
+            current: Current version string (can be None)
+            latest: Latest version string to compare
+            vendor: OEM vendor (dell, hp, lenovo) for vendor-specific parsing
+
+        Returns:
+            True if latest version is newer than current version
+            Returns True if current is None (no current version)
+            Returns False if version parsing fails
+        """
+        try:
+            return self.version_comparator.is_newer(current, latest, vendor)
+        except Exception as e:
+            logger.error(
+                "Version comparison failed",
+                current=current,
+                latest=latest,
+                vendor=vendor,
+                error=str(e)
+            )
+            # Default to False (don't update) if we can't parse versions
+            return False
 
     def _is_cache_stale(self, file_path: Path, max_age_hours: int = 24) -> bool:
         """Check if cached file is older than max_age_hours"""
