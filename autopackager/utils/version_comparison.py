@@ -339,16 +339,16 @@ class VersionComparator:
         """Determine if latest version is newer than current version
 
         Args:
-            current: Current version string (can be None)
+            current: Current version string (can be None or empty string)
             latest: Latest version string to compare
             vendor: Vendor name for context-aware parsing
 
         Returns:
             True if latest is newer than current, False otherwise
-            Returns True if current is None (no current version)
+            Returns True if current is None or empty string (no current version)
         """
         # No current version means any latest version is "newer"
-        if current is None:
+        if current is None or current == '':
             return True
 
         try:

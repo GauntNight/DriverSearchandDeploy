@@ -133,6 +133,7 @@ class TestDiscoveryAgentDell(unittest.TestCase):
         self.job.hardware_model = 'Latitude 7420'
         self.job.driver_type = 'chipset'
         self.job.current_version = 'A00'
+        self.job.vendor = 'dell'
 
         # Sample Dell catalog XML
         self.sample_catalog_data = {
@@ -325,7 +326,8 @@ class TestDiscoveryAgentHP(unittest.TestCase):
         self.job.id = 1
         self.job.hardware_model = 'EliteBook 840 G8'
         self.job.driver_type = 'chipset'
-        self.job.current_version = '1.0.0'
+        self.job.current_version = None
+        self.job.vendor = 'hp'
 
         self.sample_catalog_data = {
             'ImagePal': {
@@ -445,6 +447,7 @@ class TestDiscoveryAgentLenovo(unittest.TestCase):
         self.job.hardware_model = 'ThinkPad X1 Carbon Gen 9'
         self.job.driver_type = 'chipset'
         self.job.current_version = '1.0.0'
+        self.job.vendor = 'lenovo'
 
         self.sample_catalog_data = {
             'Products': {
