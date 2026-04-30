@@ -82,6 +82,12 @@ deployment_rings:
     entra_group_id: "${RING3_GROUP_ID}"
     deferral_days: 14
 
+# Rollback Configuration
+rollback:
+  enabled: true
+  failure_threshold_percent: 20.0
+  minimum_install_count: 5
+
 # Paths
 paths:
   downloads: "data/downloads"

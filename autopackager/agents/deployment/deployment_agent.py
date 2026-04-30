@@ -788,6 +788,122 @@ class DeploymentAgent:
 
         return should_rollback
 
+    def execute_rollback(
+        self,
+        deployment_id: int,
+        failure_rate: float,
+        affected_device_count: int,
+        reason: str = "Automatic rollback due to failure threshold exceeded"
+    ) -> Dict[str, Any]:
+        """
+        Execute full rollback flow for a failed deployment.
+
+        Orchestrates the complete rollback process:
+        1. Remove failed assignment from affected ring
+        2. Get previous known-good package version
+        3. Re-deploy previous package to the same ring
+        4. Update deployment status to ROLLED_BACK
+        5. Log rollback event with full context
+
+        Args:
+            deployment_id: ID of the deployment to roll back
+            failure_rate: Failure rate percentage that triggered rollback
+            affected_device_count: Number of devices affected by failed deployment
+            reason: Reason for rollback (default: automatic threshold exceeded)
+
+        Returns:
+            Dict with rollback details: previous_package_id, previous_version, status
+        """
+        logger.info(
+            "Starting rollback execution",
+            deployment_id=deployment_id,
+            failure_rate=failure_rate,
+            affected_device_count=affected_device_count
+        )
+
+        # Get deployment record and extract key information
+        with db_session_scope() as session:
+            deployment = session.query(Deployment).filter(Deployment.id == deployment_id).first()
+            if not deployment:
+                raise ValueError(f"Deployment {deployment_id} not found")
+
+            package_id = deployment.package_id
+            intune_app_id = deployment.intune_app_id
+            group_id = deployment.entra_group_id
+            ring_id = deployment.ring_id
+            failed_count = deployment.failed_installs
+
+        # Step 1: Remove failed assignment from affected ring
+        logger.info("Removing failed app assignment", app_id=intune_app_id, group_id=group_id)
+        self.remove_app_assignment(intune_app_id, group_id)
+
+        # Step 2: Get previous known-good package
+        logger.info("Finding previous known-good package", current_package_id=package_id)
+        previous_package = self.get_previous_package(package_id)
+        if not previous_package:
+            raise ValueError(f"No previous known-good package found for package {package_id}")
+
+        if not previous_package.intune_app_id:
+            raise ValueError(
+                f"Previous package {previous_package.id} was not properly deployed "
+                "(missing intune_app_id)"
+            )
+
+        # Step 3: Re-deploy previous package to the same ring
+        # Find the ring index from ring_id (e.g., "ring0" -> 0)
+        ring_index = None
+        for idx, ring in enumerate(self.deployment_rings):
+            if ring['ring_id'] == ring_id:
+                ring_index = idx
+                break
+
+        if ring_index is None:
+            raise ValueError(f"Ring {ring_id} not found in deployment configuration")
+
+        logger.info(
+            "Re-deploying previous package to ring",
+            previous_package_id=previous_package.id,
+            previous_version=previous_package.version,
+            intune_app_id=previous_package.intune_app_id,
+            ring_index=ring_index,
+            ring_id=ring_id
+        )
+        self._assign_to_ring(previous_package.intune_app_id, previous_package, ring_index)
+
+        # Step 4: Update deployment status to ROLLED_BACK
+        with db_session_scope() as session:
+            deployment = session.query(Deployment).filter(Deployment.id == deployment_id).first()
+            if deployment:
+                deployment.status = DeploymentStatus.ROLLED_BACK
+                deployment.rolled_back_at = datetime.utcnow()
+                deployment.rollback_reason = (
+                    f"{reason}. Failure rate: {failure_rate:.1f}% "
+                    f"({failed_count}/{affected_device_count} devices). "
+                    f"Rolled back to version {previous_package.version}"
+                )
+                deployment.previous_package_id = previous_package.id
+
+        # Step 5: Log rollback event with full context
+        logger.info(
+            "Rollback completed successfully",
+            deployment_id=deployment_id,
+            previous_package_id=previous_package.id,
+            previous_version=previous_package.version,
+            failure_rate=failure_rate,
+            affected_devices=affected_device_count,
+            failed_count=failed_count,
+            target_version=previous_package.version
+        )
+
+        return {
+            'deployment_id': deployment_id,
+            'previous_package_id': previous_package.id,
+            'previous_version': previous_package.version,
+            'status': 'rolled_back',
+            'failure_rate': failure_rate,
+            'affected_devices': affected_device_count
+        }
+
     def update_deployment_status(self, deployment_id: int, status_data: Dict[str, Any]):
         """Update deployment record with latest status data from Intune.
 
