@@ -3,6 +3,7 @@
 AutoPackager CLI - Command Line Interface for AutoPackager
 """
 
+import re
 import sys
 
 import click
@@ -13,10 +14,12 @@ from pathlib import Path
 from autopackager.orchestration.engine import OrchestrationEngine
 from autopackager.utils.azure_validator import AzureValidator, AzureConfigurationError, ValidationResult
 from autopackager.models.job import JobType, JobState
+from autopackager.models.deployment import Deployment
 from autopackager.utils.config import get_config
-from autopackager.utils.database import init_db
+from autopackager.utils.database import init_db, db_session_scope
 from autopackager.utils.logger import setup_logging, get_logger
 from autopackager.orchestration.tasks import create_packaging_job
+from autopackager.agents.deployment.deployment_agent import DeploymentAgent
 
 console = Console()
 
@@ -157,10 +160,77 @@ def job_status(job_id):
     if job.error_message:
         console.print(f"  [bold red]Error:[/bold red] {job.error_message}")
 
-    if job.metadata:
+    # Display deployment ring information
+    package_id = job.job_metadata.get('package_id') if job.job_metadata else None
+    if package_id:
+        _display_deployment_ring_info(package_id)
+
+    if job.job_metadata:
         console.print(f"\n  Metadata:")
-        for key, value in job.metadata.items():
+        for key, value in job.job_metadata.items():
             console.print(f"    {key}: {value}")
+
+
+def _display_deployment_ring_info(package_id: int):
+    """Display deployment ring and promotion eligibility information"""
+    try:
+        with db_session_scope() as session:
+            # Get all deployments for this package, ordered by created_at descending
+            deployments = session.query(Deployment).filter(
+                Deployment.package_id == package_id
+            ).order_by(Deployment.created_at.desc()).all()
+
+            if not deployments:
+                return
+
+            console.print(f"\n  [bold]Deployment Status:[/bold]")
+
+            deployment_agent = DeploymentAgent()
+
+            for deployment in deployments:
+                # Detach from session for use outside context
+                session.expunge(deployment)
+
+                # Check promotion eligibility
+                is_eligible, reason = deployment_agent.is_eligible_for_promotion(deployment)
+
+                # Display ring information
+                ring_name = deployment.ring_name or deployment.ring_id
+                ring_color = "green" if is_eligible else "yellow"
+                console.print(f"    Ring: [{ring_color}]{ring_name}[/{ring_color}]")
+                console.print(f"    Status: {deployment.status.value}")
+
+                # Display promotion eligibility
+                if is_eligible:
+                    console.print(f"    Promotion: [bold green]✓ Eligible[/bold green] - {reason}")
+                else:
+                    console.print(f"    Promotion: [yellow]✗ Not Eligible[/yellow] - {reason}")
+
+                    # Calculate time until eligible if it's a time-based restriction
+                    if deployment.deployed_at and "hours remaining" in reason:
+                        # Extract hours remaining from the reason string
+                        match = re.search(r'(\d+\.?\d*)\s+hours remaining', reason)
+                        if match:
+                            hours_remaining = float(match.group(1))
+                            days = int(hours_remaining // 24)
+                            hours = int(hours_remaining % 24)
+                            if days > 0:
+                                console.print(f"    Time until eligible: {days}d {hours}h")
+                            else:
+                                console.print(f"    Time until eligible: {hours}h")
+
+                # Display install statistics
+                if deployment.target_device_count:
+                    total_installs = deployment.successful_installs + deployment.failed_installs
+                    success_rate = (deployment.successful_installs / total_installs * 100) if total_installs > 0 else 0
+                    console.print(f"    Installs: {deployment.successful_installs}/{deployment.target_device_count} successful ({success_rate:.1f}%)")
+
+                console.print("")  # Blank line between deployments
+
+    except Exception as e:
+        logger = get_logger(__name__)
+        logger.error("Failed to retrieve deployment ring info", error=str(e))
+        # Silently fail - don't disrupt the job status output
 
 
 @jobs.command('cancel')
@@ -211,6 +281,106 @@ def rollback_job(job_id, yes):
     console.print(f"\n[bold yellow]⚠[/bold yellow] Rollback functionality not yet implemented")
     console.print(f"This will remove the deployed application from Intune")
 
+
+
+@jobs.command('promote')
+@click.argument('deployment_id', type=int)
+@click.option('--force', is_flag=True, help='Force promotion even if eligibility checks fail')
+def promote_deployment(deployment_id, force):
+    """Manually promote a deployment to the next ring"""
+    console.print(f"[bold blue]Promoting deployment #{deployment_id}...[/bold blue]\n")
+
+    try:
+        deployment_agent = DeploymentAgent()
+
+        # Get deployment details first
+        with db_session_scope() as session:
+            deployment = session.query(Deployment).filter(
+                Deployment.id == deployment_id
+            ).first()
+
+            if not deployment:
+                console.print(f"[bold red]✗[/bold red] Deployment {deployment_id} not found")
+                raise click.Abort()
+
+            # Detach from session for use outside context
+            session.expunge(deployment)
+
+        # Check eligibility
+        is_eligible, reason = deployment_agent.is_eligible_for_promotion(deployment)
+
+        current_ring_name = deployment.ring_name or deployment.ring_id
+        console.print(f"  Current Ring: {current_ring_name}")
+        console.print(f"  Status: {deployment.status.value}")
+
+        if not is_eligible and not force:
+            console.print(f"\n[bold yellow]✗ Not Eligible for Promotion[/bold yellow]")
+            console.print(f"  Reason: {reason}")
+            console.print(f"\nUse --force to attempt promotion anyway")
+            raise click.Abort()
+        elif not is_eligible and force:
+            console.print(f"\n[bold yellow]⚠ Warning:[/bold yellow] {reason}")
+            console.print(f"  Attempting forced promotion...\n")
+        else:
+            console.print(f"  Eligibility: [bold green]✓ Eligible[/bold green] - {reason}\n")
+
+        # Attempt promotion
+        result = deployment_agent.promote_to_next_ring(deployment_id)
+
+        console.print(f"[bold green]✓[/bold green] Promotion successful!")
+        console.print(f"  From: {result['from_ring']}")
+        console.print(f"  To: {result['to_ring']}")
+        console.print(f"  Package ID: {result['package_id']}")
+        console.print(f"  Intune App ID: {result['intune_app_id']}")
+
+    except ValueError as e:
+        console.print(f"[bold red]✗[/bold red] Promotion failed: {str(e)}")
+        raise click.Abort()
+    except Exception as e:
+        console.print(f"[bold red]✗[/bold red] Unexpected error: {str(e)}")
+        raise click.Abort()
+
+
+@jobs.command('halt-promotion')
+@click.argument('deployment_id', type=int)
+@click.option('--reason', required=True, help='Reason for blocking automatic promotion')
+def halt_promotion(deployment_id, reason):
+    """Block automatic promotion for a deployment"""
+    console.print(f"[bold blue]Halting automatic promotion for deployment #{deployment_id}...[/bold blue]\n")
+
+    try:
+        # Get deployment details and update promotion_blocked_reason
+        with db_session_scope() as session:
+            deployment = session.query(Deployment).filter(
+                Deployment.id == deployment_id
+            ).first()
+
+            if not deployment:
+                console.print(f"[bold red]✗[/bold red] Deployment {deployment_id} not found")
+                raise click.Abort()
+
+            # Display current deployment info
+            ring_name = deployment.ring_name or deployment.ring_id
+            console.print(f"  Deployment ID: {deployment_id}")
+            console.print(f"  Ring: {ring_name}")
+            console.print(f"  Status: {deployment.status.value}")
+
+            # Check if promotion is already blocked
+            if deployment.promotion_blocked_reason:
+                console.print(f"\n[bold yellow]⚠ Warning:[/bold yellow] Promotion already blocked")
+                console.print(f"  Previous reason: {deployment.promotion_blocked_reason}")
+                console.print(f"\nUpdating with new reason...")
+
+            # Update promotion_blocked_reason
+            deployment.promotion_blocked_reason = reason
+
+        console.print(f"\n[bold green]✓[/bold green] Automatic promotion blocked successfully")
+        console.print(f"  Reason: {reason}")
+        console.print(f"\nThis deployment will not be automatically promoted until the block is cleared.")
+
+    except Exception as e:
+        console.print(f"[bold red]✗[/bold red] Failed to halt promotion: {str(e)}")
+        raise click.Abort()
 
 
 @jobs.command('purge')

@@ -88,6 +88,14 @@ rollback:
   failure_threshold_percent: 20.0
   minimum_install_count: 5
 
+# Ring Promotion Configuration
+ring_promotion:
+  enabled: true
+  success_threshold_percent: 90.0
+  minimum_install_count: 10
+  evaluation_period_hours: 48
+  auto_promote: true
+
 # Paths
 paths:
   downloads: "data/downloads"

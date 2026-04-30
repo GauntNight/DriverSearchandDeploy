@@ -57,6 +57,11 @@ class Deployment(Base):
     rollback_reason = Column(String(1024))
     previous_package_id = Column(Integer, ForeignKey('packages.id'))
 
+    # Promotion tracking
+    promoted_at = Column(DateTime)
+    promotion_eligibility_time = Column(DateTime)
+    promotion_blocked_reason = Column(String(1024))
+
     # Error tracking
     error_message = Column(String(2048))
 
@@ -91,6 +96,9 @@ class Deployment(Base):
             'rolled_back_at': self.rolled_back_at.isoformat() if self.rolled_back_at else None,
             'rollback_reason': self.rollback_reason,
             'previous_package_id': self.previous_package_id,
+            'promoted_at': self.promoted_at.isoformat() if self.promoted_at else None,
+            'promotion_eligibility_time': self.promotion_eligibility_time.isoformat() if self.promotion_eligibility_time else None,
+            'promotion_blocked_reason': self.promotion_blocked_reason,
             'error_message': self.error_message,
             'metadata': self.deployment_metadata,
             'device_status_details': self.device_status_details
