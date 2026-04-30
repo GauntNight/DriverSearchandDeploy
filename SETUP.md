@@ -1,12 +1,111 @@
 # AutoPackager Setup Guide
 
 > **Looking for the quickest way to get started?**
-> Run `.\Install-AutoPackager.ps1` as Administrator. It installs Python, Redis,
-> IntuneWinAppUtil, all Python dependencies, and configures Azure automatically.
-> See [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) for full details.
+> Run `.\Install-AutoPackager.ps1` as Administrator (or double-click
+> `Install-AutoPackager.bat` for guided UAC elevation). It installs Python,
+> Redis, IntuneWinAppUtil, all Python dependencies, and configures Azure
+> automatically — by default it **creates a brand new App Registration and
+> client secret** in your tenant so you don't need to provision anything in
+> the portal first. See [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) for full
+> details.
 >
 > This document is the **manual setup reference** for advanced users and
 > Linux/WSL environments.
+
+---
+
+## Windows Installer Quick Reference
+
+The Windows installer can be launched two ways:
+
+```cmd
+:: Recommended for end users - handles UAC elevation automatically
+Install-AutoPackager.bat
+
+:: Or, from an elevated PowerShell prompt
+.\Install-AutoPackager.ps1
+```
+
+Both entry points accept the same switches. The batch wrapper forwards `%*`
+straight to the PowerShell script, so any of the examples below also work
+when prefixed with `Install-AutoPackager.bat` instead of
+`.\Install-AutoPackager.ps1`.
+
+### Default behaviour (no arguments)
+
+- Installs Python, Git, Redis, IntuneWinAppUtil, the venv, and dependencies.
+- Opens a browser to sign in to Azure.
+- **Creates a new App Registration** named `AutoPackager-ServicePrincipal`
+  in your tenant and **generates a fresh client secret** (valid 2 years).
+- Adds Microsoft Graph permissions and grants tenant-wide admin consent.
+- Creates the four deployment ring groups in Entra ID.
+- Writes a complete `.env` with all credentials.
+
+### Available switches (Install-AutoPackager.ps1 / .bat)
+
+| Switch | Default | Purpose |
+| --- | --- | --- |
+| `-SkipAzure` | off | Skip the entire Azure step; run `.\azure-setup.ps1` later. |
+| `-SkipPython` | off | Skip the Python install check (assume 3.9+ is present). |
+| `-UseSQLite` | `$true` | Use SQLite. Pass `-UseSQLite:$false` for PostgreSQL. |
+| `-LlmProvider` | `openai` | LLM provider: `openai` or `anthropic`. |
+| `-LlmApiKey` | _(prompted)_ | OpenAI/Anthropic API key. Skips the prompt. |
+| `-TenantId` | _(prompted)_ | Azure Tenant ID. Skips the tenant prompt. |
+| `-CreateAppRegistration` | `$true` | Create a new App Registration + client secret. Pass `-CreateAppRegistration:$false` to reuse an existing app. |
+| `-UseExistingAppRegistration` | off | Opt out of the default. Equivalent to `-CreateAppRegistration:$false`. |
+| `-AppName` | `AutoPackager-ServicePrincipal` | Display name for the new App Registration. |
+| `-ClientId` | _(prompted when reusing)_ | Existing App Registration Client ID. Implies `-UseExistingAppRegistration`. |
+| `-ClientSecret` | _(prompted when reusing)_ | Existing client secret value. Implies `-UseExistingAppRegistration`. |
+
+### Common command lines
+
+```powershell
+# Default - zero-touch Azure: a new App Registration + secret are created for you
+.\Install-AutoPackager.ps1
+
+# Default, but skip the tenant prompt
+.\Install-AutoPackager.ps1 -TenantId "00000000-0000-0000-0000-000000000000"
+
+# Default, fully unattended (also skips the LLM key prompt)
+.\Install-AutoPackager.ps1 -TenantId "<tid>" -LlmApiKey "sk-..."
+
+# Customise the new App Registration's display name
+.\Install-AutoPackager.ps1 -AppName "Contoso-AutoPackager-Prod"
+
+# Reuse an existing App Registration you already created
+.\Install-AutoPackager.ps1 -UseExistingAppRegistration `
+                           -TenantId "<tid>" `
+                           -ClientId "<cid>" `
+                           -ClientSecret "<secret>"
+
+# Same, using the negated-switch form
+.\Install-AutoPackager.ps1 -CreateAppRegistration:$false -TenantId "<tid>"
+
+# Local-only install; configure Azure later via .\azure-setup.ps1
+.\Install-AutoPackager.ps1 -SkipAzure
+
+# Use Anthropic Claude instead of OpenAI
+.\Install-AutoPackager.ps1 -LlmProvider anthropic -LlmApiKey "sk-ant-..."
+
+# PostgreSQL instead of SQLite
+.\Install-AutoPackager.ps1 -UseSQLite:$false
+```
+
+### Running azure-setup.ps1 standalone
+
+`azure-setup.ps1` accepts the same App Registration semantics if you ever
+need to re-run just the Azure portion:
+
+```powershell
+# Create a new App Registration + secret (zero-touch)
+.\azure-setup.ps1 -TenantId "<tid>" -CreateAppRegistration -OutputEnvFile
+
+# Reuse an existing App Registration
+.\azure-setup.ps1 -TenantId "<tid>" -ClientId "<cid>" -ClientSecret "<secret>" -OutputEnvFile
+
+# Fully interactive
+.\azure-setup.ps1 -OutputEnvFile
+```
 
 ---
 

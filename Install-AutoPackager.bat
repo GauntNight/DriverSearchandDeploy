@@ -3,6 +3,14 @@
 :: Double-click this file to install AutoPackager.
 :: It will automatically request Administrator rights and bypass the PowerShell
 :: execution policy so you don't have to configure anything manually.
+::
+:: By default this creates a NEW Azure App Registration and client secret in
+:: your tenant - no portal work required. To reuse an existing App
+:: Registration, run from a cmd prompt and pass the appropriate switches, e.g.
+::   Install-AutoPackager.bat -UseExistingAppRegistration -TenantId "<tid>" ^
+::                            -ClientId "<cid>" -ClientSecret "<secret>"
+:: Any arguments after the .bat name are forwarded verbatim to
+:: Install-AutoPackager.ps1. See SETUP.md for the full switch reference.
 
 setlocal EnableDelayedExpansion
 
