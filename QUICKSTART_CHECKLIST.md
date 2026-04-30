@@ -6,13 +6,21 @@ Use this checklist to track your implementation progress.
 
 ## Automated Path (Recommended)
 
-If you are using `Install-AutoPackager.ps1`, most items below are handled automatically.
+If you are using `Install-AutoPackager.ps1` (or double-clicking
+`Install-AutoPackager.bat`), most items below are handled automatically.
 The items marked **[AUTO]** require no manual action.
+
+> **Default behaviour:** the installer **creates a brand new App
+> Registration and client secret** in your tenant. You do **not** need to
+> bring an existing Client ID or Client Secret. To reuse an existing App
+> Registration instead, pass `-UseExistingAppRegistration` (see
+> "Installer command lines" below).
 
 ### Before You Start
 
 - [ ] Confirmed local administrator rights on your Windows workstation
 - [ ] Confirmed Azure account with Global Admin or Application/Group Administrator role
+- [ ] Captured your Azure **Tenant ID** (only value the installer needs by default)
 - [ ] Obtained LLM API key
   - OpenAI: https://platform.openai.com/api-keys
   - Anthropic: https://console.anthropic.com/settings/keys
@@ -33,7 +41,9 @@ The items marked **[AUTO]** require no manual action.
 ### Azure Login (one browser prompt)
 
 - [ ] Logged in to Azure when browser opened
-- [ ] **[AUTO]** App Registration created or validated
+- [ ] **[AUTO]** New App Registration created (default: `AutoPackager-ServicePrincipal`)
+- [ ] **[AUTO]** Client secret generated (2-year lifetime) and written to `.env`
+- [ ] **[AUTO]** Service Principal created for the App Registration
 - [ ] **[AUTO]** Microsoft Graph API permissions added
 - [ ] **[AUTO]** Admin consent granted
 - [ ] **[AUTO]** `AutoPackager-Ring0-ITPilot` group created
@@ -46,6 +56,32 @@ The items marked **[AUTO]** require no manual action.
 
 - [ ] Entered LLM API key when prompted (or edited `.env` to set `LLM_API_KEY`)
 - [ ] Verified `.env` has no placeholder values remaining
+
+### Installer command lines
+
+```powershell
+# Default - creates a new App Registration + secret in your tenant
+.\Install-AutoPackager.ps1
+
+# Pre-supply the tenant so the Azure step is fully unattended
+.\Install-AutoPackager.ps1 -TenantId "<tenant-id>"
+
+# Customise the App Registration display name
+.\Install-AutoPackager.ps1 -AppName "Contoso-AutoPackager-Prod"
+
+# Reuse an existing App Registration (BYO credentials)
+.\Install-AutoPackager.ps1 -UseExistingAppRegistration `
+                           -TenantId "<tid>" -ClientId "<cid>" -ClientSecret "<secret>"
+
+# Skip Azure entirely; run .\azure-setup.ps1 later
+.\Install-AutoPackager.ps1 -SkipAzure
+
+# Use Anthropic Claude instead of OpenAI
+.\Install-AutoPackager.ps1 -LlmProvider anthropic -LlmApiKey "sk-ant-..."
+```
+
+See [SETUP.md](SETUP.md#windows-installer-quick-reference) for the full
+switch reference.
 
 ---
 

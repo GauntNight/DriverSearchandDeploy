@@ -17,8 +17,10 @@
       - Helper .bat scripts for daily use
 
     AZURE SETUP (requires 1 browser login):
-      - Option A: You already created the App Registration ->provide 3 values ->done
-      - Option B: Script creates the App Registration too ->provide 0 values ->done
+      - Default: Script creates a new App Registration AND client secret
+                 for you ->provide 0 values ->done
+      - Optional: Pass -UseExistingAppRegistration to reuse an existing
+                  App Registration (then provide ClientId/ClientSecret)
       - Creates 4 deployment ring security groups in Entra ID
       - Configures all Microsoft Graph API permissions
       - Grants tenant-wide admin consent
@@ -51,10 +53,30 @@
     Azure Tenant ID (skips the prompt if provided).
 
 .PARAMETER CreateAppRegistration
-    Pass to azure-setup.ps1 to create the App Registration automatically.
+    Defaults to $true: the installer creates a brand new App Registration
+    AND client secret in your tenant so you don't need to bring your own.
+    Pass -CreateAppRegistration:$false (or -UseExistingAppRegistration) to
+    reuse an App Registration you already have.
+
+.PARAMETER UseExistingAppRegistration
+    Opt-out switch for the default "create new" behaviour. When set, the
+    installer will reuse an existing App Registration and prompt for
+    -ClientId / -ClientSecret if they were not supplied on the command line.
+
+.PARAMETER AppName
+    Display name to use when the installer creates the App Registration.
+    Default: "AutoPackager-ServicePrincipal".
+
+.PARAMETER ClientId
+    Existing App Registration Client ID. Supplying this implies
+    -UseExistingAppRegistration.
+
+.PARAMETER ClientSecret
+    Existing App Registration client secret value. Supplying this implies
+    -UseExistingAppRegistration.
 
 .EXAMPLE
-    # Full automatic install (interactive prompts for credentials)
+    # Full automatic install. Creates a NEW App Registration + secret by default.
     .\Install-AutoPackager.ps1
 
 .EXAMPLE
@@ -62,8 +84,17 @@
     .\Install-AutoPackager.ps1 -SkipAzure
 
 .EXAMPLE
-    # Full install, create App Registration automatically
-    .\Install-AutoPackager.ps1 -TenantId "your-tenant-id" -CreateAppRegistration
+    # Full install, pre-supply tenant so there is zero prompting in the Azure step
+    .\Install-AutoPackager.ps1 -TenantId "your-tenant-id"
+
+.EXAMPLE
+    # Use an App Registration you already created (BYO credentials)
+    .\Install-AutoPackager.ps1 -UseExistingAppRegistration `
+                               -TenantId "tid" -ClientId "cid" -ClientSecret "secret"
+
+.EXAMPLE
+    # Same, using the negated switch form
+    .\Install-AutoPackager.ps1 -CreateAppRegistration:$false -TenantId "tid"
 
 .EXAMPLE
     # Full install, provide all credentials up front (no prompts)
@@ -78,8 +109,18 @@ param(
     [string]$LlmProvider = "openai",
     [string]$LlmApiKey,
     [string]$TenantId,
-    [switch]$CreateAppRegistration
+    [bool]$CreateAppRegistration = $true,
+    [switch]$UseExistingAppRegistration,
+    [string]$AppName = "AutoPackager-ServicePrincipal",
+    [string]$ClientId,
+    [string]$ClientSecret
 )
+
+# Reconcile the create-vs-existing toggles. Supplying ClientId/ClientSecret or
+# the explicit opt-out switch implies the user wants to reuse an existing app.
+if ($UseExistingAppRegistration -or $ClientId -or $ClientSecret) {
+    $CreateAppRegistration = $false
+}
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -579,17 +620,26 @@ if (-not $SkipAzure) {
     Write-Host "  What you need:"  -ForegroundColor White
 
     if ($CreateAppRegistration) {
-        Write-Host "   - Your Azure Tenant ID (already provided: $TenantId)" -ForegroundColor Gray
+        if ($TenantId) {
+            Write-Host "   - Your Azure Tenant ID (already provided: $TenantId)" -ForegroundColor Gray
+        } else {
+            Write-Host "   - Your Azure Tenant ID (you'll be prompted)" -ForegroundColor Gray
+        }
         Write-Host "   - Global Admin or Application+Group Admin role" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  DEFAULT: a new App Registration ('$AppName') and a client" -ForegroundColor Green
+        Write-Host "  secret will be created automatically. No portal work required." -ForegroundColor Green
+        Write-Host "  To reuse an existing App Registration instead, re-run with" -ForegroundColor Gray
+        Write-Host "  -UseExistingAppRegistration (or -CreateAppRegistration:`$false)." -ForegroundColor Gray
     } else {
         Write-Host "   - Your Azure Tenant ID" -ForegroundColor Gray
         Write-Host "   - Your App Registration Client ID" -ForegroundColor Gray
         Write-Host "   - A Client Secret from the App Registration" -ForegroundColor Gray
         Write-Host "   - Global Admin or Application+Group Admin role (for admin consent)" -ForegroundColor Gray
         Write-Host ""
-        Write-Host "  Don't have an App Registration yet?" -ForegroundColor Yellow
-        Write-Host "  Option 1: Create one manually (5 min) at portal.azure.com > App registrations" -ForegroundColor Gray
-        Write-Host "  Option 2: Re-run with -CreateAppRegistration to skip that step entirely" -ForegroundColor Gray
+        Write-Host "  Reusing an existing App Registration (per -UseExistingAppRegistration)." -ForegroundColor Yellow
+        Write-Host "  To let the installer create one for you instead, re-run without" -ForegroundColor Gray
+        Write-Host "  -UseExistingAppRegistration / -ClientId / -ClientSecret." -ForegroundColor Gray
     }
 
     Write-Host ""
@@ -605,7 +655,13 @@ if (-not $SkipAzure) {
             EnvFilePath   = (Join-Path $scriptDir ".env")
         }
         if ($TenantId)              { $azureArgs["TenantId"]              = $TenantId }
-        if ($CreateAppRegistration) { $azureArgs["CreateAppRegistration"] = $true }
+        if ($CreateAppRegistration) {
+            $azureArgs["CreateAppRegistration"] = $true
+            if ($AppName) { $azureArgs["AppName"] = $AppName }
+        } else {
+            if ($ClientId)     { $azureArgs["ClientId"]     = $ClientId }
+            if ($ClientSecret) { $azureArgs["ClientSecret"] = $ClientSecret }
+        }
 
         try {
             $azureResult = & "$scriptDir\azure-setup.ps1" @azureArgs
