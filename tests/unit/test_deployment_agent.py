@@ -2,7 +2,7 @@
 
 import unittest
 from unittest.mock import Mock, patch, MagicMock, mock_open
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile
 import zipfile
@@ -755,6 +755,272 @@ class TestDeploymentAgentCore(unittest.TestCase):
         self.assertEqual(result['profile_id'], 'existing-profile-id')
         self.assertEqual(result['status'], 'already_exists')
         mock_graph_client.create_driver_update_profile.assert_not_called()
+
+
+class TestDeploymentAgentPromotion(unittest.TestCase):
+    """Test cases for Deployment Agent promotion eligibility logic"""
+
+    def setUp(self):
+        """Set up test fixtures"""
+        # Mock config with promotion enabled
+        self.mock_config = {
+            'deployment_rings': [
+                {
+                    'ring_id': 0,
+                    'name': 'Ring 0 - IT Pilot',
+                    'entra_group_id': 'group-id-ring0'
+                },
+                {
+                    'ring_id': 1,
+                    'name': 'Ring 1 - Early Adopters',
+                    'entra_group_id': 'group-id-ring1'
+                },
+                {
+                    'ring_id': 2,
+                    'name': 'Ring 2 - Production',
+                    'entra_group_id': 'group-id-ring2'
+                }
+            ],
+            'ring_promotion': {
+                'enabled': True,
+                'evaluation_period_hours': 48,
+                'minimum_install_count': 10,
+                'success_threshold_percent': 90.0
+            }
+        }
+
+        # Create agent with mocked config
+        with patch('autopackager.agents.deployment.deployment_agent.get_config', return_value=self.mock_config):
+            self.agent = DeploymentAgent()
+
+        # Mock Azure validation so unit tests don't require real Azure credentials
+        self.validate_patcher = patch.object(self.agent, '_validate_azure_config')
+        self.mock_validate_azure = self.validate_patcher.start()
+        self.addCleanup(self.validate_patcher.stop)
+
+        # Sample deployment with typical eligible state
+        self.deployment = Mock(spec=Deployment)
+        self.deployment.id = 1
+        self.deployment.package_id = 100
+        self.deployment.intune_app_id = 'app-id-123'
+        self.deployment.ring_id = 0
+        self.deployment.ring_name = 'Ring 0 - IT Pilot'
+        self.deployment.status = DeploymentStatus.IN_PROGRESS
+        self.deployment.deployed_at = datetime.utcnow() - timedelta(hours=50)
+        self.deployment.successful_installs = 15
+        self.deployment.failed_installs = 1
+        self.deployment.pending_installs = 2
+        self.deployment.target_device_count = 18
+        self.deployment.promotion_blocked_reason = None
+
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_is_eligible_for_promotion_success(self, mock_datetime):
+        """Test successful eligibility check when all criteria are met"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertTrue(eligible)
+        self.assertIn('Eligible for promotion to Ring 1', reason)
+        self.assertIn('success rate:', reason)
+
+    def test_is_eligible_for_promotion_disabled_in_config(self):
+        """Test that promotion disabled in config is detected"""
+        # Disable promotion in config
+        self.agent.config['ring_promotion']['enabled'] = False
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertFalse(eligible)
+        self.assertEqual(reason, "Ring promotion is disabled in configuration")
+
+    def test_is_eligible_for_promotion_manually_blocked(self):
+        """Test that manually blocked promotion is detected"""
+        self.deployment.promotion_blocked_reason = "Critical bug detected in Ring 0"
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertFalse(eligible)
+        self.assertIn("Promotion manually blocked", reason)
+        self.assertIn("Critical bug detected", reason)
+
+    def test_is_eligible_for_promotion_unknown_ring_id(self):
+        """Test that unknown ring_id is detected"""
+        self.deployment.ring_id = 999
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertFalse(eligible)
+        self.assertIn("Unknown ring_id", reason)
+
+    def test_is_eligible_for_promotion_already_at_final_ring(self):
+        """Test that deployments at final ring are not eligible"""
+        self.deployment.ring_id = 2  # Final ring in our config
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertFalse(eligible)
+        self.assertEqual(reason, "Already at final ring")
+
+    def test_is_eligible_for_promotion_status_not_in_progress(self):
+        """Test that non-IN_PROGRESS status is detected"""
+        self.deployment.status = DeploymentStatus.SUCCESSFUL
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertFalse(eligible)
+        self.assertIn("Deployment status is successful", reason)
+        self.assertIn("not IN_PROGRESS", reason)
+
+    def test_is_eligible_for_promotion_no_deployed_at_timestamp(self):
+        """Test that missing deployed_at timestamp is detected"""
+        self.deployment.deployed_at = None
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertFalse(eligible)
+        self.assertEqual(reason, "Deployment has no deployed_at timestamp")
+
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_is_eligible_for_promotion_dwell_time_not_met(self, mock_datetime):
+        """Test that insufficient dwell time is detected"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+        # Only 24 hours since deployment (need 48)
+        self.deployment.deployed_at = mock_now - timedelta(hours=24)
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertFalse(eligible)
+        self.assertIn("Dwell time not met", reason)
+        self.assertIn("24.0 hours remaining", reason)
+
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_is_eligible_for_promotion_minimum_install_count_not_met(self, mock_datetime):
+        """Test that minimum install count requirement is enforced"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+        # Only 5 total installs (need 10)
+        self.deployment.successful_installs = 4
+        self.deployment.failed_installs = 1
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertFalse(eligible)
+        self.assertIn("Minimum install count not met", reason)
+        self.assertIn("5/10", reason)
+
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_is_eligible_for_promotion_success_rate_below_threshold(self, mock_datetime):
+        """Test that success rate threshold is enforced"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+        # Success rate: 12/20 = 60% (need 90%)
+        self.deployment.successful_installs = 12
+        self.deployment.failed_installs = 8
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertFalse(eligible)
+        self.assertIn("Success rate", reason)
+        self.assertIn("60.0%", reason)
+        self.assertIn("below threshold 90.0%", reason)
+
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_is_eligible_for_promotion_zero_installs(self, mock_datetime):
+        """Test that zero installs is detected"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+        self.deployment.successful_installs = 0
+        self.deployment.failed_installs = 0
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertFalse(eligible)
+        # Zero installs fails the minimum install count check first
+        self.assertIn("Minimum install count not met", reason)
+        self.assertIn("0/10", reason)
+
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_is_eligible_for_promotion_edge_case_minimum_threshold(self, mock_datetime):
+        """Test eligibility at exact minimum threshold"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+        self.deployment.deployed_at = mock_now - timedelta(hours=48)  # Exact minimum
+        # Exactly 10 installs with 90% success rate
+        self.deployment.successful_installs = 9
+        self.deployment.failed_installs = 1
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertTrue(eligible)
+        self.assertIn('Eligible for promotion', reason)
+
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_is_eligible_for_promotion_perfect_success_rate(self, mock_datetime):
+        """Test eligibility with 100% success rate"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+        self.deployment.deployed_at = mock_now - timedelta(hours=72)
+        self.deployment.successful_installs = 20
+        self.deployment.failed_installs = 0
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertTrue(eligible)
+        self.assertIn('success rate: 100.0%', reason)
+
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_is_eligible_for_promotion_custom_evaluation_period(self, mock_datetime):
+        """Test custom evaluation period from config"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+        # Set custom evaluation period to 24 hours
+        self.agent.config['ring_promotion']['evaluation_period_hours'] = 24
+        self.deployment.deployed_at = mock_now - timedelta(hours=25)
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertTrue(eligible)
+        self.assertIn('Eligible for promotion', reason)
+
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_is_eligible_for_promotion_custom_minimum_install_count(self, mock_datetime):
+        """Test custom minimum install count from config"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+        # Set custom minimum to 5
+        self.agent.config['ring_promotion']['minimum_install_count'] = 5
+        self.deployment.successful_installs = 5
+        self.deployment.failed_installs = 0
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertTrue(eligible)
+        self.assertIn('Eligible for promotion', reason)
+
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_is_eligible_for_promotion_custom_success_threshold(self, mock_datetime):
+        """Test custom success threshold from config"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+        # Set custom threshold to 80%
+        self.agent.config['ring_promotion']['success_threshold_percent'] = 80.0
+        # 85% success rate
+        self.deployment.successful_installs = 17
+        self.deployment.failed_installs = 3
+
+        eligible, reason = self.agent.is_eligible_for_promotion(self.deployment)
+
+        self.assertTrue(eligible)
+        self.assertIn('success rate: 85.0%', reason)
 
 
 if __name__ == '__main__':
