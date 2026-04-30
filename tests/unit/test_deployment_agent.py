@@ -1022,6 +1022,236 @@ class TestDeploymentAgentPromotion(unittest.TestCase):
         self.assertTrue(eligible)
         self.assertIn('success rate: 85.0%', reason)
 
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_promote_to_next_ring(self, mock_datetime, mock_db_session):
+        """Test promote_to_next_ring with eligible deployment"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+
+        # Set up deployment that is eligible for promotion
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+        self.deployment.successful_installs = 15
+        self.deployment.failed_installs = 1
+
+        # Mock package
+        mock_package = Mock(spec=Package)
+        mock_package.id = self.deployment.package_id
+
+        # Mock database session
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.first.side_effect = [
+            self.deployment,  # First call: get deployment
+            mock_package,     # Second call: get package (via _get_package)
+            self.deployment   # Third call: update deployment status
+        ]
+
+        with patch.object(self.agent, '_assign_to_ring') as mock_assign:
+            result = self.agent.promote_to_next_ring(self.deployment.id)
+
+        # Verify result
+        self.assertEqual(result['deployment_id'], self.deployment.id)
+        self.assertEqual(result['package_id'], self.deployment.package_id)
+        self.assertEqual(result['from_ring'], 'Ring 0 - IT Pilot')
+        self.assertEqual(result['to_ring'], 'Ring 1 - Early Adopters')
+        self.assertEqual(result['status'], 'promoted')
+        self.assertEqual(result['intune_app_id'], self.deployment.intune_app_id)
+
+        # Verify assign_to_ring was called with next ring index
+        mock_assign.assert_called_once_with(self.deployment.intune_app_id, mock_package, 1)
+
+        # Verify deployment status was updated to SUCCESSFUL
+        self.assertEqual(self.deployment.status, DeploymentStatus.SUCCESSFUL)
+        self.assertEqual(self.deployment.completed_at, mock_now)
+        self.assertEqual(self.deployment.promoted_at, mock_now)
+
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_promote_to_next_ring_success(self, mock_datetime, mock_db_session):
+        """Test successful promotion to next ring"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+
+        # Set up deployment that is eligible for promotion
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+        self.deployment.successful_installs = 15
+        self.deployment.failed_installs = 1
+
+        # Mock package
+        mock_package = Mock(spec=Package)
+        mock_package.id = self.deployment.package_id
+
+        # Mock database session
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.first.side_effect = [
+            self.deployment,  # First call: get deployment
+            mock_package,     # Second call: get package (via _get_package)
+            self.deployment   # Third call: update deployment status
+        ]
+
+        with patch.object(self.agent, '_assign_to_ring') as mock_assign:
+            result = self.agent.promote_to_next_ring(self.deployment.id)
+
+        # Verify result
+        self.assertEqual(result['deployment_id'], self.deployment.id)
+        self.assertEqual(result['package_id'], self.deployment.package_id)
+        self.assertEqual(result['from_ring'], 'Ring 0 - IT Pilot')
+        self.assertEqual(result['to_ring'], 'Ring 1 - Early Adopters')
+        self.assertEqual(result['status'], 'promoted')
+        self.assertEqual(result['intune_app_id'], self.deployment.intune_app_id)
+
+        # Verify assign_to_ring was called with next ring index
+        mock_assign.assert_called_once_with(self.deployment.intune_app_id, mock_package, 1)
+
+        # Verify deployment status was updated to SUCCESSFUL
+        self.assertEqual(self.deployment.status, DeploymentStatus.SUCCESSFUL)
+        self.assertEqual(self.deployment.completed_at, mock_now)
+        self.assertEqual(self.deployment.promoted_at, mock_now)
+
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    def test_promote_to_next_ring_deployment_not_found(self, mock_db_session):
+        """Test that missing deployment raises ValueError"""
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.first.return_value = None
+
+        with self.assertRaises(ValueError) as context:
+            self.agent.promote_to_next_ring(999)
+
+        self.assertIn('Deployment 999 not found', str(context.exception))
+
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_promote_to_next_ring_not_eligible(self, mock_datetime, mock_db_session):
+        """Test that ineligible deployment raises ValueError"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+
+        # Set up deployment that is NOT eligible (dwell time not met)
+        self.deployment.deployed_at = mock_now - timedelta(hours=24)  # Only 24 hours
+
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.first.return_value = self.deployment
+
+        with self.assertRaises(ValueError) as context:
+            self.agent.promote_to_next_ring(self.deployment.id)
+
+        self.assertIn('not eligible for promotion', str(context.exception))
+        self.assertIn('Dwell time not met', str(context.exception))
+
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_promote_to_next_ring_package_not_found(self, mock_datetime, mock_db_session):
+        """Test that missing package raises ValueError"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+
+        # Set up eligible deployment
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.first.side_effect = [
+            self.deployment,  # First call: get deployment
+            None              # Second call: get package returns None
+        ]
+
+        with self.assertRaises(ValueError) as context:
+            self.agent.promote_to_next_ring(self.deployment.id)
+
+        self.assertIn('Package', str(context.exception))
+        self.assertIn('not found', str(context.exception))
+
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_promote_to_next_ring_already_at_final_ring(self, mock_datetime, mock_db_session):
+        """Test that deployment at final ring cannot be promoted"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+
+        # Set deployment to final ring (ring_id = 2)
+        self.deployment.ring_id = 2
+        self.deployment.ring_name = 'Ring 2 - Production'
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.first.return_value = self.deployment
+
+        with self.assertRaises(ValueError) as context:
+            self.agent.promote_to_next_ring(self.deployment.id)
+
+        # Should fail at eligibility check (already at final ring)
+        self.assertIn('not eligible for promotion', str(context.exception))
+        self.assertIn('Already at final ring', str(context.exception))
+
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_promote_to_next_ring_assignment_failure(self, mock_datetime, mock_db_session):
+        """Test that assignment failure raises exception"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+
+        # Set up eligible deployment
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+
+        # Mock package
+        mock_package = Mock(spec=Package)
+        mock_package.id = self.deployment.package_id
+
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.first.side_effect = [
+            self.deployment,  # First call: get deployment
+            mock_package      # Second call: get package
+        ]
+
+        # Mock _assign_to_ring to fail
+        with patch.object(self.agent, '_assign_to_ring') as mock_assign:
+            mock_assign.side_effect = Exception('Graph API error')
+
+            with self.assertRaises(Exception) as context:
+                self.agent.promote_to_next_ring(self.deployment.id)
+
+            self.assertIn('Graph API error', str(context.exception))
+
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_promote_to_next_ring_from_ring_1_to_ring_2(self, mock_datetime, mock_db_session):
+        """Test promotion from Ring 1 to Ring 2"""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+
+        # Set deployment to Ring 1
+        self.deployment.ring_id = 1
+        self.deployment.ring_name = 'Ring 1 - Early Adopters'
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+
+        # Mock package
+        mock_package = Mock(spec=Package)
+        mock_package.id = self.deployment.package_id
+
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.first.side_effect = [
+            self.deployment,  # First call: get deployment
+            mock_package,     # Second call: get package
+            self.deployment   # Third call: update deployment
+        ]
+
+        with patch.object(self.agent, '_assign_to_ring') as mock_assign:
+            result = self.agent.promote_to_next_ring(self.deployment.id)
+
+        # Verify promotion to Ring 2
+        self.assertEqual(result['from_ring'], 'Ring 1 - Early Adopters')
+        self.assertEqual(result['to_ring'], 'Ring 2 - Production')
+
+        # Verify assign_to_ring was called with ring index 2
+        mock_assign.assert_called_once_with(self.deployment.intune_app_id, mock_package, 2)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -708,12 +708,13 @@ class DeploymentAgent:
         # Assign to next ring
         self._assign_to_ring(intune_app_id, package, next_ring_index)
 
-        # Update current deployment status to COMPLETED
+        # Update current deployment status to SUCCESSFUL
         with db_session_scope() as session:
             deployment = session.query(Deployment).filter(Deployment.id == deployment_id).first()
             if deployment:
-                deployment.status = DeploymentStatus.COMPLETED
+                deployment.status = DeploymentStatus.SUCCESSFUL
                 deployment.completed_at = datetime.utcnow()
+                deployment.promoted_at = datetime.utcnow()
 
         logger.info(
             "Promotion completed successfully",
