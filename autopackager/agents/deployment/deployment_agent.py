@@ -651,6 +651,24 @@ class DeploymentAgent:
                 'error': str(e)
             }
 
+    def calculate_failure_rate(self, total_count: int, failed_count: int) -> float:
+        """Calculate the failure rate as a percentage.
+
+        Computes the percentage of failed deployments out of the total number
+        of targeted devices. Returns 0.0 if total_count is 0 to avoid division
+        by zero.
+
+        Args:
+            total_count: Total number of targeted devices
+            failed_count: Number of failed deployments
+
+        Returns:
+            Failure rate as a percentage (0.0 to 100.0)
+        """
+        if total_count == 0:
+            return 0.0
+        return (failed_count / total_count) * 100.0
+
     def update_deployment_status(self, deployment_id: int, status_data: Dict[str, Any]):
         """Update deployment record with latest status data from Intune.
 
