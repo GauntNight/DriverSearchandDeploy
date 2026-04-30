@@ -341,6 +341,48 @@ def promote_deployment(deployment_id, force):
         raise click.Abort()
 
 
+@jobs.command('halt-promotion')
+@click.argument('deployment_id', type=int)
+@click.option('--reason', required=True, help='Reason for blocking automatic promotion')
+def halt_promotion(deployment_id, reason):
+    """Block automatic promotion for a deployment"""
+    console.print(f"[bold blue]Halting automatic promotion for deployment #{deployment_id}...[/bold blue]\n")
+
+    try:
+        # Get deployment details and update promotion_blocked_reason
+        with db_session_scope() as session:
+            deployment = session.query(Deployment).filter(
+                Deployment.id == deployment_id
+            ).first()
+
+            if not deployment:
+                console.print(f"[bold red]✗[/bold red] Deployment {deployment_id} not found")
+                raise click.Abort()
+
+            # Display current deployment info
+            ring_name = deployment.ring_name or deployment.ring_id
+            console.print(f"  Deployment ID: {deployment_id}")
+            console.print(f"  Ring: {ring_name}")
+            console.print(f"  Status: {deployment.status.value}")
+
+            # Check if promotion is already blocked
+            if deployment.promotion_blocked_reason:
+                console.print(f"\n[bold yellow]⚠ Warning:[/bold yellow] Promotion already blocked")
+                console.print(f"  Previous reason: {deployment.promotion_blocked_reason}")
+                console.print(f"\nUpdating with new reason...")
+
+            # Update promotion_blocked_reason
+            deployment.promotion_blocked_reason = reason
+
+        console.print(f"\n[bold green]✓[/bold green] Automatic promotion blocked successfully")
+        console.print(f"  Reason: {reason}")
+        console.print(f"\nThis deployment will not be automatically promoted until the block is cleared.")
+
+    except Exception as e:
+        console.print(f"[bold red]✗[/bold red] Failed to halt promotion: {str(e)}")
+        raise click.Abort()
+
+
 @jobs.command('purge')
 @click.option('--state', default=None,
               type=click.Choice([s.value for s in JobState]),
