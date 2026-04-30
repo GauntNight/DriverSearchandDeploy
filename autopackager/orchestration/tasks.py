@@ -521,3 +521,34 @@ def continuous_catalog_discovery(self):
 
         # Retry with exponential backoff (5 minutes initial delay)
         raise self.retry(exc=e, countdown=300, max_retries=3)
+
+
+@celery_app.task(bind=True, name='autopackager.check_ring_promotions')
+def check_ring_promotions(self):
+    """Check and promote deployments to next ring based on success criteria"""
+    logger.info("Starting ring promotion check")
+
+    try:
+        # Import here to avoid circular dependencies
+        from autopackager.agents.deployment import DeploymentAgent
+
+        agent = DeploymentAgent()
+
+        # Check for promotions
+        result = agent.check_and_promote_eligible_deployments()
+
+        logger.info(
+            "Ring promotion check completed",
+            total_checked=result.get('total_checked', 0),
+            promotions_executed=result.get('promotions_executed', 0),
+            promotions_pending=result.get('promotions_pending', 0),
+            promotions_blocked=result.get('promotions_blocked', 0)
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error("Ring promotion check failed", error=str(e))
+
+        # Retry with exponential backoff (5 minutes initial delay)
+        raise self.retry(exc=e, countdown=300, max_retries=3)
