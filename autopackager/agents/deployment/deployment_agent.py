@@ -448,6 +448,20 @@ class DeploymentAgent:
             logger.error("Failed to assign to ring", error=str(e))
             raise
 
+    def remove_app_assignment(self, intune_app_id: str, group_id: str):
+        """Remove failed Intune app assignment from Entra group"""
+        logger.info("Removing app assignment", app_id=intune_app_id, group_id=group_id)
+
+        graph_client = self._get_graph_client()
+
+        try:
+            graph_client.remove_app_assignment(intune_app_id, group_id)
+            logger.info("App assignment removed successfully", app_id=intune_app_id, group_id=group_id)
+
+        except Exception as e:
+            logger.error("Failed to remove app assignment", app_id=intune_app_id, group_id=group_id, error=str(e))
+            raise
+
     def _create_supersedence(
         self,
         graph_client: GraphAPIClient,
@@ -489,6 +503,55 @@ class DeploymentAgent:
             if package:
                 session.expunge(package)
             return package
+
+    def get_previous_package(self, package_id: int) -> Package:
+        """Find the last known-good package version for rollback.
+
+        Searches for the most recent package with the same name that was
+        successfully deployed and tested. Returns None if no previous
+        known-good package exists.
+
+        Args:
+            package_id: ID of the current/failed package
+
+        Returns:
+            Previous known-good Package, or None if not found
+        """
+        current_package = self._get_package(package_id)
+        if not current_package:
+            logger.warning("Current package not found", package_id=package_id)
+            return None
+
+        with db_session_scope() as session:
+            previous_package = (
+                session.query(Package)
+                .filter(
+                    Package.name == current_package.name,
+                    Package.id != current_package.id,
+                    Package.deployed == True,
+                    Package.test_passed == True,
+                    Package.created_at < current_package.created_at
+                )
+                .order_by(Package.created_at.desc())
+                .first()
+            )
+
+            if previous_package:
+                session.expunge(previous_package)
+                logger.info(
+                    "Found previous package for rollback",
+                    current_package_id=package_id,
+                    previous_package_id=previous_package.id,
+                    previous_version=previous_package.version
+                )
+            else:
+                logger.warning(
+                    "No previous known-good package found",
+                    package_id=package_id,
+                    package_name=current_package.name
+                )
+
+            return previous_package
 
     # ---------------------------------------------------------------------------
     # Ring promotion (future)
