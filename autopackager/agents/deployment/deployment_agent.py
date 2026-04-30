@@ -482,7 +482,8 @@ class DeploymentAgent:
                 ring_id=ring['ring_id'],
                 ring_name=ring['name'],
                 entra_group_id=ring['entra_group_id'],
-                status=DeploymentStatus.IN_PROGRESS
+                status=DeploymentStatus.IN_PROGRESS,
+                deployed_at=datetime.utcnow()
             )
             session.add(deployment)
             logger.info("Created deployment record", ring=ring['name'])
@@ -557,11 +558,342 @@ class DeploymentAgent:
     # Ring promotion (future)
     # ---------------------------------------------------------------------------
 
-    def promote_to_next_ring(self, deployment_id: int):
-        """Promote deployment to next ring (for future automation)"""
+    def is_eligible_for_promotion(self, deployment: Deployment) -> tuple[bool, str]:
+        """Check if a deployment is eligible for promotion to the next ring.
+
+        Eligibility criteria:
+        1. Dwell time has elapsed since deployed_at (evaluation_period_hours)
+        2. Success rate meets or exceeds success_threshold_percent
+        3. Minimum install count has been reached
+        4. Not already at the final ring
+        5. Promotion is not manually blocked
+
+        Args:
+            deployment: The Deployment object to check
+
+        Returns:
+            tuple: (is_eligible: bool, reason: str)
+                - is_eligible: True if eligible for promotion, False otherwise
+                - reason: Human-readable explanation of eligibility status
+        """
+        # Get promotion configuration
+        promotion_config = self.config.get('ring_promotion', {})
+
+        if not promotion_config.get('enabled', False):
+            return False, "Ring promotion is disabled in configuration"
+
+        # Check if manually blocked
+        if deployment.promotion_blocked_reason:
+            return False, f"Promotion manually blocked: {deployment.promotion_blocked_reason}"
+
+        # Check if already at final ring
+        current_ring_index = None
+        for idx, ring in enumerate(self.deployment_rings):
+            if ring['ring_id'] == deployment.ring_id:
+                current_ring_index = idx
+                break
+
+        if current_ring_index is None:
+            return False, f"Unknown ring_id: {deployment.ring_id}"
+
+        if current_ring_index >= len(self.deployment_rings) - 1:
+            return False, "Already at final ring"
+
+        # Check if deployment is in progress
+        if deployment.status != DeploymentStatus.IN_PROGRESS:
+            return False, f"Deployment status is {deployment.status.value}, not IN_PROGRESS"
+
+        # Check if deployed_at is set
+        if not deployment.deployed_at:
+            return False, "Deployment has no deployed_at timestamp"
+
+        # Check dwell time
+        evaluation_period_hours = promotion_config.get('evaluation_period_hours', 48)
+        hours_since_deployment = (datetime.utcnow() - deployment.deployed_at).total_seconds() / 3600
+
+        if hours_since_deployment < evaluation_period_hours:
+            hours_remaining = evaluation_period_hours - hours_since_deployment
+            return False, f"Dwell time not met: {hours_remaining:.1f} hours remaining"
+
+        # Check minimum install count
+        minimum_install_count = promotion_config.get('minimum_install_count', 10)
+        total_installs = deployment.successful_installs + deployment.failed_installs
+
+        if total_installs < minimum_install_count:
+            return False, f"Minimum install count not met: {total_installs}/{minimum_install_count}"
+
+        # Calculate success rate
+        if total_installs == 0:
+            return False, "No install attempts recorded yet"
+
+        success_rate = (deployment.successful_installs / total_installs) * 100
+        success_threshold = promotion_config.get('success_threshold_percent', 90.0)
+
+        if success_rate < success_threshold:
+            return False, f"Success rate {success_rate:.1f}% below threshold {success_threshold}%"
+
+        # All criteria met
+        next_ring = self.deployment_rings[current_ring_index + 1]
+        return True, f"Eligible for promotion to {next_ring['name']} (success rate: {success_rate:.1f}%)"
+
+    def promote_to_next_ring(self, deployment_id: int) -> Dict[str, Any]:
+        """Promote deployment to next ring.
+
+        Validates eligibility criteria, assigns the app to the next ring's
+        Entra group, and creates a new deployment record for tracking.
+
+        Args:
+            deployment_id: ID of the deployment to promote
+
+        Returns:
+            Dict with promotion details: deployment_id, from_ring, to_ring, status
+
+        Raises:
+            ValueError: If deployment not found or ineligible for promotion
+            Exception: If assignment to next ring fails
+        """
         logger.info("Promoting deployment to next ring", deployment_id=deployment_id)
-        # TODO: Implement ring promotion logic
-        logger.warning("Ring promotion not yet implemented")
+
+        # Get deployment record
+        with db_session_scope() as session:
+            deployment = session.query(Deployment).filter(Deployment.id == deployment_id).first()
+            if not deployment:
+                raise ValueError(f"Deployment {deployment_id} not found")
+
+            package_id = deployment.package_id
+            intune_app_id = deployment.intune_app_id
+            current_ring_id = deployment.ring_id
+
+        # Check eligibility for promotion
+        eligible, reason = self.is_eligible_for_promotion(deployment)
+        if not eligible:
+            logger.warning(
+                "Deployment not eligible for promotion",
+                deployment_id=deployment_id,
+                reason=reason
+            )
+            raise ValueError(f"Deployment not eligible for promotion: {reason}")
+
+        # Find current ring index
+        current_ring_index = None
+        for idx, ring in enumerate(self.deployment_rings):
+            if ring['ring_id'] == current_ring_id:
+                current_ring_index = idx
+                break
+
+        if current_ring_index is None:
+            raise ValueError(f"Ring {current_ring_id} not found in deployment configuration")
+
+        # Get next ring
+        next_ring_index = current_ring_index + 1
+        if next_ring_index >= len(self.deployment_rings):
+            raise ValueError("Already at final ring - cannot promote further")
+
+        next_ring = self.deployment_rings[next_ring_index]
+        current_ring = self.deployment_rings[current_ring_index]
+
+        # Get package for assignment
+        package = self._get_package(package_id)
+        if not package:
+            raise ValueError(f"Package {package_id} not found")
+
+        logger.info(
+            "Promoting to next ring",
+            deployment_id=deployment_id,
+            from_ring=current_ring['name'],
+            to_ring=next_ring['name'],
+            intune_app_id=intune_app_id
+        )
+
+        # Assign to next ring
+        self._assign_to_ring(intune_app_id, package, next_ring_index)
+
+        # Update current deployment status to COMPLETED
+        with db_session_scope() as session:
+            deployment = session.query(Deployment).filter(Deployment.id == deployment_id).first()
+            if deployment:
+                deployment.status = DeploymentStatus.COMPLETED
+                deployment.completed_at = datetime.utcnow()
+
+        logger.info(
+            "Promotion completed successfully",
+            deployment_id=deployment_id,
+            from_ring=current_ring['name'],
+            to_ring=next_ring['name'],
+            package_id=package_id
+        )
+
+        return {
+            'deployment_id': deployment_id,
+            'package_id': package_id,
+            'from_ring': current_ring['name'],
+            'to_ring': next_ring['name'],
+            'status': 'promoted',
+            'intune_app_id': intune_app_id
+        }
+
+    def check_and_promote_eligible_deployments(self) -> Dict[str, Any]:
+        """Check all in-progress deployments and promote eligible ones to next ring.
+
+        Queries all deployments with status IN_PROGRESS that are not at the final
+        ring, evaluates each for promotion eligibility based on dwell time and
+        success thresholds, and automatically promotes eligible deployments.
+        Designed to be called by a periodic Celery task.
+
+        Returns:
+            Dict with keys:
+                - total_checked: Total number of deployments evaluated
+                - eligible_count: Number of deployments eligible for promotion
+                - promoted_count: Number of deployments successfully promoted
+                - failed_promotions: Number of promotions that failed
+                - errors: List of error details for failed promotions
+                - promotions: List of promotion details for successful promotions
+        """
+        logger.info("Starting automated ring promotion check")
+
+        # Check if auto-promotion is enabled
+        promotion_config = self.config.get('ring_promotion', {})
+        if not promotion_config.get('auto_promote', False):
+            logger.info("Auto-promotion is disabled in configuration")
+            return {
+                'total_checked': 0,
+                'eligible_count': 0,
+                'promoted_count': 0,
+                'failed_promotions': 0,
+                'errors': [],
+                'promotions': [],
+                'message': 'Auto-promotion disabled in configuration'
+            }
+
+        with db_session_scope() as session:
+            # Query all IN_PROGRESS deployments
+            deployments = session.query(Deployment).filter(
+                Deployment.status == DeploymentStatus.IN_PROGRESS
+            ).all()
+
+            total_checked = len(deployments)
+            logger.info("Found in-progress deployments for promotion check", count=total_checked)
+
+            if total_checked == 0:
+                return {
+                    'total_checked': 0,
+                    'eligible_count': 0,
+                    'promoted_count': 0,
+                    'failed_promotions': 0,
+                    'errors': [],
+                    'promotions': []
+                }
+
+            eligible_count = 0
+            promoted_count = 0
+            failed_promotions = 0
+            errors = []
+            promotions = []
+
+            # Check each deployment for promotion eligibility
+            for deployment in deployments:
+                try:
+                    # Skip deployments at final ring
+                    current_ring_index = None
+                    for idx, ring in enumerate(self.deployment_rings):
+                        if ring['ring_id'] == deployment.ring_id:
+                            current_ring_index = idx
+                            break
+
+                    if current_ring_index is None:
+                        logger.warning(
+                            "Deployment has unknown ring_id",
+                            deployment_id=deployment.id,
+                            ring_id=deployment.ring_id
+                        )
+                        continue
+
+                    if current_ring_index >= len(self.deployment_rings) - 1:
+                        logger.debug(
+                            "Deployment at final ring - skipping",
+                            deployment_id=deployment.id,
+                            ring=deployment.ring_name
+                        )
+                        continue
+
+                    # Check if eligible for promotion
+                    eligible, reason = self.is_eligible_for_promotion(deployment)
+
+                    if eligible:
+                        eligible_count += 1
+                        logger.info(
+                            "Deployment eligible for promotion",
+                            deployment_id=deployment.id,
+                            ring=deployment.ring_name,
+                            reason=reason
+                        )
+
+                        # Attempt to promote
+                        try:
+                            promotion_result = self.promote_to_next_ring(deployment.id)
+                            promoted_count += 1
+                            promotions.append(promotion_result)
+
+                            logger.info(
+                                "Deployment promoted successfully",
+                                deployment_id=deployment.id,
+                                from_ring=promotion_result['from_ring'],
+                                to_ring=promotion_result['to_ring']
+                            )
+
+                        except Exception as e:
+                            logger.error(
+                                "Failed to promote eligible deployment",
+                                deployment_id=deployment.id,
+                                error=str(e),
+                                exc_info=True
+                            )
+                            failed_promotions += 1
+                            errors.append({
+                                'deployment_id': deployment.id,
+                                'ring': deployment.ring_name,
+                                'error': str(e)
+                            })
+
+                    else:
+                        logger.debug(
+                            "Deployment not eligible for promotion",
+                            deployment_id=deployment.id,
+                            ring=deployment.ring_name,
+                            reason=reason
+                        )
+
+                except Exception as e:
+                    logger.error(
+                        "Error checking deployment eligibility",
+                        deployment_id=deployment.id,
+                        error=str(e),
+                        exc_info=True
+                    )
+                    errors.append({
+                        'deployment_id': deployment.id,
+                        'ring': deployment.ring_name,
+                        'error': f"Eligibility check failed: {str(e)}"
+                    })
+
+        result = {
+            'total_checked': total_checked,
+            'eligible_count': eligible_count,
+            'promoted_count': promoted_count,
+            'failed_promotions': failed_promotions,
+            'errors': errors,
+            'promotions': promotions
+        }
+
+        logger.info(
+            "Automated ring promotion check completed",
+            total_checked=total_checked,
+            eligible=eligible_count,
+            promoted=promoted_count,
+            failed=failed_promotions
+        )
+
+        return result
 
     # ---------------------------------------------------------------------------
     # Driver Update Profiles (Intune-native driver management — ch04 reference)
@@ -731,6 +1063,24 @@ class DeploymentAgent:
         if total_count == 0:
             return 0.0
         return (failed_count / total_count) * 100.0
+
+    def calculate_success_rate(self, successful_installs: int, total_targeted: int) -> float:
+        """Calculate the success rate as a percentage.
+
+        Computes the percentage of successful deployments out of the total number
+        of targeted devices. Returns 0.0 if total_targeted is 0 to avoid division
+        by zero.
+
+        Args:
+            successful_installs: Number of successful installations
+            total_targeted: Total number of targeted devices
+
+        Returns:
+            Success rate as a percentage (0.0 to 100.0)
+        """
+        if total_targeted == 0:
+            return 0.0
+        return (successful_installs / total_targeted) * 100.0
 
     def should_trigger_rollback(self, successful: int, failed: int, pending: int) -> bool:
         """Evaluate if deployment meets rollback criteria.
