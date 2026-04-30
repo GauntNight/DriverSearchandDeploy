@@ -669,6 +669,62 @@ class DeploymentAgent:
             return 0.0
         return (failed_count / total_count) * 100.0
 
+    def should_trigger_rollback(self, successful: int, failed: int, pending: int) -> bool:
+        """Evaluate if deployment meets rollback criteria.
+
+        Checks if the deployment failure rate exceeds the configured threshold
+        and if there are enough completed installations to make a reliable
+        decision. Pending installations are excluded from the calculation.
+
+        Args:
+            successful: Number of successful installations
+            failed: Number of failed installations
+            pending: Number of pending installations (not used in calculation)
+
+        Returns:
+            True if rollback should be triggered, False otherwise
+        """
+        rollback_config = self.config.get('rollback', {})
+
+        # Check if rollback is enabled in configuration
+        if not rollback_config.get('enabled', False):
+            logger.debug("Rollback disabled in configuration")
+            return False
+
+        # Get threshold and minimum count from config
+        failure_threshold = rollback_config.get('failure_threshold_percent', 20.0)
+        minimum_install_count = rollback_config.get('minimum_install_count', 5)
+
+        # Calculate total attempted installs (exclude pending)
+        total_attempted = successful + failed
+
+        # Check if we have enough data to make a decision
+        if total_attempted < minimum_install_count:
+            logger.debug(
+                "Insufficient install count for rollback decision",
+                total_attempted=total_attempted,
+                minimum_required=minimum_install_count
+            )
+            return False
+
+        # Calculate failure rate
+        failure_rate = self.calculate_failure_rate(total_attempted, failed)
+
+        # Determine if rollback should be triggered
+        should_rollback = failure_rate > failure_threshold
+
+        logger.info(
+            "Rollback evaluation",
+            successful=successful,
+            failed=failed,
+            pending=pending,
+            failure_rate=failure_rate,
+            threshold=failure_threshold,
+            should_rollback=should_rollback
+        )
+
+        return should_rollback
+
     def update_deployment_status(self, deployment_id: int, status_data: Dict[str, Any]):
         """Update deployment record with latest status data from Intune.
 
