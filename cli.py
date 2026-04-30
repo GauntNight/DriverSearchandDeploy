@@ -189,6 +189,27 @@ def cancel_job(job_id, all_stuck):
         console.print(f"[bold green]✓[/bold green] Job #{job_id} cancelled")
 
 
+@jobs.command('rollback')
+@click.argument('job_id', type=int)
+@click.option('--yes', is_flag=True, help='Skip confirmation prompt')
+def rollback_job(job_id, yes):
+    """Rollback a failed deployment"""
+    engine = OrchestrationEngine()
+    job = engine.get_job(job_id)
+
+    if not job:
+        console.print(f"[bold red]✗[/bold red] Job {job_id} not found")
+        return
+
+    console.print(f"\n[bold]Job #{job.id}: {job.software_title}[/bold]")
+    console.print(f"  State: {job.state.value}")
+    console.print(f"  Version: {job.target_version or 'N/A'}")
+
+    if not yes:
+        click.confirm(f"\nRollback deployment for job #{job_id}?", abort=True)
+
+    console.print(f"\n[bold yellow]⚠[/bold yellow] Rollback functionality not yet implemented")
+    console.print(f"This will remove the deployed application from Intune")
 
 
 

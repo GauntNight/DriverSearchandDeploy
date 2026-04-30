@@ -252,6 +252,84 @@ class TestDeploymentsEndpoints:
 
 
 # ============================================================================
+# Rollback Deployments Endpoint Tests
+# ============================================================================
+
+class TestRollbackDeploymentsEndpoint:
+    """Test cases for rollback deployments API endpoint"""
+
+    def test_list_rollbacks_empty(self, test_client):
+        """Test listing rollback deployments when none exist"""
+        with patch('autopackager.web.api.dashboard_service') as mock_service:
+            mock_service.get_deployments.return_value = []
+
+            response = test_client.get("/api/deployments/rollbacks")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data['deployments'] == []
+            assert data['count'] == 0
+            assert data['filter'] == {'status': 'rolled_back'}
+
+    def test_list_rollbacks_with_results(self, test_client):
+        """Test listing rollback deployments with results"""
+        with patch('autopackager.web.api.dashboard_service') as mock_service:
+            sample_rollback = {
+                'id': 1,
+                'ring_name': 'Pilot Ring',
+                'status': 'rolled_back',
+                'rolled_back_at': '2024-01-15T10:30:00',
+                'rollback_reason': 'High failure rate detected'
+            }
+            mock_service.get_deployments.return_value = [sample_rollback]
+
+            response = test_client.get("/api/deployments/rollbacks")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data['deployments']) == 1
+            assert data['count'] == 1
+            assert data['deployments'][0]['status'] == 'rolled_back'
+            assert data['deployments'][0]['rollback_reason'] == 'High failure rate detected'
+
+    def test_list_rollbacks_with_custom_limit(self, test_client):
+        """Test listing rollback deployments with custom limit"""
+        with patch('autopackager.web.api.dashboard_service') as mock_service:
+            mock_service.get_deployments.return_value = []
+
+            response = test_client.get("/api/deployments/rollbacks?limit=50")
+
+            assert response.status_code == 200
+            # Verify the service was called with correct limit
+            from autopackager.models.deployment import DeploymentStatus
+            mock_service.get_deployments.assert_called_once_with(
+                status=DeploymentStatus.ROLLED_BACK,
+                limit=50
+            )
+
+    def test_list_rollbacks_with_limit_validation(self, test_client):
+        """Test listing rollback deployments with limit outside valid range"""
+        # Test limit too large
+        response = test_client.get("/api/deployments/rollbacks?limit=2000")
+        assert response.status_code == 422
+
+        # Test limit too small
+        response = test_client.get("/api/deployments/rollbacks?limit=0")
+        assert response.status_code == 422
+
+    def test_list_rollbacks_handles_exception(self, test_client):
+        """Test that rollback deployments endpoint handles exceptions gracefully"""
+        with patch('autopackager.web.api.dashboard_service') as mock_service:
+            mock_service.get_deployments.side_effect = Exception("Database error")
+
+            response = test_client.get("/api/deployments/rollbacks")
+
+            assert response.status_code == 500
+            data = response.json()
+            assert 'Internal server error' in data['detail']
+
+
+# ============================================================================
 # Deployment Rings Endpoint Tests
 # ============================================================================
 

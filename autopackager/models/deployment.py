@@ -14,6 +14,7 @@ class DeploymentStatus(str, Enum):
     SUCCESSFUL = "successful"
     FAILED = "failed"
     SUPERSEDED = "superseded"
+    ROLLED_BACK = "rolled_back"
 
 
 class Deployment(Base):
@@ -51,6 +52,11 @@ class Deployment(Base):
     completed_at = Column(DateTime)
     last_status_check = Column(DateTime)
 
+    # Rollback tracking
+    rolled_back_at = Column(DateTime)
+    rollback_reason = Column(String(1024))
+    previous_package_id = Column(Integer, ForeignKey('packages.id'))
+
     # Error tracking
     error_message = Column(String(2048))
 
@@ -82,6 +88,9 @@ class Deployment(Base):
             'deployed_at': self.deployed_at.isoformat() if self.deployed_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
             'last_status_check': self.last_status_check.isoformat() if self.last_status_check else None,
+            'rolled_back_at': self.rolled_back_at.isoformat() if self.rolled_back_at else None,
+            'rollback_reason': self.rollback_reason,
+            'previous_package_id': self.previous_package_id,
             'error_message': self.error_message,
             'metadata': self.deployment_metadata,
             'device_status_details': self.device_status_details

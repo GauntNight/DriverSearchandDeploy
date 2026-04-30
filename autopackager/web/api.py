@@ -195,6 +195,36 @@ async def get_deployment_rings():
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@app.get("/api/deployments/rollbacks")
+async def list_rollbacks(
+    limit: Optional[int] = Query(100, ge=1, le=1000, description="Maximum number of rollbacks to return")
+):
+    """
+    List all deployments with ROLLED_BACK status
+
+    Returns deployments that have been rolled back, including rollback
+    timestamps, reasons, and previous package information.
+
+    Query Parameters:
+    - limit: Maximum number of rollbacks to return (default: 100, max: 1000)
+    """
+    try:
+        deployments = dashboard_service.get_deployments(
+            status=DeploymentStatus.ROLLED_BACK,
+            limit=limit
+        )
+
+        return {
+            "deployments": deployments,
+            "count": len(deployments),
+            "filter": {"status": "rolled_back"}
+        }
+
+    except Exception as e:
+        logger.error("Error listing rollback deployments", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
 @app.get("/api/discovery/runs")
 async def list_discovery_runs(
     limit: Optional[int] = Query(100, ge=1, le=1000, description="Maximum number of discovery runs to return")
