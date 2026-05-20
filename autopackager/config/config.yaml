@@ -1,8 +1,12 @@
 # AutoPackager Configuration
 
 # Database Configuration
+# Defaults to SQLite for a zero-dependency local setup. To use PostgreSQL,
+# set type to "postgresql" and install the driver (see requirements-postgres.txt).
 database:
-  type: "postgresql"
+  type: "sqlite"
+  path: "autopackager.db"
+  # PostgreSQL settings (used only when type is "postgresql"):
   host: "localhost"
   port: 5432
   name: "autopackager"
@@ -95,6 +99,8 @@ ring_promotion:
   minimum_install_count: 10
   evaluation_period_hours: 48
   auto_promote: true
+  # How often the Celery Beat scheduler runs the automatic promotion check.
+  check_interval_hours: 6
 
 # Paths
 paths:

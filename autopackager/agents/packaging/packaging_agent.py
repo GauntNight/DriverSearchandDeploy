@@ -335,7 +335,7 @@ exit 0
                 install_command=install_cmd,
                 uninstall_command=uninstall_cmd,
                 detection_rules=detection_rules,
-                metadata={
+                package_metadata={
                     'job_id': job.id,
                     'download_url': job.job_metadata.get('download_url'),
                     'release_notes': job.job_metadata.get('release_notes')

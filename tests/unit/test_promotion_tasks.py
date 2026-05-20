@@ -27,12 +27,13 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         # Mock successful result from check_and_promote_eligible_deployments
         mock_result = {
             'total_checked': 5,
-            'promotions_executed': 2,
-            'promotions_pending': 1,
-            'promotions_blocked': 1,
-            'promoted_deployments': [
-                {'deployment_id': 1, 'from_ring': 0, 'to_ring': 1},
-                {'deployment_id': 2, 'from_ring': 1, 'to_ring': 2}
+            'eligible_count': 2,
+            'promoted_count': 2,
+            'failed_promotions': 0,
+            'errors': [],
+            'promotions': [
+                {'deployment_id': 1, 'from_ring': 'IT Pilot', 'to_ring': 'Early Adopters'},
+                {'deployment_id': 2, 'from_ring': 'Early Adopters', 'to_ring': 'Broad Deployment'}
             ]
         }
         mock_agent.check_and_promote_eligible_deployments.return_value = mock_result
@@ -49,16 +50,16 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         # Verify result
         self.assertEqual(result, mock_result)
         self.assertEqual(result['total_checked'], 5)
-        self.assertEqual(result['promotions_executed'], 2)
+        self.assertEqual(result['promoted_count'], 2)
 
         # Verify logging
         mock_logger.info.assert_any_call("Starting ring promotion check")
         mock_logger.info.assert_any_call(
             "Ring promotion check completed",
             total_checked=5,
-            promotions_executed=2,
-            promotions_pending=1,
-            promotions_blocked=1
+            eligible_count=2,
+            promoted_count=2,
+            failed_promotions=0
         )
 
     @patch('autopackager.agents.deployment.DeploymentAgent')
@@ -72,10 +73,11 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         # Mock result with no promotions
         mock_result = {
             'total_checked': 3,
-            'promotions_executed': 0,
-            'promotions_pending': 2,
-            'promotions_blocked': 1,
-            'promoted_deployments': []
+            'eligible_count': 0,
+            'promoted_count': 0,
+            'failed_promotions': 0,
+            'errors': [],
+            'promotions': []
         }
         mock_agent.check_and_promote_eligible_deployments.return_value = mock_result
 
@@ -83,18 +85,18 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         result = check_ring_promotions()
 
         # Verify result
-        self.assertEqual(result['promotions_executed'], 0)
+        self.assertEqual(result['promoted_count'], 0)
         self.assertEqual(result['total_checked'], 3)
-        self.assertIsInstance(result['promoted_deployments'], list)
-        self.assertEqual(len(result['promoted_deployments']), 0)
+        self.assertIsInstance(result['promotions'], list)
+        self.assertEqual(len(result['promotions']), 0)
 
         # Verify logging shows zero promotions
         mock_logger.info.assert_any_call(
             "Ring promotion check completed",
             total_checked=3,
-            promotions_executed=0,
-            promotions_pending=2,
-            promotions_blocked=1
+            eligible_count=0,
+            promoted_count=0,
+            failed_promotions=0
         )
 
     @patch('autopackager.agents.deployment.DeploymentAgent')
@@ -108,8 +110,8 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         # Mock incomplete result (missing some keys)
         mock_result = {
             'total_checked': 2,
-            'promotions_executed': 1
-            # Missing promotions_pending and promotions_blocked
+            'promoted_count': 1
+            # Missing eligible_count and failed_promotions
         }
         mock_agent.check_and_promote_eligible_deployments.return_value = mock_result
 
@@ -118,15 +120,15 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
 
         # Verify result
         self.assertEqual(result['total_checked'], 2)
-        self.assertEqual(result['promotions_executed'], 1)
+        self.assertEqual(result['promoted_count'], 1)
 
         # Verify logging uses .get() with defaults for missing keys
         mock_logger.info.assert_any_call(
             "Ring promotion check completed",
             total_checked=2,
-            promotions_executed=1,
-            promotions_pending=0,  # Default value
-            promotions_blocked=0   # Default value
+            eligible_count=0,      # Default value
+            promoted_count=1,
+            failed_promotions=0    # Default value
         )
 
     @patch('autopackager.agents.deployment.DeploymentAgent')
@@ -192,11 +194,12 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         # Mock result with multiple promotions
         mock_result = {
             'total_checked': 10,
-            'promotions_executed': 5,
-            'promotions_pending': 3,
-            'promotions_blocked': 2,
-            'promoted_deployments': [
-                {'deployment_id': i, 'from_ring': 0, 'to_ring': 1}
+            'eligible_count': 5,
+            'promoted_count': 5,
+            'failed_promotions': 0,
+            'errors': [],
+            'promotions': [
+                {'deployment_id': i, 'from_ring': 'IT Pilot', 'to_ring': 'Early Adopters'}
                 for i in range(1, 6)
             ]
         }
@@ -206,16 +209,16 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         result = check_ring_promotions()
 
         # Verify all promotions are recorded
-        self.assertEqual(result['promotions_executed'], 5)
-        self.assertEqual(len(result['promoted_deployments']), 5)
+        self.assertEqual(result['promoted_count'], 5)
+        self.assertEqual(len(result['promotions']), 5)
 
         # Verify logging
         mock_logger.info.assert_any_call(
             "Ring promotion check completed",
             total_checked=10,
-            promotions_executed=5,
-            promotions_pending=3,
-            promotions_blocked=2
+            eligible_count=5,
+            promoted_count=5,
+            failed_promotions=0
         )
 
     @patch('autopackager.agents.deployment.DeploymentAgent')
@@ -226,13 +229,14 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         mock_agent = Mock()
         mock_deployment_agent_class.return_value = mock_agent
 
-        # Mock result with all blocked
+        # Mock result with nothing eligible (all blocked / dwell time not met)
         mock_result = {
             'total_checked': 4,
-            'promotions_executed': 0,
-            'promotions_pending': 0,
-            'promotions_blocked': 4,
-            'promoted_deployments': []
+            'eligible_count': 0,
+            'promoted_count': 0,
+            'failed_promotions': 0,
+            'errors': [],
+            'promotions': []
         }
         mock_agent.check_and_promote_eligible_deployments.return_value = mock_result
 
@@ -240,16 +244,16 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         result = check_ring_promotions()
 
         # Verify result
-        self.assertEqual(result['promotions_executed'], 0)
-        self.assertEqual(result['promotions_blocked'], 4)
+        self.assertEqual(result['promoted_count'], 0)
+        self.assertEqual(result['eligible_count'], 0)
 
         # Verify logging
         mock_logger.info.assert_any_call(
             "Ring promotion check completed",
             total_checked=4,
-            promotions_executed=0,
-            promotions_pending=0,
-            promotions_blocked=4
+            eligible_count=0,
+            promoted_count=0,
+            failed_promotions=0
         )
 
     @patch('autopackager.agents.deployment.DeploymentAgent')
@@ -263,9 +267,11 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         # Mock result
         mock_result = {
             'total_checked': 1,
-            'promotions_executed': 1,
-            'promotions_pending': 0,
-            'promotions_blocked': 0
+            'eligible_count': 1,
+            'promoted_count': 1,
+            'failed_promotions': 0,
+            'errors': [],
+            'promotions': []
         }
         mock_agent.check_and_promote_eligible_deployments.return_value = mock_result
 
@@ -275,7 +281,7 @@ class TestCheckRingPromotionsTask(unittest.TestCase):
         # Verify result is a dictionary
         self.assertIsInstance(result, dict)
         self.assertIn('total_checked', result)
-        self.assertIn('promotions_executed', result)
+        self.assertIn('promoted_count', result)
 
     @patch('autopackager.agents.deployment.DeploymentAgent')
     @patch('autopackager.orchestration.tasks.logger')

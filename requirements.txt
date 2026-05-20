@@ -46,6 +46,9 @@ pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0
 responses==0.24.1
+# httpx is used by Starlette's TestClient; pin <0.28 since 0.28 dropped the
+# `app=` argument that Starlette 0.35 relies on.
+httpx==0.27.2
 
 # File handling (pathlib is built into Python 3.4+, no install needed)
 # NOTE: py7zr (7zip extraction) requires C build tools on Python 3.14+

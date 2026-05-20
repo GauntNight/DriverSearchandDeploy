@@ -540,9 +540,9 @@ def check_ring_promotions(self):
         logger.info(
             "Ring promotion check completed",
             total_checked=result.get('total_checked', 0),
-            promotions_executed=result.get('promotions_executed', 0),
-            promotions_pending=result.get('promotions_pending', 0),
-            promotions_blocked=result.get('promotions_blocked', 0)
+            eligible_count=result.get('eligible_count', 0),
+            promoted_count=result.get('promoted_count', 0),
+            failed_promotions=result.get('failed_promotions', 0)
         )
 
         return result

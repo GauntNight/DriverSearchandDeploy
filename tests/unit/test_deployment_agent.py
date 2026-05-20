@@ -717,6 +717,82 @@ class TestDeploymentAgentCore(unittest.TestCase):
         self.assertEqual(result['failed_updates'], 1)
         self.assertEqual(len(result['errors']), 1)
 
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    def test_check_all_deployments_triggers_rollback_over_threshold(self, mock_db_session):
+        """A deployment exceeding the failure threshold should trigger rollback"""
+        mock_deployment = Mock(spec=Deployment)
+        mock_deployment.id = 1
+        mock_deployment.intune_app_id = 'app-id-1'
+        mock_deployment.ring_name = 'Ring 0'
+        mock_deployment.status = DeploymentStatus.IN_PROGRESS
+
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.all.return_value = [mock_deployment]
+
+        # Ensure rollback is enabled with a low threshold for the test
+        self.agent.config['rollback'] = {
+            'enabled': True,
+            'failure_threshold_percent': 20.0,
+            'minimum_install_count': 5,
+        }
+
+        # 1 installed / 9 failed = 90% failure rate, well over the 20% threshold
+        high_failure_status = {
+            'installed_count': 1,
+            'failed_count': 9,
+            'pending_count': 0,
+            'not_applicable_count': 0,
+            'total_targeted': 10,
+        }
+
+        with patch.object(self.agent, 'get_deployment_status', return_value=high_failure_status), \
+                patch.object(self.agent, 'update_deployment_status'), \
+                patch.object(self.agent, 'execute_rollback',
+                             return_value={'previous_version': '1.0.0', 'status': 'rolled_back'}) as mock_rollback:
+            result = self.agent.check_all_deployments()
+
+        mock_rollback.assert_called_once()
+        self.assertEqual(mock_rollback.call_args.kwargs['affected_device_count'], 9)
+        self.assertEqual(result['rollbacks_triggered'], 1)
+        self.assertEqual(result['rollback_errors'], [])
+
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    def test_check_all_deployments_no_rollback_under_threshold(self, mock_db_session):
+        """A deployment under the failure threshold should not trigger rollback"""
+        mock_deployment = Mock(spec=Deployment)
+        mock_deployment.id = 1
+        mock_deployment.intune_app_id = 'app-id-1'
+        mock_deployment.ring_name = 'Ring 0'
+        mock_deployment.status = DeploymentStatus.IN_PROGRESS
+
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.all.return_value = [mock_deployment]
+
+        self.agent.config['rollback'] = {
+            'enabled': True,
+            'failure_threshold_percent': 20.0,
+            'minimum_install_count': 5,
+        }
+
+        # 9 installed / 1 failed = 10% failure rate, below the 20% threshold
+        low_failure_status = {
+            'installed_count': 9,
+            'failed_count': 1,
+            'pending_count': 0,
+            'not_applicable_count': 0,
+            'total_targeted': 10,
+        }
+
+        with patch.object(self.agent, 'get_deployment_status', return_value=low_failure_status), \
+                patch.object(self.agent, 'update_deployment_status'), \
+                patch.object(self.agent, 'execute_rollback') as mock_rollback:
+            result = self.agent.check_all_deployments()
+
+        mock_rollback.assert_not_called()
+        self.assertEqual(result['rollbacks_triggered'], 0)
+
     @patch('autopackager.agents.deployment.deployment_agent.GraphAPIClient')
     def test_deploy_driver_update_profile_creates_new_profile(self, mock_graph_class):
         """Test creating a new driver update profile"""

@@ -1,21 +1,34 @@
-# AutoPackager - Autonomous Software Packaging Factory
+# AutoPackager - Automated Driver Packaging for Microsoft Intune
 
-## An AI-Powered Platform for Automated Software and Driver Deployment via Microsoft Intune
+## Catalog-driven automation for packaging and deploying OEM drivers via Microsoft Intune
 
-AutoPackager is an autonomous software packaging and deployment factory that revolutionizes enterprise desktop management by treating it as Infrastructure as Code (IaC). The system automates the entire lifecycle of software and driver updates from discovery to deployment through Microsoft Intune.
+AutoPackager automates the driver update lifecycle for Dell, HP, and Lenovo hardware: it
+checks OEM catalogs for new versions, downloads and packages them as `.intunewin` Win32
+apps, runs basic validation, and publishes them to Microsoft Intune using a phased
+deployment-ring strategy.
+
+> **Note on "AI":** Phase 1 is **deterministic** — discovery parses published OEM XML/CAB
+> catalogs and install commands are generated from file-type heuristics. There is **no LLM
+> in the current code path.** LLM-powered discovery and silent-install-parameter research
+> are planned for Phase 2 (see [Roadmap](#roadmap)). Any LLM API key collected by the
+> installer is reserved for those future phases and is not used today.
 
 ## Overview
 
-Manual software packaging is a significant bottleneck for IT departments, consuming thousands of hours annually in repetitive tasks. AutoPackager solves this by creating a closed-loop, autonomous system that leverages Large Language Models (LLMs) to automate key aspects of the packaging process.
+Manual driver packaging is a significant bottleneck for IT departments. AutoPackager
+reduces that effort by automating the path from "a new driver appeared in the OEM catalog"
+to "a tested Win32 app is published and assigned to a pilot ring in Intune" — with optional
+automatic promotion across rings and automatic rollback on high failure rates.
 
 ## Key Features
 
-- **AI-Driven Discovery**: Automatically detects new driver and software versions from OEM catalogs and vendor websites
-- **Intelligent Packaging**: Downloads, packages, and creates .intunewin packages with automated silent installation parameter research
-- **Automated Testing**: Validates packages through smoke tests and VM-based testing
-- **Phased Deployment**: Deploys to Microsoft Intune with deployment ring strategy (IT Pilot → Early Adopters → Broad → Critical)
-- **Zero-Touch Operation**: End-to-end automation from discovery to deployment with minimal human intervention
-- **Desktop as Code**: Treats desktop software configuration as version-controlled code
+- **Catalog-based discovery**: Detects new driver versions by parsing Dell, HP, and Lenovo OEM catalogs (HP support is currently partial — see [Current Status](#current-status))
+- **Win32 packaging**: Downloads installers/driver packs and builds `.intunewin` packages (CAB driver packs are wrapped with a generated `pnputil` install script)
+- **Intune publishing**: Full Graph API content-upload flow (chunked Azure Blob upload, encryption metadata, publish)
+- **Basic validation**: Smoke checks on package files and commands, plus optional Hyper-V VM-based install testing
+- **Phased deployment**: Deployment-ring strategy (IT Pilot → Early Adopters → Broad → Critical) with optional automatic promotion
+- **Automatic rollback**: Reverts to the last known-good package when a deployment's failure rate exceeds a configurable threshold
+- **Web dashboard & CLI**: FastAPI dashboard and a `click`-based CLI for job and deployment management
 
 ## Architecture
 
@@ -34,10 +47,12 @@ Manual software packaging is a significant bottleneck for IT departments, consum
     ┌──────────────┐    ┌──────────────┐   ┌──────────────┐
     │ DISCOVERY    │    │ PACKAGING    │   │ TESTING      │
     │ AGENT        │ →  │ AGENT        │ → │ AGENT        │
-    │ • LLM Search │    │ • Download   │   │ • Smoke Test │
-    │ • Catalogs   │    │ • PSADT      │   │ • VM Test    │
-    └──────────────┘    │ • .intunewin │   └──────────────┘
-                        └──────────────┘          │
+    │ • Catalog    │    │ • Download   │   │ • Smoke Test │
+    │   parse      │    │ • CAB/pnputil│   │ • VM Test    │
+    │ • Dell/HP/   │    │ • .intunewin │   │   (Hyper-V,  │
+    │   Lenovo     │    │              │   │    optional) │
+    └──────────────┘    └──────────────┘   └──────────────┘
+                                                  │
                                                   ▼
                                           ┌──────────────┐
                                           │ DEPLOYMENT   │
@@ -53,22 +68,33 @@ Manual software packaging is a significant bottleneck for IT departments, consum
 
 ## Phase 1: Driver Management Automation
 
-The initial phase focuses on automating driver and BIOS updates for Dell, HP, and Lenovo hardware.
+The initial phase focuses on automating driver updates for Dell, HP, and Lenovo hardware.
 
-**What's Implemented:**
-- ✅ OEM driver catalog integration (HP HPIA, Lenovo, Dell)
-- ✅ Orchestration engine with Celery task queue
-- ✅ Discovery agent for version checking
-- ✅ Packaging agent for .intunewin creation
-- ✅ Testing agent with smoke tests and optional VM-based validation (Hyper-V or Azure)
-- ✅ Deployment agent with Intune Graph API integration
-- ✅ Deployment ring support (Ring 0-3)
-- ✅ Database tracking with PostgreSQL / SQLite
-- ✅ CLI interface for job management (`init`, `create-driver-job`, `jobs list/status/cancel/purge`, `worker start/purge`)
-- ✅ Web dashboard for real-time deployment monitoring (FastAPI + REST API)
-- ✅ Continuous catalog discovery (Celery Beat scheduled OEM catalog scanning)
-- ✅ Deployment status polling (auto-syncs Intune device install state)
-- ✅ Comprehensive automated test suite (unit, integration, CLI, API)
+### Current Status
+
+| Capability | Status | Notes |
+|------------|--------|-------|
+| Orchestration engine (Celery + Redis) | ✅ Working | Discovery → Packaging → Testing → Deployment pipeline with per-stage retries |
+| Dell driver discovery | ✅ Working | Parses `DriverPackCatalog.cab` |
+| Lenovo driver discovery | ✅ Working | Parses `catalogv2.xml` |
+| HP driver discovery | ⚠️ Partial | Catalog parsing returns placeholder SoftPaq URLs; not production-ready |
+| Packaging → `.intunewin` | ✅ Working | Requires Windows + `IntuneWinAppUtil.exe`; produces a placeholder file if the tool is absent |
+| Intune publishing (Graph API) | ✅ Working | Full content-upload + publish flow |
+| Testing | ⚠️ Basic | Smoke checks (file/command/rules) by default; real install testing requires Hyper-V (Windows host) |
+| Azure VM testing | ❌ Not implemented | Provider raises "not yet implemented" |
+| Deployment rings (0–3) | ✅ Working | Initial assignment to Ring 0 on deploy |
+| Automatic ring promotion | ✅ Working | Scheduled via Celery Beat when `ring_promotion.auto_promote` is enabled |
+| Automatic rollback | ✅ Working | Evaluated during status polling against `rollback.failure_threshold_percent` |
+| Intune-native Driver Update Profiles | ⚠️ Available, not wired | `DeploymentAgent.deploy_driver_update_profile()` exists but the default pipeline uses the Win32 path |
+| Win32 supersedence | ❌ Stub | `_create_supersedence()` is a placeholder |
+| Continuous catalog discovery | ✅ Working | Celery Beat scheduled OEM catalog scanning |
+| Deployment status polling | ✅ Working | Syncs Intune per-device install state |
+| Database tracking | ✅ Working | SQLite by default; PostgreSQL optional (install `psycopg2`) |
+| CLI | ✅ Working | `init`, `create-driver-job`, `jobs list/status/cancel/promote/halt-promotion/purge`, `worker start/purge`, `validate-azure` (`jobs rollback` is a stub — rollback runs automatically via polling) |
+| Web dashboard (FastAPI + REST) | ✅ Working | Job, deployment, discovery, and stats endpoints |
+| LLM-driven discovery / install-param research | ❌ Planned (Phase 2) | No LLM is used in the current code |
+| COTS / general software discovery | ❌ Planned (Phase 2) | Driver updates only today |
+| Automated test suite | ✅ Working | unit, integration, CLI, API |
 
 ## Quick Start
 
@@ -79,7 +105,7 @@ Run a single script as Administrator — it installs and configures everything a
 **What you need before running:**
 - Windows workstation with local administrator rights
 - Azure account with Global Admin or Application/Group Administrator role
-- An LLM API key ([OpenAI](https://platform.openai.com/api-keys) or [Anthropic](https://console.anthropic.com/settings/keys))
+- (Optional) An LLM API key ([OpenAI](https://platform.openai.com/api-keys) or [Anthropic](https://console.anthropic.com/settings/keys)) — **not used in Phase 1**; reserved for the planned Phase 2 LLM features
 
 **Easiest:** double-click `Install-AutoPackager.bat` — it handles elevation automatically.
 
@@ -100,7 +126,7 @@ Run a single script as Administrator — it installs and configures everything a
 **Minimum manual steps:**
 1. Run `.\Install-AutoPackager.ps1`
 2. Log in to Azure when the browser opens
-3. Paste your LLM API key when prompted
+3. (Optional) Paste an LLM API key when prompted — this is stored for future Phase 2 use and is not required for driver automation
 
 **See [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) for all options and flags**
 
@@ -193,13 +219,15 @@ python cli.py jobs status <job-id>
 
 Configure AutoPackager via `autopackager/config/config.yaml`:
 
-- **Database**: PostgreSQL or SQLite connection settings
+- **Database**: SQLite (default) or PostgreSQL connection settings
 - **Redis**: Celery task queue configuration
 - **Intune**: Azure tenant, client credentials, Graph API settings
-- **LLM**: OpenAI/Anthropic API configuration
 - **OEM Catalogs**: Dell, HP, Lenovo catalog URLs
 - **Deployment Rings**: Entra ID group assignments and deferral periods
+- **Ring Promotion**: dwell time, success thresholds, and auto-promote toggle
+- **Rollback**: failure threshold and minimum install count
 - **Testing**: VM provider and test settings
+- **LLM**: present in config but unused in Phase 1 (reserved for Phase 2)
 
 ## Upgrading
 
@@ -268,12 +296,13 @@ AutoPackager uses a phased rollout strategy:
 ## Technology Stack
 
 - **Orchestration**: Python, Celery, Redis
-- **Database**: PostgreSQL / SQLite
-- **LLM**: OpenAI GPT-4 / Anthropic Claude
-- **Packaging**: PowerShell, PSADT (future)
-- **Intune**: Microsoft Graph API, IntuneWin32App module
+- **Database**: SQLite (default) / PostgreSQL
+- **Intune**: Microsoft Graph API (`v1.0` for Win32 apps, `beta` for Driver Update Profiles)
+- **Packaging**: `IntuneWinAppUtil.exe`, generated PowerShell/`pnputil` scripts for CAB driver packs
+- **Web**: FastAPI + Uvicorn
 - **CLI**: Click, Rich (terminal UI)
 - **Logging**: Structlog, Python-JSON-Logger
+- **LLM (Phase 2, not yet used)**: OpenAI / Anthropic SDKs are installed but not invoked in Phase 1
 
 ## Project Structure
 
@@ -302,6 +331,18 @@ DriverSearchandDeploy/
 ├── start-dashboard.sh        # Launch FastAPI dashboard (Linux/Mac)
 └── requirements.txt       # Python dependencies
 ```
+
+## Limitations & Known Gaps
+
+Be aware of the following before relying on AutoPackager in production:
+
+- **Windows required for real packaging.** `.intunewin` creation depends on `IntuneWinAppUtil.exe`. On other platforms (or when the tool is missing) packaging produces a placeholder file that cannot be published.
+- **HP discovery is incomplete.** The HP catalog parser returns placeholder SoftPaq URLs and should not be used to drive real HP driver jobs yet.
+- **Testing is shallow by default.** The smoke test only validates that package files exist and commands/detection rules are well-formed. Real installation testing requires a configured Hyper-V host; the Azure VM provider is not implemented.
+- **Detection rules are generated heuristically.** The default registry detection rule is a best-effort template and may need manual adjustment per driver.
+- **No LLM features yet.** Discovery and install-command generation are fully deterministic. The `llm` config block and the OpenAI/Anthropic dependencies are unused in Phase 1.
+- **Supersedence is not implemented.** New versions are published as separate apps; old versions are not automatically superseded.
+- **Rollback requires a prior known-good package.** Automatic rollback only works if an earlier deployed + tested package for the same name exists in the database.
 
 ## Roadmap
 
@@ -374,5 +415,7 @@ This repository was sanitized for public release. Git history prior to the initi
 
 ## Credits
 
-Built with AI assistance
-Version 1.2.0 — Phase 1 with One-Click Installer, Web Dashboard, and Continuous Catalog Discovery
+Built with AI assistance.
+Version 1.2.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
+Intune publishing, deployment rings with automatic promotion and rollback, continuous
+catalog discovery, status polling, web dashboard, and CLI.
