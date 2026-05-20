@@ -1,3 +1,21 @@
+## [1.3.0] - 2026-05-20
+
+### Added
+- **MSI software packaging** — the pipeline can now package arbitrary MSI applications, not just OEM drivers. Given an MSI (local path and/or download URL) and an `msiexec` install command, AutoPackager reads the MSI's own metadata and auto-fills the Intune package.
+- `autopackager/utils/msi_metadata.py` — a dependency-free, cross-platform MSI reader. Parses the MSI's OLE2 compound file and `Property` table (plus the SummaryInformation stream) in pure Python to extract `ProductName`, `ProductVersion`, `ProductCode`, `UpgradeCode`, `Manufacturer`, and `ProductLanguage`. Also provides an `msiexec` command parser (`parse_install_command`), uninstall/detection-rule builders (`build_uninstall_command`, `build_product_code_detection_rule`), and a high-level `inspect_msi()` helper. No external tools, COM, or LLM required.
+- New CLI commands:
+  - `create-software-job` — creates an MSI packaging job (`--install-command`, `--installer-path`, `--download-url`, `--name`, `--publisher`, `--current-version`).
+  - `inspect-msi` — previews the metadata, install/uninstall commands, and Intune detection rule AutoPackager would generate for an MSI, without creating a job.
+- Unit tests in `tests/unit/test_msi_metadata.py`, including an end-to-end round-trip that builds a synthetic MSI and reads it back through both the mini-stream and main-FAT code paths.
+
+### Changed
+- `DiscoveryAgent._discover_software()` is now implemented: for non-driver jobs it reads MSI metadata (reusing metadata captured at job-creation time, or downloading the MSI when only a URL is supplied) and carries it forward through the job. It previously returned a "Phase 2 not implemented" stub.
+- `PackagingAgent` for MSI installers now honors the admin-supplied install command (preserving switches and public properties), prefers `msiexec /x {ProductCode}` for uninstall, emits a `win32LobAppProductCodeRule` detection rule when a product code is known, and copies local/`file://` installer sources instead of fetching over HTTP.
+- `discovery_task` persists `msi_metadata` and `install_command` onto the job so packaging can build commands and detection without re-reading the file.
+- `__version__` bumped to `1.3.0`.
+
+---
+
 ## [1.2.0] - 2026-04-27
 
 ### Added

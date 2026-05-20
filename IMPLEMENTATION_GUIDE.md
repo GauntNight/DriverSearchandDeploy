@@ -325,17 +325,26 @@ python cli.py worker start --concurrency 2
 # Get Dell model name (PowerShell)
 Get-WmiObject -Class Win32_ComputerSystem | Select-Object Model
 
-# Create job
+# Create a driver job
 python cli.py create-driver-job \
   --vendor dell \
   --model "Latitude 5420" \
   --driver-type "chipset" \
   --current-version "1.0.0"
 
+# Or package an MSI application (metadata read from the MSI itself)
+python cli.py inspect-msi "C:\Downloads\7z2408-x64.msi" \
+  --install-command "msiexec /i 7z2408-x64.msi /qn /norestart"   # preview only
+python cli.py create-software-job \
+  --install-command "msiexec /i 7z2408-x64.msi /qn /norestart" \
+  --installer-path "C:\Downloads\7z2408-x64.msi"
+
 # Monitor
 python cli.py jobs list
 python cli.py jobs status 1
 ```
+
+See [Packaging MSI Software](README.md#packaging-msi-software) for the full MSI workflow.
 
 </details>
 
