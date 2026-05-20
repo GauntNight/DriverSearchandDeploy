@@ -416,14 +416,92 @@ class DiscoveryAgent:
         return None
 
     def _discover_software(self, job: Job) -> Dict[str, Any]:
-        """Discover software updates (for Phase 2)"""
-        logger.info("Discovering software updates", job_id=job.id, software=job.software_title)
+        """Discover software metadata for an MSI-based packaging job.
 
-        # TODO: Implement software discovery using LLM
-        # This will be part of Phase 2
+        Unlike driver discovery (which scans OEM catalogs for newer versions),
+        software discovery inspects the provided MSI to auto-fill the version,
+        publisher, product code and detection details. The admin supplies the
+        installer (local path or URL) and an ``msiexec`` install command; this
+        step turns the MSI's own metadata into everything packaging/Intune need.
+        """
+        from autopackager.utils.msi_metadata import MSIMetadata, read_msi_metadata
 
-        logger.warning("Software discovery not yet implemented (Phase 2)")
-        return {'update_available': False, 'note': 'Software discovery Phase 2'}
+        logger.info("Discovering software metadata", job_id=job.id, software=job.software_title)
+
+        metadata = job.job_metadata or {}
+        install_command = metadata.get('install_command')
+
+        # Reuse metadata already read at job-creation time when available, so
+        # workers don't need access to the admin's local MSI file.
+        msi_meta = metadata.get('msi_metadata')
+
+        if not msi_meta:
+            msi_path = self._ensure_local_msi(job)
+            if msi_path:
+                try:
+                    msi_meta = read_msi_metadata(msi_path).to_dict()
+                    logger.info(
+                        "Read MSI metadata",
+                        job_id=job.id,
+                        product_name=msi_meta.get('product_name'),
+                        product_version=msi_meta.get('product_version'),
+                    )
+                except Exception as e:
+                    logger.warning("Failed to read MSI metadata", job_id=job.id, error=str(e))
+
+        msi_meta = msi_meta or MSIMetadata().to_dict()
+
+        latest_version = (
+            msi_meta.get('product_version')
+            or metadata.get('target_version')
+            or job.target_version
+            or 'unknown'
+        )
+
+        return {
+            'update_available': True,
+            'latest_version': latest_version,
+            'download_url': metadata.get('download_url') or job.download_url,
+            'release_notes': metadata.get('release_notes') or job.release_notes or '',
+            'msi_metadata': msi_meta,
+            'install_command': install_command,
+            'product_name': msi_meta.get('product_name'),
+            'manufacturer': msi_meta.get('manufacturer'),
+        }
+
+    def _ensure_local_msi(self, job: Job) -> Optional[Path]:
+        """Return a local path to the job's MSI, downloading it if it is a URL."""
+        from autopackager.utils.msi_metadata import resolve_local_path
+
+        metadata = job.job_metadata or {}
+        source = (
+            metadata.get('installer_source')
+            or metadata.get('download_url')
+            or job.download_url
+        )
+        if not source:
+            return None
+
+        local = resolve_local_path(source)
+        if local is not None:
+            return local if local.exists() else None
+
+        # Remote URL — download to a cache dir so we can read its metadata.
+        try:
+            cache_dir = Path(self.config['paths']['downloads'])
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            filename = source.split('/')[-1].split('?')[0] or 'installer.msi'
+            dest = cache_dir / filename
+            if not dest.exists() or self._is_cache_stale(dest):
+                logger.info("Downloading MSI for metadata read", url=source)
+                response = requests.get(source, timeout=300)
+                response.raise_for_status()
+                with open(dest, 'wb') as f:
+                    f.write(response.content)
+            return dest
+        except Exception as e:
+            logger.warning("Could not fetch MSI for metadata read", error=str(e))
+            return None
 
     def _compare_versions(self, current: Optional[str], latest: str, vendor: Optional[str] = None) -> bool:
         """Compare version strings to determine if update is available

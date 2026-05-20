@@ -94,14 +94,23 @@ def discovery_task(self, job_id: int):
 
         if result.get('update_available'):
             # Update job with discovered information
+            metadata_update = {
+                'target_version': result.get('latest_version'),
+                'download_url': result.get('download_url'),
+                'release_notes': result.get('release_notes')
+            }
+
+            # Carry MSI metadata forward so packaging can build install/uninstall
+            # commands and product-code detection without re-reading the file.
+            if result.get('msi_metadata'):
+                metadata_update['msi_metadata'] = result['msi_metadata']
+            if result.get('install_command'):
+                metadata_update['install_command'] = result['install_command']
+
             engine.update_job_state(
                 job_id,
                 JobState.PENDING,
-                metadata_update={
-                    'target_version': result.get('latest_version'),
-                    'download_url': result.get('download_url'),
-                    'release_notes': result.get('release_notes')
-                }
+                metadata_update=metadata_update
             )
             logger.info("Discovery completed - update available", job_id=job_id)
             return {"job_id": job_id, "update_available": True}

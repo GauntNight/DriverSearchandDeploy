@@ -79,6 +79,138 @@ def create_driver_job(vendor, model, driver_type, current_version):
         raise click.Abort()
 
 
+@cli.command('create-software-job')
+@click.option('--install-command', required=True,
+              help='MSI install command, e.g. "msiexec /i 7z2408-x64.msi /qn /norestart"')
+@click.option('--installer-path', type=click.Path(exists=True, dir_okay=False),
+              help='Local path to the MSI (its metadata is read to auto-fill the package)')
+@click.option('--download-url', help='URL to download the MSI from during packaging')
+@click.option('--name', help='Override the product/display name (defaults to MSI ProductName)')
+@click.option('--publisher', help='Override the publisher (defaults to MSI Manufacturer)')
+@click.option('--current-version', help='Currently installed version, if any')
+def create_software_job(install_command, installer_path, download_url, name, publisher, current_version):
+    """Create an MSI software packaging job from an install command + MSI metadata.
+
+    Provide the MSI (via --installer-path and/or --download-url) and its install
+    command; the factory reads the MSI metadata to fill in the Intune package,
+    builds the deployment, and assigns deployment rings automatically.
+    """
+    from autopackager.utils.msi_metadata import (
+        read_msi_metadata,
+        parse_install_command,
+        MSIParseError,
+    )
+
+    if not installer_path and not download_url:
+        console.print("[bold red]✗[/bold red] Provide --installer-path and/or --download-url")
+        raise click.Abort()
+
+    console.print("[bold blue]Creating MSI software job...[/bold blue]")
+
+    parsed = parse_install_command(install_command)
+    if parsed.action != 'install':
+        console.print(f"[yellow]⚠[/yellow] Install command action is '{parsed.action}', expected install")
+
+    # Read MSI metadata up front when the file is available locally.
+    msi_meta = None
+    if installer_path:
+        try:
+            metadata = read_msi_metadata(installer_path)
+            msi_meta = metadata.to_dict()
+            console.print("\n[bold]Detected MSI metadata:[/bold]")
+            console.print(f"  Product Name:    {metadata.product_name or 'N/A'}")
+            console.print(f"  Version:         {metadata.product_version or 'N/A'}")
+            console.print(f"  Publisher:       {metadata.manufacturer or 'N/A'}")
+            console.print(f"  Product Code:    {metadata.product_code or 'N/A'}")
+            console.print(f"  Upgrade Code:    {metadata.upgrade_code or 'N/A'}")
+        except MSIParseError as e:
+            console.print(f"[yellow]⚠[/yellow] Could not read MSI metadata: {e}")
+
+    product_name = name or (msi_meta or {}).get('product_name')
+    if not product_name and parsed.msi_file:
+        product_name = Path(parsed.msi_file).stem
+    if not product_name:
+        console.print("[bold red]✗[/bold red] Could not determine product name; pass --name")
+        raise click.Abort()
+
+    vendor = publisher or (msi_meta or {}).get('manufacturer') or 'Unknown'
+    target_version = (msi_meta or {}).get('product_version')
+
+    # Packaging needs a fetchable source: prefer the URL, else the local file.
+    installer_source = download_url or str(Path(installer_path).resolve())
+
+    job_metadata = {
+        'install_command': install_command,
+        'download_url': installer_source,
+        'installer_source': installer_source,
+    }
+    if target_version:
+        job_metadata['target_version'] = target_version
+    if msi_meta:
+        job_metadata['msi_metadata'] = msi_meta
+
+    try:
+        result = create_packaging_job.delay(
+            job_type=JobType.NEW_SOFTWARE.value,
+            software_title=product_name,
+            vendor=vendor,
+            current_version=current_version,
+            metadata=job_metadata,
+        )
+
+        console.print(f"\n[bold green]✓[/bold green] Job created successfully")
+        console.print(f"  Product: {product_name}")
+        console.print(f"  Vendor:  {vendor}")
+        console.print(f"  Version: {target_version or 'unknown'}")
+        console.print(f"  Task ID: {result.id}")
+        console.print(f"\nUse 'autopackager jobs list' to check status")
+
+    except Exception as e:
+        console.print(f"[bold red]✗[/bold red] Failed to create job: {str(e)}")
+        raise click.Abort()
+
+
+@cli.command('inspect-msi')
+@click.argument('msi_path', type=click.Path(exists=True, dir_okay=False))
+@click.option('--install-command', help='Optional install command to derive package commands from')
+def inspect_msi_command(msi_path, install_command):
+    """Read an MSI and preview the package fields the factory would generate."""
+    from autopackager.utils.msi_metadata import inspect_msi, MSIParseError
+
+    try:
+        result = inspect_msi(msi_path, install_command)
+    except MSIParseError as e:
+        console.print(f"[bold red]✗[/bold red] {e}")
+        raise click.Abort()
+
+    meta = result['metadata']
+
+    table = Table(title=f"MSI Metadata: {Path(msi_path).name}")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="white")
+    for label, key in [
+        ("Product Name", "product_name"),
+        ("Version", "product_version"),
+        ("Publisher", "manufacturer"),
+        ("Product Code", "product_code"),
+        ("Upgrade Code", "upgrade_code"),
+        ("Language", "language"),
+        ("Package Code", "package_code"),
+    ]:
+        table.add_row(label, str(meta.get(key) or 'N/A'))
+    console.print(table)
+
+    console.print("\n[bold]Generated package commands:[/bold]")
+    console.print(f"  Install:   {result['install_command']}")
+    console.print(f"  Uninstall: {result['uninstall_command']}")
+
+    console.print("\n[bold]Intune detection rule:[/bold]")
+    rule = result['detection_rule']
+    console.print(f"  Type:    {rule['@odata.type']}")
+    console.print(f"  Product: {rule['productCode']}")
+    console.print(f"  Version: {rule.get('productVersion') or 'N/A'} ({rule['productVersionOperator']})")
+
+
 @cli.group()
 def jobs():
     """Manage packaging jobs"""
