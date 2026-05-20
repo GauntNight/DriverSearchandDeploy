@@ -387,6 +387,70 @@ class TestPackagingAgentPackaging(unittest.TestCase):
         self.assertEqual(install_cmd, 'unknown.bin')
         self.assertEqual(uninstall_cmd, 'cmd /c exit 0')
 
+    def _msi_job(self):
+        """Build a job representing an MSI software package with metadata."""
+        job = Mock(spec=Job)
+        job.id = 2
+        job.software_title = '7-Zip 24.08 (x64)'
+        job.vendor = 'Igor Pavlov'
+        job.download_url = '/tmp/7z2408-x64.msi'
+        job.job_metadata = {
+            'install_command': 'msiexec.exe /i 7z2408-x64.msi /qn /norestart',
+            'target_version': '24.08.00.0',
+            'msi_metadata': {
+                'product_code': '{23170F69-40C1-2702-2408-000001000000}',
+                'product_version': '24.08.00.0',
+                'upgrade_code': '{23170F69-40C1-2702-0000-000004000000}',
+            },
+        }
+        return job
+
+    def test_generate_install_commands_msi_uses_admin_command(self):
+        """MSI install command honors the admin-provided switches."""
+        job = self._msi_job()
+        installer_path = Path('/test/7z2408-x64.msi')
+
+        install_cmd, uninstall_cmd = self.agent._generate_install_commands(job, installer_path)
+
+        self.assertEqual(install_cmd, 'msiexec /i 7z2408-x64.msi /qn /norestart')
+        # Uninstall prefers the product code from the MSI metadata
+        self.assertIn('/x {23170F69-40C1-2702-2408-000001000000}', uninstall_cmd)
+        self.assertIn('/qn', uninstall_cmd)
+
+    def test_generate_install_commands_msi_default_without_command(self):
+        """MSI without an admin command falls back to a sensible default."""
+        installer_path = Path('/test/setup.msi')
+
+        install_cmd, uninstall_cmd = self.agent._generate_install_commands(self.job, installer_path)
+
+        self.assertEqual(install_cmd, 'msiexec /i setup.msi /quiet /norestart')
+        self.assertEqual(uninstall_cmd, 'msiexec /x setup.msi /quiet /norestart')
+
+    def test_generate_detection_rules_msi_product_code(self):
+        """MSI metadata produces a product-code detection rule."""
+        job = self._msi_job()
+
+        rules = self.agent._generate_detection_rules(job)
+
+        self.assertEqual(len(rules), 1)
+        rule = rules[0]
+        self.assertEqual(rule['@odata.type'], '#microsoft.graph.win32LobAppProductCodeRule')
+        self.assertEqual(rule['productCode'], '{23170F69-40C1-2702-2408-000001000000}')
+        self.assertEqual(rule['productVersion'], '24.08.00.0')
+
+    @patch('autopackager.agents.packaging.packaging_agent.shutil.copy2')
+    @patch('autopackager.agents.packaging.packaging_agent.PackagingAgent._calculate_file_hash')
+    @patch('autopackager.agents.packaging.packaging_agent.Path.exists')
+    def test_download_installer_copies_local_file(self, mock_exists, mock_hash, mock_copy):
+        """A local installer path is copied rather than downloaded over HTTP."""
+        mock_exists.return_value = True
+        mock_hash.return_value = 'abc123'
+
+        result = self.agent._download_installer('/tmp/7z2408-x64.msi', self.job)
+
+        mock_copy.assert_called_once()
+        self.assertEqual(result.name, '7z2408-x64.msi')
+
 
 if __name__ == '__main__':
     unittest.main()

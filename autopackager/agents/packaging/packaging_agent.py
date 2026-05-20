@@ -1,6 +1,7 @@
 """Packaging Agent - Create .intunewin Packages"""
 
 import os
+import shutil
 import requests
 import hashlib
 import subprocess
@@ -13,6 +14,12 @@ from autopackager.models.package import Package
 from autopackager.utils.config import get_config
 from autopackager.utils.database import db_session_scope
 from autopackager.utils.logger import get_logger
+from autopackager.utils.msi_metadata import (
+    parse_install_command,
+    build_uninstall_command,
+    build_product_code_detection_rule,
+    resolve_local_path,
+)
 
 logger = get_logger(__name__)
 
@@ -87,7 +94,13 @@ class PackagingAgent:
         }
 
     def _download_installer(self, url: str, job: Job) -> Path:
-        """Download installer from URL"""
+        """Obtain the installer locally — copy a local file or download a URL."""
+        # Local files (admin-provided MSI path or file:// URI) are copied in
+        # rather than fetched over HTTP.
+        local_source = resolve_local_path(url)
+        if local_source is not None:
+            return self._copy_local_installer(local_source)
+
         logger.info("Downloading installer", url=url)
 
         # Extract filename from URL
@@ -118,6 +131,20 @@ class PackagingAgent:
         # Calculate hash for verification
         file_hash = self._calculate_file_hash(download_path)
         logger.info("Download complete", filename=filename, sha256=file_hash[:16])
+
+        return download_path
+
+    def _copy_local_installer(self, source: Path) -> Path:
+        """Copy an admin-provided local installer into the downloads directory."""
+        if not source.exists():
+            raise FileNotFoundError(f"Installer not found: {source}")
+
+        logger.info("Using local installer", source=str(source))
+        download_path = self.downloads_path / source.name
+        shutil.copy2(source, download_path)
+
+        file_hash = self._calculate_file_hash(download_path)
+        logger.info("Local installer staged", filename=source.name, sha256=file_hash[:16])
 
         return download_path
 
@@ -163,9 +190,7 @@ class PackagingAgent:
             install_cmd = f"{installer_path.name} /S /quiet /norestart"
             uninstall_cmd = f"{installer_path.name} /S /quiet /uninstall /norestart"
         elif filename.endswith('.msi'):
-            # MSI silent install
-            install_cmd = f"msiexec /i {installer_path.name} /quiet /norestart"
-            uninstall_cmd = f"msiexec /x {installer_path.name} /quiet /norestart"
+            install_cmd, uninstall_cmd = self._generate_msi_commands(job, installer_path)
         elif filename.endswith('.cab'):
             # CAB driver pack: expand, then install drivers via pnputil.
             # Generate a companion PowerShell install script so the Intune
@@ -182,6 +207,39 @@ class PackagingAgent:
             uninstall_cmd = "cmd /c exit 0"
 
         logger.info("Generated install command", install_cmd=install_cmd)
+
+        return install_cmd, uninstall_cmd
+
+    def _generate_msi_commands(self, job: Job, installer_path: Path) -> tuple:
+        """Build MSI install/uninstall commands.
+
+        Honors an admin-supplied ``install_command`` (preserving its switches and
+        public properties) and prefers ``msiexec /x {ProductCode}`` for
+        uninstall when the product code is known from the MSI metadata.
+        """
+        metadata = job.job_metadata or {}
+        msi_meta = metadata.get('msi_metadata') or {}
+        product_code = msi_meta.get('product_code')
+        user_command = metadata.get('install_command')
+
+        if user_command:
+            parsed = parse_install_command(user_command)
+            install_cmd = parsed.rebuild(installer_path.name)
+            uninstall_switches = parsed.switches or None
+        else:
+            install_cmd = f"msiexec /i {installer_path.name} /quiet /norestart"
+            uninstall_switches = None
+
+        if product_code:
+            uninstall_cmd = build_uninstall_command(
+                product_code, uninstall_switches, installer_path.name
+            )
+        elif user_command:
+            uninstall_cmd = build_uninstall_command(
+                '', uninstall_switches, installer_path.name
+            )
+        else:
+            uninstall_cmd = f"msiexec /x {installer_path.name} /quiet /norestart"
 
         return install_cmd, uninstall_cmd
 
@@ -296,7 +354,18 @@ exit 0
 
         Graph API v1.0 uses ``rules`` with ``win32LobAppRegistryRule``
         (not the beta ``detectionRules`` / ``win32LobAppRegistryDetection``).
+
+        For MSI packages, the MSI product code yields a far more reliable
+        detection than a synthetic registry key, so prefer a product-code rule
+        whenever the MSI metadata provides one.
         """
+        msi_meta = (job.job_metadata or {}).get('msi_metadata') or {}
+        product_code = msi_meta.get('product_code')
+        if product_code:
+            return [build_product_code_detection_rule(
+                product_code, msi_meta.get('product_version', '')
+            )]
+
         target_version = job.job_metadata.get('target_version', '')
         vendor = (job.vendor or 'Unknown').capitalize()
 
@@ -325,6 +394,17 @@ exit 0
         detection_rules: list
     ) -> Package:
         """Save package information to database"""
+        msi_meta = (job.job_metadata or {}).get('msi_metadata') or {}
+        package_metadata = {
+            'job_id': job.id,
+            'download_url': job.job_metadata.get('download_url'),
+            'release_notes': job.job_metadata.get('release_notes')
+        }
+        if msi_meta:
+            package_metadata['msi_product_code'] = msi_meta.get('product_code')
+            package_metadata['msi_upgrade_code'] = msi_meta.get('upgrade_code')
+            package_metadata['msi_product_version'] = msi_meta.get('product_version')
+
         with db_session_scope() as session:
             package = Package(
                 name=job.software_title,
@@ -335,11 +415,7 @@ exit 0
                 install_command=install_cmd,
                 uninstall_command=uninstall_cmd,
                 detection_rules=detection_rules,
-                package_metadata={
-                    'job_id': job.id,
-                    'download_url': job.job_metadata.get('download_url'),
-                    'release_notes': job.job_metadata.get('release_notes')
-                }
+                package_metadata=package_metadata
             )
 
             session.add(package)

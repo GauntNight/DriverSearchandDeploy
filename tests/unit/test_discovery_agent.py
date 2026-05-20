@@ -810,16 +810,33 @@ class TestDiscoveryAgentUtilities(unittest.TestCase):
         result = self.agent._is_cache_stale(fake_path, max_age_hours=8)
         self.assertTrue(result)
 
-    def test_discover_software_returns_not_implemented(self):
-        """Test software discovery returns Phase 2 note"""
+    def test_discover_software_uses_pre_read_msi_metadata(self):
+        """Software discovery surfaces MSI metadata read at job-creation time."""
         job = Mock(spec=Job)
         job.id = 1
-        job.software_title = 'Adobe Acrobat'
+        job.software_title = '7-Zip 24.08 (x64)'
+        job.download_url = '/tmp/7z2408-x64.msi'
+        job.target_version = None
+        job.release_notes = None
+        job.job_metadata = {
+            'install_command': 'msiexec /i 7z2408-x64.msi /qn /norestart',
+            'download_url': '/tmp/7z2408-x64.msi',
+            'msi_metadata': {
+                'product_name': '7-Zip 24.08 (x64)',
+                'product_version': '24.08.00.0',
+                'manufacturer': 'Igor Pavlov',
+                'product_code': '{23170F69-40C1-2702-2408-000001000000}',
+            },
+        }
 
         result = self.agent._discover_software(job)
 
-        self.assertFalse(result['update_available'])
-        self.assertIn('Phase 2', result['note'])
+        self.assertTrue(result['update_available'])
+        self.assertEqual(result['latest_version'], '24.08.00.0')
+        self.assertEqual(result['install_command'], 'msiexec /i 7z2408-x64.msi /qn /norestart')
+        self.assertEqual(result['msi_metadata']['product_code'],
+                         '{23170F69-40C1-2702-2408-000001000000}')
+        self.assertEqual(result['product_name'], '7-Zip 24.08 (x64)')
 
 
 if __name__ == '__main__':
