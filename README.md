@@ -7,6 +7,13 @@ checks OEM catalogs for new versions, downloads and packages them as `.intunewin
 apps, runs basic validation, and publishes them to Microsoft Intune using a phased
 deployment-ring strategy.
 
+It also packages **MSI software applications** through the same pipeline. Given an MSI and
+its install command (for example `msiexec /i 7z2408-x64.msi /qn /norestart`), AutoPackager
+reads the MSI's own metadata — product name, version, publisher, product code — and uses it
+to auto-fill the Intune app, generate the uninstall command and product-code detection rule,
+and roll the package out across the same deployment rings. See
+[Packaging MSI Software](#packaging-msi-software).
+
 > **Note on "AI":** Phase 1 is **deterministic** — discovery parses published OEM XML/CAB
 > catalogs and install commands are generated from file-type heuristics. There is **no LLM
 > in the current code path.** LLM-powered discovery and silent-install-parameter research
@@ -23,6 +30,7 @@ automatic promotion across rings and automatic rollback on high failure rates.
 ## Key Features
 
 - **Catalog-based discovery**: Detects new driver versions by parsing Dell, HP, and Lenovo OEM catalogs (HP support is currently partial — see [Current Status](#current-status))
+- **MSI software packaging**: Reads MSI metadata (product name, version, publisher, product code) directly from the file and auto-fills the Intune app, uninstall command, and product-code detection rule from an install command — no LLM required (see [Packaging MSI Software](#packaging-msi-software))
 - **Win32 packaging**: Downloads installers/driver packs and builds `.intunewin` packages (CAB driver packs are wrapped with a generated `pnputil` install script)
 - **Intune publishing**: Full Graph API content-upload flow (chunked Azure Blob upload, encryption metadata, publish)
 - **Basic validation**: Smoke checks on package files and commands, plus optional Hyper-V VM-based install testing
@@ -49,8 +57,9 @@ automatic promotion across rings and automatic rollback on high failure rates.
     │ AGENT        │ →  │ AGENT        │ → │ AGENT        │
     │ • Catalog    │    │ • Download   │   │ • Smoke Test │
     │   parse      │    │ • CAB/pnputil│   │ • VM Test    │
-    │ • Dell/HP/   │    │ • .intunewin │   │   (Hyper-V,  │
-    │   Lenovo     │    │              │   │    optional) │
+    │ • Dell/HP/   │    │ • MSI meta   │   │   (Hyper-V,  │
+    │   Lenovo     │    │ • .intunewin │   │    optional) │
+    │ • MSI meta   │    │              │   │              │
     └──────────────┘    └──────────────┘   └──────────────┘
                                                   │
                                                   ▼
@@ -78,6 +87,7 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | Dell driver discovery | ✅ Working | Parses `DriverPackCatalog.cab` |
 | Lenovo driver discovery | ✅ Working | Parses `catalogv2.xml` |
 | HP driver discovery | ⚠️ Partial | Catalog parsing returns placeholder SoftPaq URLs; not production-ready |
+| MSI software packaging | ✅ Working | Reads MSI metadata (OLE2/Property table) to auto-fill name, version, publisher, product code; builds install/uninstall commands and product-code detection. Deterministic — no LLM |
 | Packaging → `.intunewin` | ✅ Working | Requires Windows + `IntuneWinAppUtil.exe`; produces a placeholder file if the tool is absent |
 | Intune publishing (Graph API) | ✅ Working | Full content-upload + publish flow |
 | Testing | ⚠️ Basic | Smoke checks (file/command/rules) by default; real install testing requires Hyper-V (Windows host) |
@@ -90,10 +100,10 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | Continuous catalog discovery | ✅ Working | Celery Beat scheduled OEM catalog scanning |
 | Deployment status polling | ✅ Working | Syncs Intune per-device install state |
 | Database tracking | ✅ Working | SQLite by default; PostgreSQL optional (install `psycopg2`) |
-| CLI | ✅ Working | `init`, `create-driver-job`, `jobs list/status/cancel/promote/halt-promotion/purge`, `worker start/purge`, `validate-azure` (`jobs rollback` is a stub — rollback runs automatically via polling) |
+| CLI | ✅ Working | `init`, `create-driver-job`, `create-software-job`, `inspect-msi`, `jobs list/status/cancel/promote/halt-promotion/purge`, `worker start/purge`, `validate-azure` (`jobs rollback` is a stub — rollback runs automatically via polling) |
 | Web dashboard (FastAPI + REST) | ✅ Working | Job, deployment, discovery, and stats endpoints |
 | LLM-driven discovery / install-param research | ❌ Planned (Phase 2) | No LLM is used in the current code |
-| COTS / general software discovery | ❌ Planned (Phase 2) | Driver updates only today |
+| COTS / general software discovery | ⚠️ Partial | MSI applications are packaged from a supplied install command + MSI metadata (see [Packaging MSI Software](#packaging-msi-software)). Automatic *version* discovery for software (checking vendors for updates) is still Phase 2 |
 | Automated test suite | ✅ Working | unit, integration, CLI, API |
 
 ## Quick Start
@@ -214,6 +224,77 @@ python cli.py jobs list
 # Get detailed status
 python cli.py jobs status <job-id>
 ```
+
+## Packaging MSI Software
+
+Beyond OEM drivers, AutoPackager can package any MSI application. You provide the MSI (a
+local path and/or a download URL) and its `msiexec` install command; the factory reads the
+MSI's metadata and fills in the rest, then runs it through the same packaging → testing →
+deployment-ring pipeline.
+
+### How it works
+
+1. **Read metadata.** AutoPackager parses the MSI's OLE2 compound file and `Property` table
+   in pure Python (no external tools, COM, or LLM) to extract **ProductName**,
+   **ProductVersion**, **ProductCode**, **UpgradeCode**, and **Manufacturer**.
+2. **Auto-fill the package.** Product name → Intune display name, Manufacturer → publisher,
+   ProductVersion → display version.
+3. **Build commands.** The supplied install command is preserved (switches and public
+   properties intact); the uninstall command is generated as
+   `msiexec /x {ProductCode} /qn /norestart`.
+4. **Generate detection.** A Win32 MSI **product-code detection rule** is created from the
+   ProductCode and ProductVersion — far more reliable than a synthetic registry key.
+5. **Deploy.** The package flows through testing and is published to Intune and assigned to
+   Ring 0, with the usual automatic ring promotion and rollback.
+
+### Preview an MSI (no job created)
+
+Inspect what AutoPackager would generate before committing to a job:
+
+```bash
+python cli.py inspect-msi "C:\Downloads\7z2408-x64.msi" \
+  --install-command "msiexec /i 7z2408-x64.msi /qn /norestart"
+```
+
+Example output:
+
+```
+        MSI Metadata: 7z2408-x64.msi
+  Product Name   7-Zip 24.08 (x64)
+  Version        24.08.00.0
+  Publisher      Igor Pavlov
+  Product Code   {23170F69-40C1-2702-2408-000001000000}
+  ...
+Generated package commands:
+  Install:   msiexec /i 7z2408-x64.msi /qn /norestart
+  Uninstall: msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart
+Intune detection rule:
+  Type:    #microsoft.graph.win32LobAppProductCodeRule
+  Product: {23170F69-40C1-2702-2408-000001000000}
+  Version: 24.08.00.0 (greaterThanOrEqual)
+```
+
+### Create an MSI software job
+
+```bash
+# From a local MSI (metadata read immediately)
+python cli.py create-software-job \
+  --install-command "msiexec /i 7z2408-x64.msi /qn /norestart" \
+  --installer-path "C:\Downloads\7z2408-x64.msi"
+
+# From a download URL (MSI fetched and inspected during the pipeline)
+python cli.py create-software-job \
+  --install-command "msiexec /i 7z2408-x64.msi /qn /norestart" \
+  --download-url "https://www.7-zip.org/a/7z2408-x64.msi"
+```
+
+Provide at least one of `--installer-path` or `--download-url`. Use `--name` / `--publisher`
+to override the values read from the MSI, and `--current-version` to record the version
+already installed.
+
+> **Note:** This packages a *specific* MSI you supply. Automatically discovering new software
+> *versions* from vendors (the way driver discovery scans OEM catalogs) remains a Phase 2
+> item — see [Roadmap](#roadmap).
 
 ## Configuration
 
@@ -339,18 +420,21 @@ Be aware of the following before relying on AutoPackager in production:
 - **Windows required for real packaging.** `.intunewin` creation depends on `IntuneWinAppUtil.exe`. On other platforms (or when the tool is missing) packaging produces a placeholder file that cannot be published.
 - **HP discovery is incomplete.** The HP catalog parser returns placeholder SoftPaq URLs and should not be used to drive real HP driver jobs yet.
 - **Testing is shallow by default.** The smoke test only validates that package files exist and commands/detection rules are well-formed. Real installation testing requires a configured Hyper-V host; the Azure VM provider is not implemented.
-- **Detection rules are generated heuristically.** The default registry detection rule is a best-effort template and may need manual adjustment per driver.
-- **No LLM features yet.** Discovery and install-command generation are fully deterministic. The `llm` config block and the OpenAI/Anthropic dependencies are unused in Phase 1.
+- **Detection rules are generated heuristically (drivers).** The default registry detection rule for drivers is a best-effort template and may need manual adjustment. MSI software packages instead get a precise product-code detection rule read from the MSI.
+- **Software packaging is MSI-only.** The metadata-driven path reads MSI files; `.exe` and other installer types still fall back to file-type heuristics for their install commands.
+- **No automatic software version discovery yet.** MSI packaging works from an installer you supply; it does not yet scan vendors for newer software releases (Phase 2).
+- **No LLM features yet.** Discovery and install-command generation are fully deterministic. The `llm` config block and the OpenAI/Anthropic dependencies are unused.
 - **Supersedence is not implemented.** New versions are published as separate apps; old versions are not automatically superseded.
 - **Rollback requires a prior known-good package.** Automatic rollback only works if an earlier deployed + tested package for the same name exists in the database.
 
 ## Roadmap
 
-### Phase 2: COTS Software Update Automation (Planned)
-- LLM-powered software version discovery
-- Silent install parameter research
-- Support for 50+ common applications (Chrome, Adobe, 7-Zip, etc.)
-- Full PSADT integration
+### Phase 2: COTS Software Update Automation (In Progress)
+- ✅ **MSI software packaging from metadata + install command** (delivered) — see [Packaging MSI Software](#packaging-msi-software)
+- ⬜ LLM-powered software *version* discovery (checking vendors for new releases)
+- ⬜ Silent install parameter research for non-MSI installers (`.exe`)
+- ⬜ Support for 50+ common applications (Chrome, Adobe, 7-Zip, etc.)
+- ⬜ Full PSADT integration
 
 ### Phase 3: New Software and Full Autonomy (Planned)
 - User-facing portal for software requests
@@ -416,6 +500,7 @@ This repository was sanitized for public release. Git history prior to the initi
 ## Credits
 
 Built with AI assistance.
-Version 1.2.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
+Version 1.3.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
 Intune publishing, deployment rings with automatic promotion and rollback, continuous
-catalog discovery, status polling, web dashboard, and CLI.
+catalog discovery, status polling, web dashboard, and CLI. Adds MSI software packaging:
+metadata-driven Intune apps built from an install command (the start of Phase 2).

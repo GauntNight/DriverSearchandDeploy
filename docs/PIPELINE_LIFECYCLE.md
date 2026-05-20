@@ -8,6 +8,11 @@ AutoPackager's core value proposition is its fully automated pipeline that trans
 Discovery → Packaging → Testing → Deployment
 ```
 
+The same four stages handle two kinds of work, routed by `job.job_type`:
+
+- **Driver updates** (`driver_update`) — discovery scans Dell/HP/Lenovo OEM catalogs for newer versions.
+- **MSI software** (`new_software`) — discovery reads metadata directly from a supplied MSI (product name, version, publisher, product code) rather than scanning a catalog. Packaging then builds the Intune app from that metadata and the admin's `msiexec` install command. See [Packaging MSI Software](../README.md#packaging-msi-software).
+
 Each stage is a separate Celery task that:
 - Updates job state in the database before execution
 - Performs its specialized work (finding updates, downloading installers, running tests, etc.)
@@ -110,9 +115,9 @@ Jobs progress through the following states (defined in `autopackager/models/job.
 **Implemented by:** `autopackager/agents/discovery/discovery_agent.py`
 **Celery Task:** `discovery_task()` in `autopackager/orchestration/tasks.py`
 
-**Purpose:** Find new driver/software versions from OEM catalogs or vendor websites.
+**Purpose:** Find new driver versions from OEM catalogs, or read metadata for a supplied MSI.
 
-**What Happens:**
+**What Happens (driver jobs):**
 1. Job state updated to `discovering`
 2. Route to appropriate discovery strategy based on `job.vendor`:
    - **Dell:** Download `DriverPackCatalog.cab`, extract XML, search for matching model + driver type
@@ -125,6 +130,18 @@ Jobs progress through the following states (defined in `autopackager/models/job.
 5. If no update:
    - Mark job as `completed` with `{"no_update_needed": True}`
    - Skip remaining pipeline stages
+
+**What Happens (MSI software jobs):**
+1. Job state updated to `discovering`
+2. `DiscoveryAgent._discover_software()` obtains the MSI: it reuses metadata captured at
+   job-creation time when present, reads a local `--installer-path`, or downloads the MSI
+   from `--download-url` to a cache so it can be inspected.
+3. The MSI's OLE2 `Property` table is parsed for `ProductName`, `ProductVersion`,
+   `ProductCode`, `UpgradeCode`, and `Manufacturer`.
+4. `job_metadata` is populated with `target_version` (= ProductVersion), `download_url`,
+   `msi_metadata`, and the admin's `install_command`. Software jobs always return
+   `{"update_available": True}` (there is no "newer version" check — the supplied MSI *is*
+   the target).
 
 **Data Passed to Next Stage:**
 ```json
@@ -157,11 +174,18 @@ Jobs progress through the following states (defined in `autopackager/models/job.
 3. Download installer from `download_url` to `data/downloads/`
 4. Create package directory under `data/packages/{package_name}/`
 5. Move installer to package directory
-6. Generate silent installation commands:
-   - **Drivers:** Typically `/silent /install` or OEM-specific flags
-   - **Software:** Research common silent flags (.exe: `/S`, .msi: `/quiet /norestart`)
-   - Uses LLM to analyze installer and suggest optimal parameters
-7. Create detection rules (registry, file version, MSI product code)
+6. Generate silent installation commands (deterministic — no LLM):
+   - **EXE:** `<installer>.exe /S /quiet /norestart` (file-type heuristic)
+   - **MSI (driver or software):** Honors the admin's supplied `install_command` when present
+     (preserving switches and public properties), otherwise defaults to
+     `msiexec /i <installer>.msi /quiet /norestart`. Uninstall prefers
+     `msiexec /x {ProductCode} /qn /norestart` when the product code is known from MSI
+     metadata, falling back to uninstall-by-filename.
+   - **CAB driver packs:** Wrapped with a generated `pnputil` PowerShell install script
+7. Create detection rules:
+   - **MSI software:** a `win32LobAppProductCodeRule` built from the ProductCode and
+     ProductVersion read from the MSI (precise and reliable)
+   - **Drivers / other:** a best-effort registry detection rule
 8. Run `IntuneWinAppUtil.exe` to create `.intunewin` package
 9. Save `Package` record to database with all metadata
 10. Return package ID to next stage
@@ -331,7 +355,7 @@ The `job.job_metadata` JSON field accumulates data as the pipeline progresses:
 }
 ```
 
-**After Discovery:**
+**After Discovery (driver job):**
 ```json
 {
   "created_by": "cli",
@@ -341,6 +365,24 @@ The `job.job_metadata` JSON field accumulates data as the pipeline progresses:
   "release_notes": "Improved PCIe stability on 12th Gen Intel platforms",
   "release_date": "2024-03-15",
   "file_size": 45678912
+}
+```
+
+**After Discovery (MSI software job):** software jobs additionally carry the parsed MSI
+metadata and the admin's install command, which packaging uses to build the install/uninstall
+commands and product-code detection rule:
+```json
+{
+  "install_command": "msiexec /i 7z2408-x64.msi /qn /norestart",
+  "download_url": "/abs/path/7z2408-x64.msi",
+  "target_version": "24.08.00.0",
+  "msi_metadata": {
+    "product_name": "7-Zip 24.08 (x64)",
+    "product_version": "24.08.00.0",
+    "product_code": "{23170F69-40C1-2702-2408-000001000000}",
+    "upgrade_code": "{23170F69-40C1-2702-0000-000004000000}",
+    "manufacturer": "Igor Pavlov"
+  }
 }
 ```
 
