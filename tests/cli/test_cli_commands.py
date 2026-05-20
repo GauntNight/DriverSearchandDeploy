@@ -46,7 +46,7 @@ def sample_cli_job():
     job.created_at = datetime(2024, 1, 15, 10, 30)
     job.updated_at = datetime(2024, 1, 15, 10, 35)
     job.error_message = None
-    job.metadata = {'catalog_url': 'https://example.com/catalog.xml'}
+    job.job_metadata = {'catalog_url': 'https://example.com/catalog.xml'}
     return job
 
 
