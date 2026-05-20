@@ -1340,6 +1340,8 @@ class DeploymentAgent:
                     'successful_updates': 0,
                     'failed_updates': 0,
                     'errors': [],
+                    'rollbacks_triggered': 0,
+                    'rollback_errors': [],
                     'summary': {
                         'total_installed': 0,
                         'total_failed': 0,
@@ -1351,6 +1353,8 @@ class DeploymentAgent:
             successful_updates = 0
             failed_updates = 0
             errors = []
+            rollbacks_triggered = 0
+            rollback_errors = []
             aggregate_stats = {
                 'total_installed': 0,
                 'total_failed': 0,
@@ -1405,6 +1409,47 @@ class DeploymentAgent:
                         pending=status_data.get('pending_count', 0)
                     )
 
+                    # Evaluate automatic rollback against the freshly-polled status.
+                    # should_trigger_rollback() respects the rollback.enabled config
+                    # flag and threshold, so this is a no-op when rollback is disabled.
+                    deployment_id = deployment.id
+                    installed = status_data.get('installed_count', 0)
+                    failed = status_data.get('failed_count', 0)
+                    pending = status_data.get('pending_count', 0)
+
+                    if self.should_trigger_rollback(installed, failed, pending):
+                        failure_rate = self.calculate_failure_rate(installed + failed, failed)
+                        logger.warning(
+                            "Deployment exceeded failure threshold - triggering rollback",
+                            deployment_id=deployment_id,
+                            failure_rate=failure_rate,
+                            failed=failed,
+                            installed=installed
+                        )
+                        try:
+                            rollback_result = self.execute_rollback(
+                                deployment_id,
+                                failure_rate=failure_rate,
+                                affected_device_count=failed
+                            )
+                            rollbacks_triggered += 1
+                            logger.info(
+                                "Automatic rollback completed",
+                                deployment_id=deployment_id,
+                                previous_version=rollback_result.get('previous_version')
+                            )
+                        except Exception as rollback_exc:
+                            logger.error(
+                                "Automatic rollback failed",
+                                deployment_id=deployment_id,
+                                error=str(rollback_exc),
+                                exc_info=True
+                            )
+                            rollback_errors.append({
+                                'deployment_id': deployment_id,
+                                'error': str(rollback_exc)
+                            })
+
                 except Exception as e:
                     logger.error(
                         "Error checking deployment status",
@@ -1424,6 +1469,8 @@ class DeploymentAgent:
             'successful_updates': successful_updates,
             'failed_updates': failed_updates,
             'errors': errors,
+            'rollbacks_triggered': rollbacks_triggered,
+            'rollback_errors': rollback_errors,
             'summary': aggregate_stats
         }
 
@@ -1432,6 +1479,7 @@ class DeploymentAgent:
             total_checked=total_checked,
             successful=successful_updates,
             failed=failed_updates,
+            rollbacks_triggered=rollbacks_triggered,
             total_installed=aggregate_stats['total_installed'],
             total_failed=aggregate_stats['total_failed']
         )
