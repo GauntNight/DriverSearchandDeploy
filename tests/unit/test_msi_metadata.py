@@ -161,13 +161,50 @@ def _build_string_pool(strings, codepage=1252):
 
 
 class TestStreamNameDecoding(unittest.TestCase):
+    # The MSI mangling alphabet is digits-first
+    # (``0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._``),
+    # so index 0 decodes to ``'0'``, index 10 to ``'A'``, index 36 to ``'a'``.
+
     def test_single_char_decode(self):
-        self.assertEqual(decode_streamname(chr(0x4800)), 'A')
-        self.assertEqual(decode_streamname(chr(0x4801)), 'B')
+        self.assertEqual(decode_streamname(chr(0x4800)), '0')
+        self.assertEqual(decode_streamname(chr(0x4801)), '1')
+        self.assertEqual(decode_streamname(chr(0x4800 + 10)), 'A')
+        self.assertEqual(decode_streamname(chr(0x4800 + 36)), 'a')
 
     def test_two_char_decode(self):
-        self.assertEqual(decode_streamname(chr(0x3800)), 'AA')
-        self.assertEqual(decode_streamname(chr(0x3801)), 'BA')
+        # Low 6 bits = first character, high 6 bits = second character.
+        self.assertEqual(decode_streamname(chr(0x3800)), '00')
+        self.assertEqual(decode_streamname(chr(0x3801)), '10')
+        # 0x3F3F -> low=63 ('_'), high=28 ('S') -> '_S'
+        # (real first two chars of the ``_StringData`` table stream name).
+        self.assertEqual(decode_streamname(chr(0x3F3F)), '_S')
+
+    def test_real_msi_table_names_decode(self):
+        # Round-trip: mangle a canonical MSI table name with the reference
+        # encoding rules, then confirm ``decode_streamname`` recovers it.
+        # If the mangling alphabet regresses, every real MSI's
+        # ``Property`` / ``_StringPool`` / ``_StringData`` streams stop being
+        # discoverable and metadata extraction silently returns empty.
+        alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._'
+
+        def encode(name):
+            out, i = [], 0
+            while i < len(name):
+                a = alphabet.index(name[i])
+                if i + 1 < len(name) and name[i + 1] in alphabet:
+                    b = alphabet.index(name[i + 1])
+                    out.append(chr(0x3800 + (b << 6) + a))
+                    i += 2
+                else:
+                    out.append(chr(0x4800 + a))
+                    i += 1
+            return ''.join(out)
+
+        for table in ('_StringData', '_StringPool', 'Property', '_Columns', '_Tables'):
+            self.assertEqual(decode_streamname(encode(table)), table)
+            # Real MSI streams carry a leading 0x4840 table marker. It is a
+            # delimiter, not part of the table name, and must be skipped.
+            self.assertEqual(decode_streamname(chr(0x4840) + encode(table)), table)
 
     def test_ascii_passthrough(self):
         self.assertEqual(decode_streamname('Property'), 'Property')

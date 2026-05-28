@@ -144,20 +144,29 @@ class _CompoundFile:
 # MSI table decoding
 # ---------------------------------------------------------------------------
 
-# Base64-style alphabet MSI uses to mangle table/stream names.
-_MIME_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._"
+# Base64-style alphabet MSI uses to mangle table/stream names. Digits come
+# first, then upper-case letters, then lower-case, then ``.`` and ``_`` —
+# matching the Windows Installer reference implementation (see Wine's
+# ``dlls/msi/string.c`` ``utf2mime``). Letters-first ordering decodes every
+# table/stream name into gibberish because each letter is offset by 10
+# alphabet positions.
+_MIME_B64 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._"
 
 
 def decode_streamname(name: str) -> str:
     """Decode an MSI-mangled stream name back to its table name.
 
     MSI encodes table names so each source character maps into the
-    ``0x3800``-``0x4840`` Unicode range. Characters outside that range
-    (e.g. the ``\\x05SummaryInformation`` stream) pass through unchanged.
+    ``0x3800``-``0x483f`` Unicode range. ``0x4840`` is a table marker /
+    storage separator and is skipped (it is not part of any table name).
+    Characters outside the encoded range (e.g. the
+    ``\\x05SummaryInformation`` stream) pass through unchanged.
     """
     out = []
     for ch in name:
         c = ord(ch)
+        if c == 0x4840:
+            continue
         if 0x3800 <= c < 0x4840:
             if c >= 0x4800:
                 out.append(_MIME_B64[c - 0x4800])
