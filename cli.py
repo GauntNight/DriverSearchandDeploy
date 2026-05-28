@@ -88,7 +88,10 @@ def create_driver_job(vendor, model, driver_type, current_version):
 @click.option('--name', help='Override the product/display name (defaults to MSI ProductName)')
 @click.option('--publisher', help='Override the publisher (defaults to MSI Manufacturer)')
 @click.option('--current-version', help='Currently installed version, if any')
-def create_software_job(install_command, installer_path, download_url, name, publisher, current_version):
+@click.option('--no-assignment', is_flag=True, default=False,
+              help='Publish the app to Intune without assigning it to any ring '
+                   '(use for safe test publishes against production tenants).')
+def create_software_job(install_command, installer_path, download_url, name, publisher, current_version, no_assignment):
     """Create an MSI software packaging job from an install command + MSI metadata.
 
     Provide the MSI (via --installer-path and/or --download-url) and its install
@@ -148,6 +151,8 @@ def create_software_job(install_command, installer_path, download_url, name, pub
         job_metadata['target_version'] = target_version
     if msi_meta:
         job_metadata['msi_metadata'] = msi_meta
+    if no_assignment:
+        job_metadata['no_assignment'] = True
 
     try:
         result = create_packaging_job.delay(
@@ -571,8 +576,11 @@ def start_worker(concurrency):
     import subprocess
     import sys
 
+    # Invoke celery via the current interpreter's -m so this works without
+    # the venv being activated (otherwise `celery` is not on PATH and
+    # subprocess.run raises WinError 2 / FileNotFoundError on Windows).
     cmd = [
-        'celery',
+        sys.executable, '-m', 'celery',
         '-A', 'autopackager.orchestration.celery_app',
         'worker',
         '--loglevel=info',

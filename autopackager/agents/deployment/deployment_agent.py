@@ -94,18 +94,32 @@ class DeploymentAgent:
         # Create/update Intune app, upload content, and publish
         intune_app_id = self._create_or_update_intune_app(package, job)
 
-        # Assign to Ring 0 (IT Pilot)
-        self._assign_to_ring(intune_app_id, package, ring_index=0)
+        # Honour an opt-out for safe test publishes against production tenants:
+        # callers can set metadata['no_assignment']=True to skip ring assignment.
+        skip_assignment = bool(job.job_metadata.get('no_assignment'))
+        if skip_assignment:
+            logger.info(
+                "Skipping ring assignment (no_assignment flag set)",
+                job_id=job.id,
+                intune_app_id=intune_app_id,
+            )
+        else:
+            self._assign_to_ring(intune_app_id, package, ring_index=0)
 
         # Update package deployment status
         self._update_package_deployment_status(package.id, intune_app_id)
 
         logger.info("Deployment completed", job_id=job.id, intune_app_id=intune_app_id)
 
+        if skip_assignment:
+            ring_label = 'unassigned'
+        else:
+            ring_label = self.deployment_rings[0]['name'] if self.deployment_rings else 'Unknown'
+
         return {
             'intune_app_id': intune_app_id,
             'status': 'deployed',
-            'ring': self.deployment_rings[0]['name'] if self.deployment_rings else 'Unknown'
+            'ring': ring_label,
         }
 
     # ---------------------------------------------------------------------------
