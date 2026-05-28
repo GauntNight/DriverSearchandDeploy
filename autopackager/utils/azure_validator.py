@@ -137,7 +137,15 @@ class AzureValidator:
             )
 
     def validate_graph_access(self) -> ValidationResult:
-        """Verify Graph API access by querying the /organization endpoint."""
+        """Verify Graph API access by hitting an endpoint the App Reg actually needs.
+
+        Uses /deviceAppManagement/mobileApps because that is the primary surface
+        AutoPackager publishes against; reading it requires
+        DeviceManagementApps.ReadWrite.All, which the installer grants. The
+        previous probe (/organization) needed Organization.Read.All, an
+        unrelated permission, and produced false-negative 403s on correctly
+        configured tenants.
+        """
         if not self._access_token:
             return ValidationResult(
                 check_name="graph_access",
@@ -146,7 +154,7 @@ class AzureValidator:
             )
 
         try:
-            url = f"{self.graph_endpoint}/{self.api_version}/organization"
+            url = f"{self.graph_endpoint}/{self.api_version}/deviceAppManagement/mobileApps?$top=1"
             headers = {
                 "Authorization": f"Bearer {self._access_token}",
                 "Content-Type": "application/json",
