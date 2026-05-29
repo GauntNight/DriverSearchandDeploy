@@ -11,6 +11,14 @@ from rich.console import Console
 from rich.table import Table
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr so Rich glyphs (✓ ✗) don't crash on cp1252 consoles.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 from autopackager.orchestration.engine import OrchestrationEngine
 from autopackager.utils.azure_validator import AzureValidator, AzureConfigurationError, ValidationResult
 from autopackager.models.job import JobType, JobState
