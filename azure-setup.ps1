@@ -333,8 +333,10 @@ $graphSP = Invoke-AzJson @("ad", "sp", "show", "--id", $graphAppId)
 $requiredPermissions = @(
     "DeviceManagementApps.ReadWrite.All",
     "DeviceManagementConfiguration.ReadWrite.All",
+    "DeviceManagementManagedDevices.PrivilegedOperations.All",
     "Group.Read.All",
-    "GroupMember.Read.All"
+    "GroupMember.Read.All",
+    "GroupMember.ReadWrite.All"
 )
 
 $permissionsToAdd = @()

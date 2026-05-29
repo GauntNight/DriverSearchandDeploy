@@ -1378,34 +1378,42 @@ class DeploymentAgent:
 
             # Check each deployment
             for deployment in deployments:
+                # Capture identifiers up front: update_deployment_status() opens a
+                # nested db_session_scope() that detaches `deployment`, so any
+                # later read of `deployment.id` / `deployment.intune_app_id` --
+                # particularly from the except handler below -- raises
+                # DetachedInstanceError instead of logging the real failure.
+                deployment_id = deployment.id
+                intune_app_id = deployment.intune_app_id
+                ring_name = deployment.ring_name
                 try:
                     logger.info(
                         "Checking deployment status",
-                        deployment_id=deployment.id,
-                        intune_app_id=deployment.intune_app_id,
-                        ring=deployment.ring_name
+                        deployment_id=deployment_id,
+                        intune_app_id=intune_app_id,
+                        ring=ring_name
                     )
 
                     # Fetch status from Intune
-                    status_data = self.get_deployment_status(deployment.intune_app_id)
+                    status_data = self.get_deployment_status(intune_app_id)
 
                     # Check for errors in status fetch
                     if 'error' in status_data:
                         logger.error(
                             "Failed to get deployment status",
-                            deployment_id=deployment.id,
+                            deployment_id=deployment_id,
                             error=status_data['error']
                         )
                         failed_updates += 1
                         errors.append({
-                            'deployment_id': deployment.id,
-                            'intune_app_id': deployment.intune_app_id,
+                            'deployment_id': deployment_id,
+                            'intune_app_id': intune_app_id,
                             'error': status_data['error']
                         })
                         continue
 
                     # Update deployment record with status data
-                    self.update_deployment_status(deployment.id, status_data)
+                    self.update_deployment_status(deployment_id, status_data)
 
                     # Aggregate statistics
                     aggregate_stats['total_installed'] += status_data.get('installed_count', 0)
@@ -1417,7 +1425,7 @@ class DeploymentAgent:
 
                     logger.info(
                         "Deployment status updated successfully",
-                        deployment_id=deployment.id,
+                        deployment_id=deployment_id,
                         installed=status_data.get('installed_count', 0),
                         failed=status_data.get('failed_count', 0),
                         pending=status_data.get('pending_count', 0)
@@ -1426,7 +1434,6 @@ class DeploymentAgent:
                     # Evaluate automatic rollback against the freshly-polled status.
                     # should_trigger_rollback() respects the rollback.enabled config
                     # flag and threshold, so this is a no-op when rollback is disabled.
-                    deployment_id = deployment.id
                     installed = status_data.get('installed_count', 0)
                     failed = status_data.get('failed_count', 0)
                     pending = status_data.get('pending_count', 0)
@@ -1467,14 +1474,14 @@ class DeploymentAgent:
                 except Exception as e:
                     logger.error(
                         "Error checking deployment status",
-                        deployment_id=deployment.id,
+                        deployment_id=deployment_id,
                         error=str(e),
                         exc_info=True
                     )
                     failed_updates += 1
                     errors.append({
-                        'deployment_id': deployment.id,
-                        'intune_app_id': deployment.intune_app_id,
+                        'deployment_id': deployment_id,
+                        'intune_app_id': intune_app_id,
                         'error': str(e)
                     })
 

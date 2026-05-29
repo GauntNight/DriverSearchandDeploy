@@ -1,6 +1,7 @@
 """Microsoft Graph API Client for Intune"""
 
 import base64
+import json
 import time
 import requests
 from msal import ConfidentialClientApplication
@@ -14,6 +15,19 @@ logger = get_logger(__name__)
 
 # 6 MB chunks for Azure block blob upload
 _AZURE_UPLOAD_CHUNK_SIZE = 6 * 1024 * 1024
+
+# Intune `retrieveDeviceAppInstallationStatusReport` returns InstallState as an
+# integer enum. Mapping to the lowercase strings `_parse_install_statuses`
+# already understands. Verified empirically against a known-installed device:
+# row [.., InstallState=1, HexErrorCode="", ..] == successful install.
+_INSTALL_STATE_INT_TO_STRING = {
+    0: "notapplicable",
+    1: "installed",
+    2: "failed",
+    3: "pending",
+    4: "unknown",
+    5: "notinstalled",
+}
 
 
 class GraphAPIClient:
@@ -478,29 +492,59 @@ class GraphAPIClient:
         """
         logger.info("Fetching app device statuses", app_id=app_id)
 
-        all_statuses = []
-        next_link = f"deviceAppManagement/mobileApps/{app_id}/deviceStatuses"
+        # Intune retired the old `mobileApps/{id}/deviceStatuses` navigation
+        # property (it is not declared on `mobileApp` in either v1.0 or beta
+        # $metadata as of 2026). Per-device install state is now exposed via
+        # the reports action `retrieveDeviceAppInstallationStatusReport`,
+        # which POSTs a query and returns a paged rows-and-schema payload.
+        body = {
+            "select": [
+                "DeviceName",
+                "UserPrincipalName",
+                "InstallState",
+                "InstallStateDetail",
+                "HexErrorCode",
+                "LastModifiedDateTime",
+            ],
+            "filter": f"(ApplicationId eq '{app_id}')",
+            "skip": 0,
+            "top": 1000,
+            "orderBy": [],
+        }
+        url = (
+            f"{self.graph_endpoint}/beta/deviceManagement/reports/"
+            "retrieveDeviceAppInstallationStatusReport"
+        )
 
-        while next_link:
-            if next_link.startswith(self.graph_endpoint):
-                # nextLink is a full URL, make direct request
-                logger.debug("Following pagination link", url=next_link)
-                response = requests.get(next_link, headers=self._get_headers())
-                self._raise_with_details(response)
-                data = response.json()
-            else:
-                # First request or relative endpoint
-                data = self.get(next_link)
+        all_statuses: list[dict] = []
+        while True:
+            logger.debug("POST (beta report) request", url=url, skip=body["skip"])
+            response = requests.post(url, headers=self._get_headers(), json=body)
+            self._raise_with_details(response)
+            # Reports return application/octet-stream; body is JSON anyway.
+            # Reports endpoint returns application/octet-stream; body is JSON.
+            payload = json.loads(response.content.decode("utf-8"))
+            columns = [c["Column"] for c in payload.get("Schema", [])]
+            rows = payload.get("Values", []) or []
+            for row in rows:
+                rec = dict(zip(columns, row))
+                all_statuses.append({
+                    "deviceName": rec.get("DeviceName"),
+                    "deviceId": rec.get("DeviceId"),  # not in default select, kept for parity
+                    "userPrincipalName": rec.get("UserPrincipalName"),
+                    "installState": _INSTALL_STATE_INT_TO_STRING.get(
+                        rec.get("InstallState"), "unknown"
+                    ),
+                    "installStateDetail": rec.get("InstallStateDetail"),
+                    "errorCode": rec.get("HexErrorCode") or None,
+                    "lastSyncDateTime": rec.get("LastModifiedDateTime"),
+                })
 
-            # Collect results from this page
-            statuses = data.get('value', [])
-            all_statuses.extend(statuses)
-
-            # Check for next page
-            next_link = data.get('@odata.nextLink')
-
-            if next_link:
-                logger.debug("Fetched page", statuses_count=len(statuses), total_so_far=len(all_statuses))
+            total = payload.get("TotalRowCount") or 0
+            if not rows or (body["skip"] + len(rows)) >= total:
+                break
+            body["skip"] += len(rows)
+            logger.debug("Fetched report page", rows=len(rows), total_so_far=len(all_statuses))
 
         logger.info("Fetched all device statuses", app_id=app_id, total_devices=len(all_statuses))
         return all_statuses
