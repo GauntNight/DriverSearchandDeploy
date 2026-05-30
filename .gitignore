@@ -29,6 +29,9 @@ wheels/
 .env
 .env.local
 
+# Installer catalog local overlay (operator-private, never committed)
+data/installer_catalog.local.yaml
+
 # Database
 *.db
 *.sqlite

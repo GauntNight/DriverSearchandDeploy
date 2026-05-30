@@ -1,0 +1,30 @@
+# AutoPackager Installer Catalog -- Committed Baseline
+#
+# Known-good silent-install fingerprints + commands for MSI and EXE installers.
+# `cli.py create-software-job` consults this file (plus the local overlay at
+# `data/installer_catalog.local.yaml`) before requiring an --install-command.
+#
+# Matching strategy (MSI):
+#   1. UpgradeCode exact match  (most stable across versions of the same app)
+#   2. ProductCode exact match  (exact version)
+#   3. ProductName pattern (substring, case-insensitive) + Publisher
+#
+# Template variable: {installer_filename} is the basename of the installer
+# inside the .intunewin payload (no path -- Intune IME runs the command from
+# the unpacked package root).
+#
+# Local additions go to `data/installer_catalog.local.yaml` (gitignored).
+# To promote a local entry to this baseline, move it manually and open a PR.
+
+version: 1
+entries:
+  - id: 7-zip
+    type: msi
+    upgrade_code: "{23170F69-40C1-2702-0000-000004000000}"
+    product_name_pattern: "7-Zip"
+    publisher: "Igor Pavlov"
+    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    notes: "Verified end-to-end against ngbg tenant 2026-05-29 (ZZ_TEST_7-Zip_DeployVerify, install observed on ADMIN_BUILD_1)."
+    first_seen: "2026-05-29"
+    last_used: "2026-05-29"
+    use_count: 1

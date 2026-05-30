@@ -88,8 +88,11 @@ def create_driver_job(vendor, model, driver_type, current_version):
 
 
 @cli.command('create-software-job')
-@click.option('--install-command', required=True,
-              help='MSI install command, e.g. "msiexec /i 7z2408-x64.msi /qn /norestart"')
+@click.option('--install-command',
+              help='MSI install command, e.g. "msiexec /i 7z2408-x64.msi /qn /norestart". '
+                   'If omitted, AutoPackager will look the installer up in the catalog '
+                   '(autopackager/data/installer_catalog.yaml plus the local overlay) and '
+                   'fall back to interactive prompt if no match is found.')
 @click.option('--installer-path', type=click.Path(exists=True, dir_okay=False),
               help='Local path to the MSI (its metadata is read to auto-fill the package)')
 @click.option('--download-url', help='URL to download the MSI from during packaging')
@@ -99,28 +102,34 @@ def create_driver_job(vendor, model, driver_type, current_version):
 @click.option('--no-assignment', is_flag=True, default=False,
               help='Publish the app to Intune without assigning it to any ring '
                    '(use for safe test publishes against production tenants).')
-def create_software_job(install_command, installer_path, download_url, name, publisher, current_version, no_assignment):
+@click.option('--no-save-catalog', is_flag=True, default=False,
+              help='Skip auto-appending this installer to data/installer_catalog.local.yaml '
+                   '(the local overlay). The committed baseline is never modified at runtime.')
+def create_software_job(install_command, installer_path, download_url, name, publisher,
+                        current_version, no_assignment, no_save_catalog):
     """Create an MSI software packaging job from an install command + MSI metadata.
 
     Provide the MSI (via --installer-path and/or --download-url) and its install
     command; the factory reads the MSI metadata to fill in the Intune package,
     builds the deployment, and assigns deployment rings automatically.
+
+    If --install-command is omitted, AutoPackager consults the installer catalog
+    by UpgradeCode/ProductCode/ProductName and uses the recorded command. On a
+    catalog miss, you'll be prompted for the command interactively. Successful
+    jobs auto-append to the local overlay (use --no-save-catalog to skip).
     """
     from autopackager.utils.msi_metadata import (
         read_msi_metadata,
         parse_install_command,
         MSIParseError,
     )
+    from autopackager.utils import installer_catalog
 
     if not installer_path and not download_url:
         console.print("[bold red]✗[/bold red] Provide --installer-path and/or --download-url")
         raise click.Abort()
 
     console.print("[bold blue]Creating MSI software job...[/bold blue]")
-
-    parsed = parse_install_command(install_command)
-    if parsed.action != 'install':
-        console.print(f"[yellow]⚠[/yellow] Install command action is '{parsed.action}', expected install")
 
     # Read MSI metadata up front when the file is available locally.
     msi_meta = None
@@ -136,6 +145,39 @@ def create_software_job(install_command, installer_path, download_url, name, pub
             console.print(f"  Upgrade Code:    {metadata.upgrade_code or 'N/A'}")
         except MSIParseError as e:
             console.print(f"[yellow]⚠[/yellow] Could not read MSI metadata: {e}")
+
+    # Catalog lookup: pick up a known install command when --install-command was omitted.
+    catalog_entry = None
+    catalog = installer_catalog.load_catalog()
+    if msi_meta:
+        catalog_entry = catalog.match_msi(msi_meta)
+    if catalog_entry:
+        console.print(
+            f"\n[bold green]Catalog hit:[/bold green] {catalog_entry.id} "
+            f"(used {catalog_entry.use_count}x, last {catalog_entry.last_used or 'never'})"
+        )
+
+    if not install_command:
+        installer_filename = (
+            Path(installer_path).name if installer_path
+            else Path(download_url).name if download_url else 'installer.msi'
+        )
+        if catalog_entry:
+            install_command = catalog_entry.render_install_command(installer_filename)
+            console.print(f"  Using catalog template: [cyan]{install_command}[/cyan]")
+        else:
+            console.print(
+                "\n[yellow]No catalog entry matched this installer.[/yellow] "
+                f"Suggested default: [cyan]msiexec /i {installer_filename} /qn /norestart[/cyan]"
+            )
+            install_command = click.prompt(
+                "  Install command",
+                default=f"msiexec /i {installer_filename} /qn /norestart",
+            )
+
+    parsed = parse_install_command(install_command)
+    if parsed.action != 'install':
+        console.print(f"[yellow]⚠[/yellow] Install command action is '{parsed.action}', expected install")
 
     product_name = name or (msi_meta or {}).get('product_name')
     if not product_name and parsed.msi_file:
@@ -177,6 +219,28 @@ def create_software_job(install_command, installer_path, download_url, name, pub
         console.print(f"  Version: {target_version or 'unknown'}")
         console.print(f"  Task ID: {result.id}")
         console.print(f"\nUse 'autopackager jobs list' to check status")
+
+        # Update the installer catalog overlay so future runs of this MSI skip
+        # the prompt. Failures here are non-fatal -- the job is already enqueued.
+        if not no_save_catalog and msi_meta:
+            try:
+                installer_filename = Path(parsed.msi_file).name if parsed.msi_file else 'installer.msi'
+                template = install_command.replace(installer_filename, '{installer_filename}', 1)
+                if catalog_entry:
+                    installer_catalog.record_use(catalog_entry.id)
+                    console.print(f"  [dim]Catalog: bumped use_count for '{catalog_entry.id}'[/dim]")
+                else:
+                    new_entry = installer_catalog.add_msi_entry(
+                        msi_meta,
+                        install_command_template=template,
+                        notes=f"Auto-added by create-software-job (task {result.id})",
+                    )
+                    console.print(
+                        f"  [dim]Catalog: added new entry '{new_entry.id}' to "
+                        "data/installer_catalog.local.yaml[/dim]"
+                    )
+            except Exception as catalog_exc:
+                console.print(f"  [yellow]⚠ Catalog update skipped: {catalog_exc}[/yellow]")
 
     except Exception as e:
         console.print(f"[bold red]✗[/bold red] Failed to create job: {str(e)}")
