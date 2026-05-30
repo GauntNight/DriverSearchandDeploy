@@ -32,6 +32,11 @@ wheels/
 # Installer catalog local overlay (operator-private, never committed)
 data/installer_catalog.local.yaml
 
+# Third-party installer fixtures used by the verify_*.py harnesses.
+# Downloaded on demand by the scripts; not for distribution via this repo.
+data/test_msis/*.msi
+data/test_msis/*.exe
+
 # Database
 *.db
 *.sqlite

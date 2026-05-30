@@ -13,18 +13,31 @@
 # inside the .intunewin payload (no path -- Intune IME runs the command from
 # the unpacked package root).
 #
-# Local additions go to `data/installer_catalog.local.yaml` (gitignored).
-# To promote a local entry to this baseline, move it manually and open a PR.
+# BASELINE vs OVERLAY -- read before editing this file.
+#
+# This baseline carries only environment-AGNOSTIC fields: the MSI / EXE's own
+# identity (UpgradeCode, ProductCode, ProductName, Publisher) and the silent
+# install / uninstall commands that derive from it. Those values are the same
+# in every tenant, every operator, every machine.
+#
+# Environment-SPECIFIC fields -- `first_seen`, `last_used`, `use_count`, and
+# `verified_versions` (which carries `verified_intune_app_id`, a tenant-bound
+# GUID) -- belong in the per-operator local overlay at
+# `data/installer_catalog.local.yaml`, NOT here. The overlay is gitignored and
+# accumulates organically. Do not promote those fields into the baseline; they
+# would imply a "fact" that is only true for one tenant.
+#
+# To promote a useful local entry to this baseline, copy the agnostic fields
+# only (drop usage counts and verified_versions) and open a PR.
 
 version: 1
 entries:
   - id: 7-zip
     type: msi
     upgrade_code: "{23170F69-40C1-2702-0000-000004000000}"
+    product_code: "{23170F69-40C1-2702-2408-000001000000}"
     product_name_pattern: "7-Zip"
     publisher: "Igor Pavlov"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
-    notes: "Verified end-to-end against ngbg tenant 2026-05-29 (ZZ_TEST_7-Zip_DeployVerify, install observed on ADMIN_BUILD_1)."
-    first_seen: "2026-05-29"
-    last_used: "2026-05-29"
-    use_count: 1
+    uninstall_command_template: "msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart"
+    notes: "Standard MSI silent install. Uninstall via ProductCode."

@@ -213,6 +213,154 @@ class TestRecordUse:
 # Merge precedence
 # ---------------------------------------------------------------------------
 
+class TestUninstallTemplate:
+    def test_add_msi_entry_populates_uninstall_from_product_code(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, {"version": 1, "entries": []})
+
+        entry = ic.add_msi_entry(
+            SEVEN_ZIP_MSI_METADATA,
+            install_command_template="msiexec /i {installer_filename} /qn /norestart",
+        )
+
+        assert entry.uninstall_command_template == (
+            "msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart"
+        )
+
+    def test_add_msi_entry_skips_uninstall_when_no_product_code(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {"version": 1, "entries": []})
+
+        entry = ic.add_msi_entry(
+            {"product_name": "Mystery App", "manufacturer": "Anon"},
+            install_command_template="msiexec /i {installer_filename} /qn",
+        )
+
+        assert entry.uninstall_command_template is None
+
+    def test_render_uninstall_command_returns_template_verbatim(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            "version": 1,
+            "entries": [
+                {
+                    **SEED_BASELINE["entries"][0],
+                    "uninstall_command_template": (
+                        "msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart"
+                    ),
+                }
+            ],
+        })
+
+        entry = ic.load_catalog().by_id("7-zip")
+        assert entry.render_uninstall_command() == (
+            "msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart"
+        )
+
+
+class TestMatchByProductCode:
+    def test_finds_entry(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            "version": 1,
+            "entries": [
+                {
+                    **SEED_BASELINE["entries"][0],
+                    "product_code": "{23170F69-40C1-2702-2408-000001000000}",
+                }
+            ],
+        })
+
+        catalog = ic.load_catalog()
+        entry = catalog.match_by_product_code("{23170F69-40C1-2702-2408-000001000000}")
+
+        assert entry is not None
+        assert entry.id == "7-zip"
+
+    def test_brace_and_case_insensitive(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            "version": 1,
+            "entries": [
+                {
+                    **SEED_BASELINE["entries"][0],
+                    "product_code": "{23170F69-40C1-2702-2408-000001000000}",
+                }
+            ],
+        })
+
+        catalog = ic.load_catalog()
+        entry = catalog.match_by_product_code("23170f69-40c1-2702-2408-000001000000")
+        assert entry is not None and entry.id == "7-zip"
+
+    def test_no_match_returns_none(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+
+        assert ic.load_catalog().match_by_product_code(
+            "{00000000-0000-0000-0000-000000000000}"
+        ) is None
+        assert ic.load_catalog().match_by_product_code(None) is None
+
+
+class TestRecordVerification:
+    def test_appends_verified_version_to_overlay(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+
+        ic.record_verification(
+            entry_id="7-zip",
+            product_version="24.08.00.0",
+            intune_app_id="4d015deb-f322-4543-9930-c76b7aa21f84",
+        )
+
+        on_disk = yaml.safe_load(local.read_text(encoding="utf-8"))
+        verified = next(e for e in on_disk["entries"] if e["id"] == "7-zip")["verified_versions"]
+        assert len(verified) == 1
+        assert verified[0]["product_version"] == "24.08.00.0"
+        assert verified[0]["verified_intune_app_id"] == "4d015deb-f322-4543-9930-c76b7aa21f84"
+        assert verified[0]["verified_at"]  # date string present
+
+    def test_idempotent_on_same_version_and_app_id(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+
+        for _ in range(3):
+            ic.record_verification("7-zip", "24.08.00.0", "4d015deb-...")
+
+        on_disk = yaml.safe_load(local.read_text(encoding="utf-8"))
+        verified = next(e for e in on_disk["entries"] if e["id"] == "7-zip")["verified_versions"]
+        assert len(verified) == 1
+
+    def test_distinct_versions_accumulate(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+
+        ic.record_verification("7-zip", "24.08.00.0", "app-1")
+        ic.record_verification("7-zip", "24.09.00.0", "app-2")
+
+        on_disk = yaml.safe_load(local.read_text(encoding="utf-8"))
+        verified = next(e for e in on_disk["entries"] if e["id"] == "7-zip")["verified_versions"]
+        assert len(verified) == 2
+
+    def test_unknown_entry_is_no_op(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, {"version": 1, "entries": []})
+
+        ic.record_verification("nope", "1.0", "app-x")
+
+        assert not local.exists() or yaml.safe_load(local.read_text())["entries"] == []
+
+    def test_baseline_stays_untouched(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+        original = baseline.read_bytes()
+
+        ic.record_verification("7-zip", "24.08.00.0", "app-z")
+
+        assert baseline.read_bytes() == original
+
+
 class TestLoadMergeOrder:
     def test_local_entry_overrides_baseline_with_same_id(self, temp_catalog_paths):
         baseline, local = temp_catalog_paths
