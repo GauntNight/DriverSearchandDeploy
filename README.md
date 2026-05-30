@@ -292,6 +292,31 @@ Provide at least one of `--installer-path` or `--download-url`. Use `--name` / `
 to override the values read from the MSI, and `--current-version` to record the version
 already installed.
 
+### Installer catalog (`--install-command` is now optional)
+
+AutoPackager keeps a known-good silent-install command for each MSI it has seen, so the
+second time you deploy the same app you don't have to remember its flags. The catalog has
+two layers:
+
+- `autopackager/data/installer_catalog.yaml` — committed baseline (seed knowledge curated
+  in-repo; treated as read-only at runtime). Ships with 7-Zip seeded.
+- `data/installer_catalog.local.yaml` — gitignored, operator-private overlay. Every
+  successful `create-software-job` run auto-appends here (override with `--no-save-catalog`).
+
+When `--install-command` is omitted, AutoPackager:
+
+1. Reads the MSI's metadata (UpgradeCode, ProductCode, ProductName, Manufacturer).
+2. Looks the installer up in the catalog (UpgradeCode → ProductCode → ProductName +
+   Publisher).
+3. On a hit, uses the recorded `install_command_template`.
+4. On a miss, prompts you interactively (with a sensible default).
+
+Either way, the rest of the pipeline (Packaging → Testing → Deployment → Ring 0) is
+unchanged. To override the catalog's recorded flags for a single run, pass
+`--install-command "msiexec /i installer.msi /qn ADDLOCAL=ALL"`. To make the override
+permanent on this tenant, edit `data/installer_catalog.local.yaml` directly — a local
+entry with the same `id` as a baseline entry wins on load.
+
 > **Note:** This packages a *specific* MSI you supply. Automatically discovering new software
 > *versions* from vendors (the way driver discovery scans OEM catalogs) remains a Phase 2
 > item — see [Roadmap](#roadmap).
