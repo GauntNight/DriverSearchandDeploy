@@ -90,21 +90,23 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | MSI software packaging | ✅ Working | Reads MSI metadata (OLE2/Property table) to auto-fill name, version, publisher, product code; builds install/uninstall commands and product-code detection. Deterministic — no LLM |
 | Packaging → `.intunewin` | ✅ Working | Requires Windows + `IntuneWinAppUtil.exe`; produces a placeholder file if the tool is absent |
 | Intune publishing (Graph API) | ✅ Working | Full content-upload + publish flow |
+| **End-to-end install on managed device** | ✅ Verified | 7-Zip 24.08 (2026-05-29) and VLC 3.0.23 (2026-05-30) pushed via the Celery pipeline, assigned to Ring 0, observed installing on a real Intune-managed device, then confirmed via per-device install report. VLC also uninstalled cleanly via the catalog's stored uninstall command |
+| **Installer catalog** | ✅ Working | Two-layer YAML catalog (`autopackager/data/installer_catalog.yaml` baseline + `data/installer_catalog.local.yaml` overlay). Records install/uninstall command + MSI ProductCode + verified_versions per app. `create-software-job` consults the catalog before requiring `--install-command`; auto-appends on success. See [Installer catalog](#installer-catalog---install-command-is-now-optional) |
 | Testing | ⚠️ Basic | Smoke checks (file/command/rules) by default; real install testing requires Hyper-V (Windows host) |
 | Azure VM testing | ❌ Not implemented | Provider raises "not yet implemented" |
-| Deployment rings (0–3) | ✅ Working | Initial assignment to Ring 0 on deploy |
+| Deployment rings (0–3) | ✅ Working | Initial assignment to Ring 0 on deploy; `_create_deployment_record` writes the tracking row |
 | Automatic ring promotion | ✅ Working | Scheduled via Celery Beat when `ring_promotion.auto_promote` is enabled |
 | Automatic rollback | ✅ Working | Evaluated during status polling against `rollback.failure_threshold_percent` |
 | Intune-native Driver Update Profiles | ⚠️ Available, not wired | `DeploymentAgent.deploy_driver_update_profile()` exists but the default pipeline uses the Win32 path |
-| Win32 supersedence | ❌ Stub | `_create_supersedence()` is a placeholder |
+| Win32 supersedence | ❌ Stub | `_create_supersedence()` is a placeholder. Planned next: drive supersedence off the installer catalog so promoting a new MSI version auto-unassigns the old one |
 | Continuous catalog discovery | ✅ Working | Celery Beat scheduled OEM catalog scanning |
-| Deployment status polling | ✅ Working | Syncs Intune per-device install state |
+| Deployment status polling | ✅ Working | Uses the modern `POST /beta/.../retrieveDeviceAppInstallationStatusReport` endpoint (the legacy `mobileApps/{id}/deviceStatuses` nav property was retired by Microsoft); records verified versions back into the installer catalog overlay |
 | Database tracking | ✅ Working | SQLite by default; PostgreSQL optional (install `psycopg2`) |
 | CLI | ✅ Working | `init`, `create-driver-job`, `create-software-job`, `inspect-msi`, `jobs list/status/cancel/promote/halt-promotion/purge`, `worker start/purge`, `validate-azure` (`jobs rollback` is a stub — rollback runs automatically via polling) |
 | Web dashboard (FastAPI + REST) | ✅ Working | Job, deployment, discovery, and stats endpoints |
 | LLM-driven discovery / install-param research | ❌ Planned (Phase 2) | No LLM is used in the current code |
 | COTS / general software discovery | ⚠️ Partial | MSI applications are packaged from a supplied install command + MSI metadata (see [Packaging MSI Software](#packaging-msi-software)). Automatic *version* discovery for software (checking vendors for updates) is still Phase 2 |
-| Automated test suite | ✅ Working | unit, integration, CLI, API |
+| Automated test suite | ✅ Working | 506 tests passing — unit, integration, CLI, API |
 
 ## Quick Start
 

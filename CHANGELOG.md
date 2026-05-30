@@ -1,3 +1,28 @@
+## [1.4.0] - 2026-05-30
+
+### Added
+- **Installer catalog** — two-layer YAML registry of known-good silent install/uninstall commands. Committed baseline at `autopackager/data/installer_catalog.yaml` ships seed knowledge (MSI-intrinsic fields only); per-operator overlay at `data/installer_catalog.local.yaml` (gitignored) accumulates use counts and `verified_versions`. `cli.py create-software-job` consults the catalog before requiring `--install-command`; on a miss it prompts interactively; on success it auto-appends to the overlay (override with `--no-save-catalog`). MSI match priority: UpgradeCode → ProductCode → ProductName pattern + Publisher. Local entries override baseline on `id` collision.
+- `autopackager/utils/installer_catalog.py` — load/match/append for the catalog, with `Catalog.match_msi`, `Catalog.match_by_product_code`, `add_msi_entry`, `record_use`, and `record_verification`.
+- `uninstall_command_template` on every catalog entry. For MSIs, auto-populated from the ProductCode as `msiexec /x {ProductCode} /qn /norestart`, so the catalog file alone is enough to uninstall an app without going back through `PackagingAgent`.
+- `verified_versions` list on every catalog entry. `DeploymentAgent.check_all_deployments` hooks `record_verification` after a deployment's `installed_count > 0`, looking up the catalog entry by the package's ProductCode. Idempotent on (product_version, intune_app_id) so repeated polls don't accumulate duplicates.
+- `verify_deployment.py` — new regression sibling to `verify_local_packaging.py` that drives Packaging → Testing → Deployment end-to-end and asserts a `Deployment` row persists with the expected ring/group/status. Downloads the 7-Zip MSI on demand so the harness is self-contained on a fresh clone.
+
+### Changed
+- **`DeploymentAgent.get_app_device_statuses`** now uses the modern reports endpoint `POST /beta/deviceManagement/reports/retrieveDeviceAppInstallationStatusReport` instead of the retired `/mobileApps/{id}/deviceStatuses` navigation property (Microsoft removed it from both v1.0 and beta `$metadata`). Maps the integer `InstallState` enum back to the lowercase strings the existing `_parse_install_statuses` understands.
+- **`DeploymentAgent.check_all_deployments`** captures `deployment_id` / `intune_app_id` / `ring_name` in locals at the top of the loop body to avoid `DetachedInstanceError` after `update_deployment_status()` opens a nested session.
+- `azure-setup.ps1` now grants two additional application roles to the SP: `GroupMember.ReadWrite.All` (so the SP can manage Ring 0 membership without an interactive admin) and `DeviceManagementManagedDevices.PrivilegedOperations.All` (so the SP can trigger device syncs via `POST /managedDevices/{id}/syncDevice`).
+- `cli.py` reconfigures `sys.stdout`/`sys.stderr` to UTF-8 with `errors="replace"` at module load. Eliminates the cp1252 console crash on all Rich-print sites (✓ / ✗ glyphs in `validate-azure` and elsewhere).
+- README "Current Status" table refreshed: adds rows for end-to-end install validation (7-Zip + VLC verified on a real Intune-managed device) and the installer catalog; updates the deployment status polling note to reflect the reports endpoint migration.
+
+### Removed
+- Stale one-shot verification reports retired from the repo (`WINDOWS_TESTING.md`, `E2E-VERIFICATION-REPORT.md`, `E2E_VERIFICATION_RESULTS.md`, `BEAT_INTEGRATION_VERIFICATION.md`, `MANUAL_TEST_REPORT.md`). The features they documented are now covered by `tests/` or by current reference docs.
+- Third-party MSI fixtures (`data/test_msis/*.msi`) no longer tracked in git. Downloaded on demand by `verify_local_packaging.py` and `verify_deployment.py`.
+
+### Version
+- `__version__` bumped to `1.4.0`.
+
+---
+
 ## [1.3.0] - 2026-05-20
 
 ### Added

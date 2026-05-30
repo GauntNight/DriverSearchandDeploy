@@ -97,8 +97,10 @@ Complete these if you are not using the automated installer.
 - [ ] Saved **Client Secret**: `___________________________________`
 - [ ] Added API Permission: `DeviceManagementApps.ReadWrite.All`
 - [ ] Added API Permission: `DeviceManagementConfiguration.ReadWrite.All`
+- [ ] Added API Permission: `DeviceManagementManagedDevices.PrivilegedOperations.All`
 - [ ] Added API Permission: `Group.Read.All`
 - [ ] Added API Permission: `GroupMember.Read.All`
+- [ ] Added API Permission: `GroupMember.ReadWrite.All`
 - [ ] Granted admin consent for all permissions
 
 ### Azure: Deployment Ring Groups

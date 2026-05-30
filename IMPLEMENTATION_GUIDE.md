@@ -58,10 +58,12 @@ The `azure-setup.ps1` script then automatically:
 - Validates or creates your App Registration (`AutoPackager-ServicePrincipal`)
 - Looks up the correct Microsoft Graph permission IDs dynamically
 - Adds all required API permissions (Application type):
-  - `DeviceManagementApps.ReadWrite.All`
-  - `DeviceManagementConfiguration.ReadWrite.All`
+  - `DeviceManagementApps.ReadWrite.All` — create / publish / assign Win32 apps
+  - `DeviceManagementConfiguration.ReadWrite.All` — config profiles
+  - `DeviceManagementManagedDevices.PrivilegedOperations.All` — trigger device syncs via Graph
   - `Group.Read.All`
   - `GroupMember.Read.All`
+  - `GroupMember.ReadWrite.All` — manage ring membership without an interactive admin
 - Grants tenant-wide admin consent
 - Creates 4 Entra ID security groups:
   - `AutoPackager-Ring0-ITPilot`
@@ -194,11 +196,13 @@ To skip App Registration creation entirely and let the script create everything 
 
 5. Add API permissions: **API permissions → Add a permission → Microsoft Graph → Application permissions**
 
-   Add all four:
+   Add all six:
    - `DeviceManagementApps.ReadWrite.All`
    - `DeviceManagementConfiguration.ReadWrite.All`
+   - `DeviceManagementManagedDevices.PrivilegedOperations.All`
    - `Group.Read.All`
    - `GroupMember.Read.All`
+   - `GroupMember.ReadWrite.All`
 
 6. Click **Grant admin consent for [Your Tenant]** → **Yes**
 
