@@ -17,6 +17,7 @@ local Deployment/Job rows when done.
 
 import os
 import sys
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -32,8 +33,19 @@ from autopackager.utils.msi_metadata import read_msi_metadata
 
 REPO = Path(__file__).parent
 SOURCE_MSI = REPO / "data" / "test_msis" / "7z2408-x64.msi"
+SOURCE_MSI_URL = "https://www.7-zip.org/a/7z2408-x64.msi"
 INSTALL_COMMAND = "msiexec /i 7z2408-x64.msi /qn /norestart"
 APP_NAME = "ZZ_TEST_7-Zip_DeployVerify"
+
+
+def ensure_source_msi() -> None:
+    """Download the test MSI on first run -- it's gitignored, not shipped."""
+    if SOURCE_MSI.exists():
+        return
+    SOURCE_MSI.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading test MSI from {SOURCE_MSI_URL} ...")
+    urllib.request.urlretrieve(SOURCE_MSI_URL, SOURCE_MSI)
+    print(f"  saved to {SOURCE_MSI} ({SOURCE_MSI.stat().st_size} bytes)")
 
 
 def create_job() -> int:
@@ -75,9 +87,7 @@ def update_job_metadata(job_id: int, **updates) -> None:
 
 
 def main() -> int:
-    if not SOURCE_MSI.exists():
-        print(f"FAIL: source MSI missing at {SOURCE_MSI}")
-        return 1
+    ensure_source_msi()
 
     job_id = create_job()
     print(f"Job {job_id} created as {APP_NAME!r}")
