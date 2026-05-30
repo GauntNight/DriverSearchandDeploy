@@ -49,6 +49,7 @@ class CatalogEntry:
     id: str
     type: str  # 'msi' | 'exe'
     install_command_template: str
+    uninstall_command_template: Optional[str] = None
     # MSI identity
     upgrade_code: Optional[str] = None
     product_code: Optional[str] = None
@@ -64,9 +65,24 @@ class CatalogEntry:
     first_seen: str = ""
     last_used: str = ""
     use_count: int = 0
+    # Proven-good versions. Populated by record_verification() after a deploy
+    # is observed installing on a real device. Each item:
+    #   {product_version, verified_at (YYYY-MM-DD), verified_intune_app_id}
+    verified_versions: list = field(default_factory=list)
 
     def render_install_command(self, installer_filename: str) -> str:
         return self.install_command_template.format(installer_filename=installer_filename)
+
+    def render_uninstall_command(self, installer_filename: str = "") -> Optional[str]:
+        # MSI uninstall templates embed the ProductCode literally, e.g.
+        # ``msiexec /x {23170F69-...} /qn``. Those braces are NOT format
+        # placeholders -- calling .format() on them raises. Only template
+        # when an explicit {installer_filename} placeholder is present.
+        if not self.uninstall_command_template:
+            return None
+        if "{installer_filename}" in self.uninstall_command_template:
+            return self.uninstall_command_template.format(installer_filename=installer_filename)
+        return self.uninstall_command_template
 
 
 @dataclass
@@ -112,6 +128,16 @@ class Catalog:
                     continue
                 return e
 
+        return None
+
+    def match_by_product_code(self, product_code: Optional[str]) -> Optional[CatalogEntry]:
+        """Convenience wrapper for ProductCode-only lookup (used during verification)."""
+        if not product_code:
+            return None
+        target = _normalise_guid(product_code)
+        for e in self.entries:
+            if e.type == "msi" and _normalise_guid(e.product_code) == target:
+                return e
         return None
 
 
@@ -258,12 +284,22 @@ def add_msi_entry(
         return next(e for e in overlay if e.id == entry_id)
 
     today = _today_iso()
+    product_code = msi_metadata.get("product_code")
+    # Uninstall is deterministic for MSIs once the ProductCode is known. Record
+    # the canonical form here so the catalog file is self-contained -- future
+    # operator can read the YAML and run the uninstall string verbatim without
+    # going back through PackagingAgent.
+    uninstall_template = (
+        f"msiexec /x {product_code} /qn /norestart"
+        if product_code else None
+    )
     entry = CatalogEntry(
         id=entry_id,
         type="msi",
         install_command_template=install_command_template,
+        uninstall_command_template=uninstall_template,
         upgrade_code=msi_metadata.get("upgrade_code"),
-        product_code=msi_metadata.get("product_code"),
+        product_code=product_code,
         product_name_pattern=name or None,
         publisher=msi_metadata.get("manufacturer") or None,
         notes=notes,
@@ -275,6 +311,74 @@ def add_msi_entry(
     _write_local(overlay)
     logger.info("Catalog entry added", entry_id=entry_id, type="msi")
     return entry
+
+
+def record_verification(
+    entry_id: str,
+    product_version: Optional[str],
+    intune_app_id: Optional[str],
+) -> None:
+    """Record that an entry has been observed installing on a real device.
+
+    Called by ``DeploymentAgent.check_all_deployments`` after a deployment's
+    ``successful_installs`` count crosses zero. Idempotent on
+    (product_version, intune_app_id): re-running against the same pair is a
+    no-op so repeated polls don't accumulate duplicate verified entries.
+
+    Writes to the local overlay; the committed baseline stays untouched.
+    """
+    overlay = _local_overlay_entries()
+    target: Optional[CatalogEntry] = None
+    for e in overlay:
+        if e.id == entry_id:
+            target = e
+            break
+
+    if target is None:
+        baseline_catalog = Catalog(
+            entries=[
+                _entry_from_dict(r)
+                for r in (_load_yaml_file(BASELINE_PATH).get("entries") or [])
+                if _entry_from_dict(r) is not None
+            ]
+        )
+        base = baseline_catalog.by_id(entry_id)
+        if base is None:
+            logger.warning("record_verification called for unknown entry", entry_id=entry_id)
+            return
+        target = CatalogEntry(**asdict(base))
+        overlay.append(target)
+
+    new_record = {
+        "product_version": product_version or "unknown",
+        "verified_at": _today_iso(),
+        "verified_intune_app_id": intune_app_id or "",
+    }
+
+    # Idempotency: same (product_version, intune_app_id) is treated as a no-op
+    # so the verified_versions list doesn't grow every time the poll runs.
+    for existing in (target.verified_versions or []):
+        if (
+            existing.get("product_version") == new_record["product_version"]
+            and existing.get("verified_intune_app_id") == new_record["verified_intune_app_id"]
+        ):
+            logger.debug(
+                "Verification already recorded; skipping",
+                entry_id=entry_id,
+                product_version=product_version,
+            )
+            return
+
+    if target.verified_versions is None:
+        target.verified_versions = []
+    target.verified_versions.append(new_record)
+    _write_local(overlay)
+    logger.info(
+        "Catalog entry verified",
+        entry_id=entry_id,
+        product_version=product_version,
+        intune_app_id=intune_app_id,
+    )
 
 
 def _slugify(value: str) -> str:

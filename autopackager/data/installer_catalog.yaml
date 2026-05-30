@@ -21,10 +21,16 @@ entries:
   - id: 7-zip
     type: msi
     upgrade_code: "{23170F69-40C1-2702-0000-000004000000}"
+    product_code: "{23170F69-40C1-2702-2408-000001000000}"
     product_name_pattern: "7-Zip"
     publisher: "Igor Pavlov"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    uninstall_command_template: "msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart"
     notes: "Verified end-to-end against ngbg tenant 2026-05-29 (ZZ_TEST_7-Zip_DeployVerify, install observed on ADMIN_BUILD_1)."
     first_seen: "2026-05-29"
     last_used: "2026-05-29"
     use_count: 1
+    verified_versions:
+      - product_version: "24.08.00.0"
+        verified_at: "2026-05-29"
+        verified_intune_app_id: "4d015deb-f322-4543-9930-c76b7aa21f84"

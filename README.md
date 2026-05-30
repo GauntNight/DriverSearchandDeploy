@@ -317,6 +317,24 @@ unchanged. To override the catalog's recorded flags for a single run, pass
 permanent on this tenant, edit `data/installer_catalog.local.yaml` directly — a local
 entry with the same `id` as a baseline entry wins on load.
 
+#### Uninstall command + verified versions
+
+Each MSI catalog entry also records:
+
+- `uninstall_command_template` — auto-populated at append time as
+  `msiexec /x {ProductCode} /qn /norestart`. Lets you uninstall the package by
+  reading the catalog directly, without going through `PackagingAgent`. The MSI
+  ProductCode is embedded literally, so the template can be run verbatim.
+- `verified_versions` — populated by the deployment status poller
+  (`check_all_deployments`) when at least one device reports a successful install.
+  Each entry: `product_version`, `verified_at` (date), `verified_intune_app_id`.
+  Idempotent — re-running the poll doesn't add duplicate verified entries for the
+  same `(version, app_id)` pair.
+
+Reading a catalog file end-to-end tells the next operator three things about each app:
+*what command silently installs it*, *what command cleanly removes it*, and *which
+versions we've watched land on a real device*.
+
 > **Note:** This packages a *specific* MSI you supply. Automatically discovering new software
 > *versions* from vendors (the way driver discovery scans OEM catalogs) remains a Phase 2
 > item — see [Roadmap](#roadmap).

@@ -511,6 +511,51 @@ class DeploymentAgent:
                 package.intune_app_id = intune_app_id
                 logger.info("Updated package deployment status", package_id=package_id)
 
+    def _record_catalog_verification(self, intune_app_id: str) -> None:
+        """Look the install up in the installer catalog by ProductCode and
+        record this deployment as a proven-good version. Idempotent.
+
+        Only Win32 apps that originated as MSI software jobs can be located
+        (the lookup is by ProductCode stored on the Package). Driver and
+        catalog-miss EXE deployments are silently skipped.
+        """
+        # Import lazily to avoid pulling the catalog module into every
+        # deployment-related code path that imports DeploymentAgent.
+        from autopackager.utils import installer_catalog
+
+        with db_session_scope() as session:
+            deployment = (
+                session.query(Deployment)
+                .filter(Deployment.intune_app_id == intune_app_id)
+                .first()
+            )
+            if not deployment or not deployment.package_id:
+                return
+            package = (
+                session.query(Package)
+                .filter(Package.id == deployment.package_id)
+                .first()
+            )
+            if not package:
+                return
+            metadata = package.package_metadata or {}
+            product_code = metadata.get("msi_product_code")
+            product_version = metadata.get("msi_product_version") or package.version
+
+        if not product_code:
+            return
+
+        catalog = installer_catalog.load_catalog()
+        entry = catalog.match_by_product_code(product_code)
+        if not entry:
+            return
+
+        installer_catalog.record_verification(
+            entry_id=entry.id,
+            product_version=product_version,
+            intune_app_id=intune_app_id,
+        )
+
     def _get_package(self, package_id: int) -> Package:
         """Get package by ID"""
         with db_session_scope() as session:
@@ -1430,6 +1475,19 @@ class DeploymentAgent:
                         failed=status_data.get('failed_count', 0),
                         pending=status_data.get('pending_count', 0)
                     )
+
+                    # Promote the installer to the catalog's "verified" list when
+                    # at least one device reports a successful install. Failure
+                    # here must not break polling -- log and continue.
+                    if status_data.get('installed_count', 0) > 0:
+                        try:
+                            self._record_catalog_verification(intune_app_id)
+                        except Exception as catalog_exc:
+                            logger.debug(
+                                "Catalog verification recording skipped",
+                                deployment_id=deployment_id,
+                                error=str(catalog_exc),
+                            )
 
                     # Evaluate automatic rollback against the freshly-polled status.
                     # should_trigger_rollback() respects the rollback.enabled config
