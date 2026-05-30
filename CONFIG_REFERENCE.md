@@ -171,8 +171,10 @@ The App Registration **must** have these **Application-type** permissions (not D
 
 - `DeviceManagementApps.ReadWrite.All`
 - `DeviceManagementConfiguration.ReadWrite.All`
+- `DeviceManagementManagedDevices.PrivilegedOperations.All`
 - `Group.Read.All`
 - `GroupMember.Read.All`
+- `GroupMember.ReadWrite.All`
 
 **Setup Steps:**
 1. Azure Portal → App Registrations → New Registration

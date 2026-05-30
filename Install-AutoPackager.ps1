@@ -890,5 +890,5 @@ Write-Host "   .\list-jobs.bat" -ForegroundColor Cyan
 Write-Host ""
 Write-Host " DOCUMENTATION:" -ForegroundColor White
 Write-Host "   IMPLEMENTATION_GUIDE.md  - Full walkthrough" -ForegroundColor Gray
-Write-Host "   WINDOWS_TESTING.md       - Troubleshooting" -ForegroundColor Gray
+Write-Host "   SETUP.md                 - Manual setup + troubleshooting" -ForegroundColor Gray
 Write-Host ""

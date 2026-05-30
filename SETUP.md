@@ -243,8 +243,10 @@ Create an Azure App Registration with the following API permissions:
 3. Add API Permissions (Application type):
    - `DeviceManagementApps.ReadWrite.All`
    - `DeviceManagementConfiguration.ReadWrite.All`
+   - `DeviceManagementManagedDevices.PrivilegedOperations.All`
    - `Group.Read.All`
    - `GroupMember.Read.All`
+   - `GroupMember.ReadWrite.All`
 4. Grant admin consent
 5. Create a client secret
 6. Copy Tenant ID, Client ID, and Client Secret to `.env`
