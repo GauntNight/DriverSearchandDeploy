@@ -47,6 +47,43 @@
 #                         Use this when the MSI ships an icon as a PE
 #                         resource (the pure-Python extractor can't reach
 #                         those) and you want a real icon in the portal.
+#
+# EXE installer fields (type: exe):
+#   installer_family   -- Installer engine. One of:
+#                          msi, inno_setup, nsis, wix_burn,
+#                          msft_bootstrapper, wrapped_msi, wrapped_zip,
+#                          custom. Determines the default silent-install
+#                          switches (see INSTALLER_FAMILY_SWITCHES) when
+#                          install_command_template is omitted.
+#   pe_company_name    -- VS_VERSIONINFO CompanyName, used for catalog
+#                         lookup when sha256 doesn't match.
+#   pe_product_name    -- VS_VERSIONINFO ProductName, same purpose.
+#   detection_rules    -- REQUIRED for type: exe. List of rule dicts in
+#                         the catalog's normalized form (kind + fields).
+#                         See DETECTION_RULE_KINDS in installer_catalog.py
+#                         for the kind vocabulary; converted to Graph
+#                         win32LobApp*Rule shape by detection_rule_to_graph
+#                         at deploy time. Example shapes:
+#
+#                           - kind: registry_version
+#                             key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\AppName'
+#                             value_name: DisplayVersion
+#                             operator: greaterThanOrEqual
+#                             value: "1.2.3"
+#
+#                           - kind: file_version
+#                             path: 'C:\Program Files\AppName'
+#                             file: app.exe
+#                             operator: greaterThanOrEqual
+#                             value: "1.2.3.0"
+#
+#                           - kind: file_exists
+#                             path: 'C:\Program Files\AppName'
+#                             folder: AppName
+#
+#                         For type: msi the pipeline derives a ProductCode
+#                         rule automatically from the MSI's own metadata;
+#                         detection_rules is normally left unset.
 
 version: 1
 entries:
@@ -58,8 +95,35 @@ entries:
     publisher: "Igor Pavlov"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
     uninstall_command_template: "msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart"
+    installer_family: msi
     information_url: "https://www.7-zip.org/"
     description: "Free open-source file archiver with a high compression ratio."
     categories: ["Productivity"]
     min_os_version: "1607"
     notes: "Standard MSI silent install. Uninstall via ProductCode."
+
+  # ---- EXE example (unverified -- shape only) ------------------------
+  # First EXE entry shipped as a worked example of the schema. The
+  # install/uninstall switches and the detection-rule registry path are
+  # the documented NSIS pattern for Notepad++; an operator should still
+  # verify end-to-end on their tenant before relying on it for production
+  # deployments. Once verified through the EXE pipeline (when that
+  # lands), drop this comment block.
+  - id: notepad-plus-plus
+    type: exe
+    installer_family: nsis
+    pe_company_name: "Notepad++ Team"
+    pe_product_name: "Notepad++"
+    install_command_template: "{installer_filename} /S"
+    uninstall_command_template: '"C:\Program Files\Notepad++\uninstall.exe" /S'
+    detection_rules:
+      - kind: registry_version
+        key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\Notepad++'
+        value_name: DisplayVersion
+        operator: greaterThanOrEqual
+        value: "0.0.0"
+    information_url: "https://notepad-plus-plus.org/"
+    description: "Free source code editor and Notepad replacement supporting many languages."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "NSIS installer. /S is the silent flag. Detection via the Uninstall registry key DisplayVersion."
