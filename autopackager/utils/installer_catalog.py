@@ -60,6 +60,34 @@ class CatalogEntry:
     pe_product_name: Optional[str] = None
     # Binary fingerprint (any type)
     sha256: Optional[str] = None
+    # ---- Intune app-attribute overrides --------------------------------
+    # All four are agnostic curated knowledge: same value across every
+    # operator / tenant for a given installer. Belong in the baseline.
+    # Each falls back to MSI-derived defaults when unset (see
+    # DeploymentAgent._prepare_app_data).
+    #
+    # information_url -- "Help and support" URL surfaced in the Intune
+    #   portal. Default source: MSI's ARPHELPLINK / ARPURLINFOABOUT
+    #   property. Override here to point at a curated landing page.
+    information_url: Optional[str] = None
+    # description -- short app description shown in the portal's Notes
+    #   field. Default source: MSI's Subject summary property. Override
+    #   for marketing copy / operator notes.
+    description: Optional[str] = None
+    # categories -- Intune mobileAppCategory display names (e.g.,
+    #   "Productivity", "Business"). Resolved to category IDs at publish
+    #   time and attached via /mobileApps/{id}/categories/$ref. Empty
+    #   list / None = no categories assigned.
+    categories: Optional[list] = None
+    # min_os_version -- Windows release the app requires (e.g., "1607",
+    #   "1809", "22H2"). Translated to win32LobApp's
+    #   windowsMinimumOperatingSystem flag dict. Default: "1607".
+    min_os_version: Optional[str] = None
+    # icon_b64 -- operator-supplied app icon (base64-encoded image bytes).
+    #   Use this when the MSI ships an icon as a PE resource (Slack-style)
+    #   and the pure-Python extractor returns nothing. Mime type sniffed
+    #   from the leading magic bytes at publish time.
+    icon_b64: Optional[str] = None
     # Lifecycle / usage
     notes: str = ""
     first_seen: str = ""

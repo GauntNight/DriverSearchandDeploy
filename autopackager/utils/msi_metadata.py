@@ -407,6 +407,134 @@ class MSIMetadata:
         return cls(**{k: v for k, v in (data or {}).items() if k in known})
 
 
+def read_msi_icon(msi_path) -> Optional[tuple]:
+    """Return ``(mime_type, image_bytes)`` for the MSI's primary icon, or None.
+
+    The MSI's ``ARPPRODUCTICON`` property names the icon row in the Icon
+    table; the bytes live in an OLE2 root-storage stream named
+    ``Icon.<arpproducticon_value>``. The stored format varies: some MSIs
+    ship a real ``.ico`` (Webex), some ship a Windows PE executable with
+    icons as resources (KeePass, Slack -- only the PE shape).
+
+    The returned bytes are Intune-compatible: Intune's ``largeIcon`` field
+    rejects raw ICO containers ("Icon in invalid format.") even though
+    ``image/x-icon`` is a real mime type. When the extracted stream is an
+    ICO, we look for an embedded PNG payload (modern .ico files include one
+    for the larger sizes) and return that instead. ICO containers carrying
+    only BMP payloads, and MSIs that store the icon as a PE resource,
+    return None -- operators can override these via the catalog's
+    ``icon_b64`` field.
+    """
+    path = Path(msi_path)
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        cfb = _CompoundFile(data)
+    except MSIParseError:
+        return None
+    streams = _streams_by_table_name(cfb)
+    props = _read_property_table(cfb, streams)
+    icon_name = props.get('ARPPRODUCTICON')
+    if not icon_name:
+        return None
+    target = f'Icon.{icon_name}'
+    icon_entry = next(
+        (e for e in cfb.root_children()
+         if e['type'] == 2 and decode_streamname(e['name']) == target),
+        None,
+    )
+    if not icon_entry:
+        return None
+    blob = cfb.read_stream(icon_entry)
+    mime = _detect_image_mime(blob)
+    if not mime:
+        return None
+    if mime == 'image/x-icon':
+        png = extract_png_from_ico(blob)
+        if png is None:
+            # BMP-only ICO: Intune can't render it and we don't carry an
+            # image library to re-encode. Skip rather than ship something
+            # the portal will reject at PATCH/POST time.
+            return None
+        return 'image/png', png
+    return mime, blob
+
+
+def _detect_image_mime(blob: bytes) -> Optional[str]:
+    """Sniff the image format from leading magic bytes.
+
+    Returns the Intune-compatible mime type, or None when the bytes look
+    like a PE / unknown container (Intune's largeIcon field expects an
+    actual image, not an executable carrying icon resources).
+    """
+    if not blob or len(blob) < 4:
+        return None
+    if blob.startswith(b'\x89PNG'):
+        return 'image/png'
+    if blob.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if blob.startswith(b'GIF8'):
+        return 'image/gif'
+    if blob.startswith(b'\x00\x00\x01\x00'):
+        return 'image/x-icon'
+    # PE ('MZ'), CFB, or anything else: cannot ship as-is.
+    return None
+
+
+def extract_png_from_ico(ico_bytes: bytes) -> Optional[bytes]:
+    """Return the largest well-formed PNG embedded in an ICO container.
+
+    Modern .ico files (Vista+) typically embed PNG payloads for the larger
+    sizes (256x256+) because BMP within ICO is uncompressed and bulky.
+    Intune's ``largeIcon`` field rejects raw ICO bytes ("Icon in invalid
+    format."), so we have to find an embedded PNG and ship that instead.
+
+    Returns None when:
+      * the container has no PNG payloads (BMP-only ICO), or
+      * every embedded PNG has a corrupt IHDR (width / height == 0,
+        unreasonable dimensions). Several MSI builds in the wild ship a
+        "256x0" PNG entry next to good BMPs -- KeePass and Zoom both do
+        this, and Intune correctly rejects the malformed payload with
+        "Icon in invalid format."
+    """
+    if not ico_bytes or len(ico_bytes) < 6:
+        return None
+    if ico_bytes[:4] != b'\x00\x00\x01\x00':
+        return None
+    count = struct.unpack_from('<H', ico_bytes, 4)[0]
+    best_png = None
+    best_score = 0
+    # ICONDIRENTRY records start at byte 6, each 16 bytes long.
+    for i in range(count):
+        off = 6 + i * 16
+        if off + 16 > len(ico_bytes):
+            break
+        bytes_in_res = struct.unpack_from('<I', ico_bytes, off + 8)[0]
+        image_offset = struct.unpack_from('<I', ico_bytes, off + 12)[0]
+        if image_offset + bytes_in_res > len(ico_bytes):
+            continue
+        payload = ico_bytes[image_offset: image_offset + bytes_in_res]
+        if not payload.startswith(b'\x89PNG'):
+            continue
+        # PNG IHDR chunk: 8-byte signature + 4-byte length + 4-byte 'IHDR'
+        # + 4-byte width + 4-byte height (all big-endian). Validate them
+        # because some MSI tooling emits a directory entry pointing at a
+        # zero-height PNG payload (real example: KeePass 2.61.1, Zoom 7.x).
+        if len(payload) < 24:
+            continue
+        png_w = struct.unpack_from('>I', payload, 16)[0]
+        png_h = struct.unpack_from('>I', payload, 20)[0]
+        if not (0 < png_w <= 1024 and 0 < png_h <= 1024):
+            continue
+        score = png_w * png_h
+        if score > best_score:
+            best_png = payload
+            best_score = score
+    return best_png
+
+
 def read_msi_metadata(msi_path) -> MSIMetadata:
     """Parse an MSI file and return its metadata.
 

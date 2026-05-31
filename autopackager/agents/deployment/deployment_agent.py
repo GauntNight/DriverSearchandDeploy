@@ -16,9 +16,36 @@ from autopackager.utils.config import get_config
 from autopackager.utils.database import db_session_scope
 from autopackager.utils.azure_validator import AzureConfigurationError, AzureValidator
 from autopackager.utils.graph_client import GraphAPIClient
+from autopackager.utils.installer_catalog import CatalogEntry, load_catalog
 from autopackager.utils.logger import get_logger
+from autopackager.utils.msi_metadata import _detect_image_mime
 
 logger = get_logger(__name__)
+
+# Standard Windows Installer (MsiExec) exit codes. Without these, Intune
+# treats anything non-zero as a failed install -- including 3010 ("reboot
+# required, install succeeded") and 1641 ("install succeeded, reboot
+# initiated"), which spuriously fails clean deployments and triggers the
+# rollback heuristic. Reference:
+# https://learn.microsoft.com/en-us/troubleshoot/windows-server/application-management/msiexec-command-line-reference
+_DEFAULT_RETURN_CODES = [
+    {'returnCode': 0,    'type': 'success'},
+    {'returnCode': 1707, 'type': 'success'},
+    {'returnCode': 3010, 'type': 'softReboot'},
+    {'returnCode': 1641, 'type': 'hardReboot'},
+    {'returnCode': 1618, 'type': 'retry'},
+]
+
+# Map of Windows release identifiers to the win32LobApp
+# windowsMinimumOperatingSystem flag name. Graph stores the chosen flag in
+# minimumSupportedWindowsRelease on read, but accepts the flag-dict form on
+# write -- so we always send the canonical version=True dict.
+_WIN_RELEASE_TO_FLAG = {
+    '1607': 'v10_1607', '1703': 'v10_1703', '1709': 'v10_1709',
+    '1803': 'v10_1803', '1809': 'v10_1809', '1903': 'v10_1903',
+    '1909': 'v10_1909', '2004': 'v10_2004', '20H2': 'v10_2H20',
+    '21H1': 'v10_21H1', '21H2': 'v10_21H2', '22H2': 'v10_22H2',
+}
 
 
 class DeploymentAgent:
@@ -179,14 +206,82 @@ class DeploymentAgent:
             new_app = graph_client.create_win32_app(app_data)
             app_id = new_app['id']
 
+        # Attach Intune categories from the catalog (best-effort -- failures
+        # don't block content upload). Categories are a separate $ref
+        # sub-collection on the app, not a property of the win32LobApp
+        # payload, so they need their own POSTs.
+        catalog_entry = self._lookup_catalog_entry(package)
+        if catalog_entry and catalog_entry.categories:
+            self._assign_categories(graph_client, app_id, catalog_entry.categories)
+
         # Upload .intunewin content and flip publishingState to 'published'
         self._upload_and_publish(graph_client, app_id, package)
 
         return app_id
 
+    def _assign_categories(self, graph_client, app_id: str, category_names: list) -> None:
+        """Attach Intune mobileAppCategory entries to ``app_id`` by display name.
+
+        Unknown category names log a warning and are skipped (we don't auto-
+        create custom categories -- operator can pre-create them in the
+        portal). Already-attached categories return 409 and are logged at
+        debug; that's the expected idempotent path on a re-publish.
+        """
+        if not category_names:
+            return
+        try:
+            existing = graph_client.get('deviceAppManagement/mobileAppCategories')
+        except Exception as exc:  # noqa: BLE001 -- read failure shouldn't block publish
+            logger.warning("Could not fetch Intune categories", error=str(exc))
+            return
+        by_name = {c.get('displayName'): c.get('id') for c in existing.get('value', [])}
+        for name in category_names:
+            cat_id = by_name.get(name)
+            if not cat_id:
+                logger.warning("Skipping unknown Intune category", category=name, app_id=app_id)
+                continue
+            ref_body = {
+                '@odata.id': (
+                    f'https://graph.microsoft.com/v1.0/deviceAppManagement/'
+                    f'mobileAppCategories/{cat_id}'
+                )
+            }
+            try:
+                graph_client.post(
+                    f'deviceAppManagement/mobileApps/{app_id}/categories/$ref',
+                    data=ref_body,
+                )
+                logger.info("Category attached", category=name, app_id=app_id)
+            except Exception as exc:  # noqa: BLE001 -- 409 already-attached is benign
+                logger.debug(
+                    "Category attach skipped (already present or error)",
+                    category=name, app_id=app_id, error=str(exc),
+                )
+
+    def _lookup_catalog_entry(self, package: Package) -> 'CatalogEntry | None':
+        """Find the catalog entry whose ProductCode / UpgradeCode matches the
+        package's MSI metadata. Returns None for non-MSI packages or when no
+        catalog entry exists. Catalog lookup is best-effort: any failure
+        (missing files, parse errors) falls through to None so deployment
+        keeps working from MSI-derived defaults alone.
+        """
+        pkg_meta = (package.package_metadata or {}) if hasattr(package, 'package_metadata') else {}
+        if not isinstance(pkg_meta, dict):
+            return None
+        product_code = pkg_meta.get('msi_product_code')
+        if not product_code:
+            return None
+        try:
+            catalog = load_catalog()
+        except Exception as exc:  # noqa: BLE001 -- catalog is opportunistic
+            logger.debug("Catalog load skipped", error=str(exc))
+            return None
+        return catalog.match_by_product_code(product_code)
+
     def _prepare_app_data(self, package: Package, job: Job) -> Dict[str, Any]:
         """Prepare Intune app data structure (Graph API v1.0 schema)."""
         rules = self._normalize_rules(package.detection_rules)
+        catalog_entry = self._lookup_catalog_entry(package)
 
         # setupFilePath is required by Graph API — the installer filename inside
         # the .intunewin package.  Derive from the stored installer_path, or fall
@@ -203,11 +298,30 @@ class DeploymentAgent:
         if hardware_model:
             description = f"{package.name} v{version} for {hardware_model} - {vendor}"
 
-        # Build informationUrl from vendor support sites (deterministic, no LLM)
-        information_url = self._get_vendor_support_url(vendor, hardware_model)
+        # Sources for the Intune app attributes, in priority order:
+        #   1. catalog override (curated, env-agnostic, ships in baseline YAML)
+        #   2. MSI metadata captured at packaging time (msi_help_link / msi_subject / msi_icon_b64)
+        #   3. driver/vendor defaults (informationUrl from Dell/HP/Lenovo URL map)
+        #   4. None (field omitted from payload)
+        pkg_meta = (package.package_metadata or {}) if hasattr(package, 'package_metadata') else {}
+        if not isinstance(pkg_meta, dict):
+            pkg_meta = {}
 
-        # Build notes from release metadata when available
+        # informationUrl: catalog override -> MSI ARPHELPLINK -> driver vendor URL
+        information_url = (
+            (catalog_entry.information_url if catalog_entry else None)
+            or pkg_meta.get('msi_help_link')
+            or self._get_vendor_support_url(vendor, hardware_model)
+        )
+
+        # notes: build a per-job summary first (driver releases / hardware
+        # context), then prepend the catalog or MSI's app description when
+        # present so the most important context is at the top of the field.
         notes_parts = []
+        catalog_description = catalog_entry.description if catalog_entry else None
+        app_description = catalog_description or pkg_meta.get('msi_subject')
+        if app_description:
+            notes_parts.append(app_description)
         release_date = job.job_metadata.get('release_date', '')
         release_notes = job.job_metadata.get('release_notes') or job.release_notes or ''
         if release_date:
@@ -217,6 +331,14 @@ class DeploymentAgent:
         if job.job_type and job.job_type.value == 'driver_update' and hardware_model:
             notes_parts.append(f"Hardware model: {hardware_model}")
         notes = '\n'.join(notes_parts) if notes_parts else ''
+
+        # minimumSupportedOperatingSystem: Graph accepts the flag-dict form on
+        # write but exposes the chosen value as the string
+        # ``minimumSupportedWindowsRelease`` on read. Default to 1607 (the
+        # oldest still-supported Windows 10 release that won't filter any
+        # modern device out via NotApplicable).
+        min_os = (catalog_entry.min_os_version if catalog_entry else None) or '1607'
+        min_os_flag = _WIN_RELEASE_TO_FLAG.get(min_os, 'v10_1607')
 
         app_data = {
             '@odata.type': '#microsoft.graph.win32LobApp',
@@ -234,8 +356,9 @@ class DeploymentAgent:
                 'deviceRestartBehavior': 'suppress'
             },
             'rules': rules,
+            'returnCodes': list(_DEFAULT_RETURN_CODES),
             'minimumSupportedOperatingSystem': {
-                'v10_1607': True  # Windows 10 1607+
+                min_os_flag: True
             }
         }
 
@@ -254,15 +377,31 @@ class DeploymentAgent:
         if notes:
             app_data['notes'] = notes
 
+        # largeIcon: catalog override (operator-supplied for PE-icon MSIs like
+        # Slack) wins; otherwise use the icon PackagingAgent extracted from
+        # the MSI. Graph expects ``{type: mime, value: base64}``.
+        catalog_icon_b64 = catalog_entry.icon_b64 if catalog_entry else None
+        icon_b64 = catalog_icon_b64 or pkg_meta.get('msi_icon_b64')
+        icon_mime = pkg_meta.get('msi_icon_mime')
+        if catalog_icon_b64:
+            # Catalog-supplied icon: sniff the mime from its decoded bytes so
+            # we don't trust an out-of-date mime hint paired with new bytes.
+            try:
+                import base64 as _b64
+                icon_mime = _detect_image_mime(_b64.b64decode(catalog_icon_b64))
+            except Exception:  # noqa: BLE001
+                icon_mime = None
+        if icon_b64 and icon_mime:
+            app_data['largeIcon'] = {'type': icon_mime, 'value': icon_b64}
+
         # MSI-derived Win32 apps: populate msiInformation so the Intune portal
         # shows Version / Publisher / ProductCode etc. on the app row. Without
         # this block, every MSI app we publish shows blank Version in Intune
         # (the version is only visible inside the Description text). Source
         # data is captured by PackagingAgent into package.package_metadata when
         # the installer is an MSI (see PackagingAgent.package() msi_* keys).
-        pkg_meta = (package.package_metadata or {}) if hasattr(package, 'package_metadata') else {}
-        msi_product_code = pkg_meta.get('msi_product_code') if isinstance(pkg_meta, dict) else None
-        msi_product_version = pkg_meta.get('msi_product_version') if isinstance(pkg_meta, dict) else None
+        msi_product_code = pkg_meta.get('msi_product_code')
+        msi_product_version = pkg_meta.get('msi_product_version')
         if msi_product_code and msi_product_version:
             # Per-user vs per-machine: MSIINSTALLPERUSER=1 in the install
             # command's public properties forces per-user; absent it the MSI
