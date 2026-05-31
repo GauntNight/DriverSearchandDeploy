@@ -194,6 +194,75 @@ class TestDeploymentAgentCore(unittest.TestCase):
         self.assertIn('informationUrl', app_data)
         self.assertEqual(app_data['informationUrl'], 'https://www.dell.com/support/home')
 
+    def test_prepare_app_data_omits_msi_information_for_non_msi_package(self):
+        """Driver packages and other non-MSI packages must NOT include
+        msiInformation. Sending it on a package without a real MSI payload
+        would cause the Intune portal to display a phantom product code that
+        doesn't match what's actually being deployed.
+        """
+        # The default self.package mock has no package_metadata attribute, so
+        # the agent's getattr fallback kicks in -- this is the driver-package
+        # shape.
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertNotIn('msiInformation', app_data)
+
+    def test_prepare_app_data_includes_msi_information_for_msi_package(self):
+        """MSI software packages must include msiInformation so the Intune
+        portal's Version column is populated. Without this block, every MSI
+        app we publish shows blank Version in the portal (verified empirically
+        against ngbg.onmicrosoft.com -- displayVersion is silently dropped by
+        Graph for Win32 MSI apps; portal reads from
+        msiInformation.productVersion).
+        """
+        self.package.package_metadata = {
+            'msi_product_code': '{3DC6B3F0-0AD7-4B51-AFA2-59605590EAC5}',
+            'msi_product_version': '7.0.38856',
+            'msi_upgrade_code': '{C819B794-A45C-4F27-9860-0C86492A52CC}',
+        }
+        self.package.install_command = 'msiexec /i ZoomInstallerFull.msi /qn /norestart'
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+
+        self.assertIn('msiInformation', app_data)
+        msi = app_data['msiInformation']
+        self.assertEqual(msi['productCode'], '{3DC6B3F0-0AD7-4B51-AFA2-59605590EAC5}')
+        self.assertEqual(msi['productVersion'], '7.0.38856')
+        self.assertEqual(msi['upgradeCode'], '{C819B794-A45C-4F27-9860-0C86492A52CC}')
+        self.assertEqual(msi['packageType'], 'perMachine')
+        self.assertFalse(msi['requiresReboot'])
+        self.assertEqual(msi['productName'], self.package.name)
+        self.assertEqual(msi['publisher'], 'Dell')  # from job.vendor
+
+    def test_prepare_app_data_msi_information_detects_per_user_install(self):
+        """MSIINSTALLPERUSER=1 in the install command forces packageType to
+        perUser. AutoPackager doesn't generate this by default but operators
+        sometimes pass --install-command overrides for apps that must install
+        in the user hive (e.g. user-context Slack).
+        """
+        self.package.package_metadata = {
+            'msi_product_code': '{AAAA}',
+            'msi_product_version': '1.0',
+            'msi_upgrade_code': '{BBBB}',
+        }
+        self.package.install_command = 'msiexec /i foo.msi MSIINSTALLPERUSER=1 /qn'
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertEqual(app_data['msiInformation']['packageType'], 'perUser')
+
+    def test_prepare_app_data_msi_information_falls_back_upgrade_to_product_code(self):
+        """If the MSI metadata reader didn't recover an UpgradeCode (some
+        MSIs legitimately lack one; some parser bugs miss it), fall back to
+        the ProductCode so the Graph payload is still valid. Intune's MSI
+        supersedence / upgrade detection works less well in this case but
+        publishing still succeeds.
+        """
+        self.package.package_metadata = {
+            'msi_product_code': '{ONLY-PC}',
+            'msi_product_version': '2.0',
+            'msi_upgrade_code': '',  # parser didn't recover one
+        }
+        self.package.install_command = 'msiexec /i foo.msi /qn'
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertEqual(app_data['msiInformation']['upgradeCode'], '{ONLY-PC}')
+
     def test_get_vendor_support_url_dell(self):
         """Test Dell vendor support URL"""
         url = self.agent._get_vendor_support_url('Dell')

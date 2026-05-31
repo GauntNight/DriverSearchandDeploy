@@ -239,13 +239,46 @@ class DeploymentAgent:
             }
         }
 
-        # Only include optional fields when they have values
+        # Only include optional fields when they have values.
+        # NOTE on `displayVersion`: Win32LobApp's `displayVersion` field is
+        # silently dropped by Graph for MSI-derived apps -- the Intune portal's
+        # "Version" column is populated from `msiInformation.productVersion`,
+        # not from `displayVersion`. We still set displayVersion so the field
+        # is correct on EXE/script Win32 apps (where it does flow through);
+        # for MSI apps it's a harmless no-op and the msiInformation block
+        # below is what actually surfaces in the portal.
         if version and version != 'Unknown':
             app_data['displayVersion'] = version
         if information_url:
             app_data['informationUrl'] = information_url
         if notes:
             app_data['notes'] = notes
+
+        # MSI-derived Win32 apps: populate msiInformation so the Intune portal
+        # shows Version / Publisher / ProductCode etc. on the app row. Without
+        # this block, every MSI app we publish shows blank Version in Intune
+        # (the version is only visible inside the Description text). Source
+        # data is captured by PackagingAgent into package.package_metadata when
+        # the installer is an MSI (see PackagingAgent.package() msi_* keys).
+        pkg_meta = (package.package_metadata or {}) if hasattr(package, 'package_metadata') else {}
+        msi_product_code = pkg_meta.get('msi_product_code') if isinstance(pkg_meta, dict) else None
+        msi_product_version = pkg_meta.get('msi_product_version') if isinstance(pkg_meta, dict) else None
+        if msi_product_code and msi_product_version:
+            # Per-user vs per-machine: MSIINSTALLPERUSER=1 in the install
+            # command's public properties forces per-user; absent it the MSI
+            # installs per-machine (which is also what AutoPackager generates
+            # by default for Intune Win32 apps).
+            install_lower = (package.install_command or '').lower()
+            per_user = 'msiinstallperuser=1' in install_lower
+            app_data['msiInformation'] = {
+                'productCode': msi_product_code,
+                'productVersion': msi_product_version,
+                'upgradeCode': pkg_meta.get('msi_upgrade_code') or msi_product_code,
+                'requiresReboot': False,
+                'packageType': 'perUser' if per_user else 'perMachine',
+                'productName': package.name,
+                'publisher': vendor,
+            }
 
         return app_data
 
