@@ -32,6 +32,130 @@ logger = get_logger(__name__)
 
 CATALOG_VERSION = 1
 
+
+# Controlled vocabulary for CatalogEntry.installer_family. Adding a new
+# value is fine; spelling typos that fall outside this set just log a
+# warning at load time and treat the entry as 'custom'.
+INSTALLER_FAMILIES = {
+    'msi',                # plain Windows Installer .msi
+    'inno_setup',         # Jordan Russell's Inno Setup (Git for Windows, VS Code, WinSCP, GIMP, Audacity)
+    'nsis',               # Nullsoft Scriptable Install System (Notepad++, classic OpenSSH)
+    'wix_burn',           # WiX Burn bundle / bootstrapper (.NET SDK, Visual Studio installer)
+    'msft_bootstrapper',  # Microsoft custom bootstrapper (.NET Runtime, VC++ Redistributable)
+    'wrapped_msi',        # EXE that extracts to an MSI (Adobe Reader DC, PowerToys)
+    'wrapped_zip',        # ZIP that contains an installer (Foxit Reader)
+    'custom',             # vendor-specific or unknown
+}
+
+
+# Standard silent-install switch strings per installer family. Operators
+# can still override per-entry via install_command_template; this map only
+# fires when the catalog entry omits install_command_template entirely.
+INSTALLER_FAMILY_SWITCHES = {
+    'msi':               '/qn /norestart',
+    'inno_setup':        '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES',
+    'nsis':              '/S',
+    'wix_burn':          '/quiet /norestart',
+    'msft_bootstrapper': '/quiet /norestart',
+    # wrapped_msi / wrapped_zip don't get switches here -- a pre-stage
+    # extraction step produces a real MSI which is then driven via its
+    # own catalog entry (resolved by ProductCode after extraction).
+    'wrapped_msi':       None,
+    'wrapped_zip':       None,
+    'custom':            '',
+}
+
+
+# Controlled vocabulary for the ``kind`` field of catalog detection rule
+# dicts. Each kind maps to one Graph win32LobApp*Rule type (see
+# detection_rule_to_graph). The naming is deliberately verbose so YAML
+# catalog entries are self-describing; the Graph payload's flag-soup
+# ("operationType: version, operator: greaterThanOrEqual") is harder to
+# scan when auditing hundreds of catalog entries.
+DETECTION_RULE_KINDS = {
+    'msi_product_code',   # MSI ProductCode (with optional version compare)
+    'file_exists',        # File or folder presence
+    'file_version',       # PE/DLL file version compared to a value
+    'registry_exists',    # Registry key/value presence
+    'registry_value',     # Registry string value compared to a value
+    'registry_version',   # Registry value parsed as a version, compared to a value
+}
+
+
+def default_silent_switches(family: Optional[str]) -> Optional[str]:
+    """Return the standard silent-install switch string for ``family``.
+
+    Returns None for families that require a pre-stage extraction step
+    (wrapped_msi, wrapped_zip) and an empty string for 'custom' (operator
+    must supply switches via install_command_template).
+    """
+    if not family:
+        return None
+    return INSTALLER_FAMILY_SWITCHES.get(family)
+
+
+def detection_rule_to_graph(rule: dict, rule_type: str = 'detection') -> dict:
+    """Convert a catalog detection rule dict to a Graph win32LobApp*Rule.
+
+    Catalog rules are intentionally easier to author than the raw Graph
+    payload -- ``kind: registry_version`` reads better in a YAML file than
+    the equivalent ``operationType: version`` + ``operator:
+    greaterThanOrEqual`` + ``@odata.type`` triple.
+
+    Raises ValueError for unknown kinds; required fields per kind:
+      msi_product_code  -- product_code [+ operator + version]
+      file_exists       -- path + file (or folder)
+      file_version      -- path + file + operator + value
+      registry_exists   -- key [+ value_name]
+      registry_value    -- key + value_name + operator + value
+      registry_version  -- key + value_name + operator + value
+    """
+    kind = rule.get('kind')
+    if kind not in DETECTION_RULE_KINDS:
+        raise ValueError(
+            f"Unknown detection rule kind: {kind!r}. "
+            f"Supported kinds: {sorted(DETECTION_RULE_KINDS)}"
+        )
+    check32 = rule.get('check_32bit_on_64bit', False)
+
+    if kind == 'msi_product_code':
+        return {
+            '@odata.type': '#microsoft.graph.win32LobAppProductCodeRule',
+            'ruleType': rule_type,
+            'productCode': rule['product_code'],
+            'productVersionOperator': rule.get('operator', 'notConfigured'),
+            'productVersion': rule.get('version'),
+        }
+
+    if kind in ('file_exists', 'file_version'):
+        return {
+            '@odata.type': '#microsoft.graph.win32LobAppFileSystemRule',
+            'ruleType': rule_type,
+            'path': rule['path'],
+            'fileOrFolderName': rule.get('file') or rule.get('folder'),
+            'check32BitOn64System': check32,
+            'operationType': 'exists' if kind == 'file_exists' else 'version',
+            'operator': rule.get('operator', 'notConfigured'),
+            'comparisonValue': rule.get('value'),
+        }
+
+    # registry_exists / registry_value / registry_version
+    op_type = {
+        'registry_exists':  'exists',
+        'registry_value':   'string',
+        'registry_version': 'version',
+    }[kind]
+    return {
+        '@odata.type': '#microsoft.graph.win32LobAppRegistryRule',
+        'ruleType': rule_type,
+        'keyPath': rule['key'],
+        'valueName': rule.get('value_name'),
+        'check32BitOn64System': check32,
+        'operationType': op_type,
+        'operator': rule.get('operator', 'notConfigured'),
+        'comparisonValue': rule.get('value'),
+    }
+
 # Resolve once at import. ``__file__`` is .../autopackager/utils/installer_catalog.py
 # Baseline ships next door under .../autopackager/data/installer_catalog.yaml.
 # Local overlay lives at repo-root/data/installer_catalog.local.yaml so the
@@ -50,16 +174,35 @@ class CatalogEntry:
     type: str  # 'msi' | 'exe'
     install_command_template: str
     uninstall_command_template: Optional[str] = None
+    # ---- Installer engine family ----------------------------------------
+    # Identifies the bootstrapper / installer framework so we can derive
+    # silent-install switches when no install_command_template is supplied
+    # (via INSTALLER_FAMILY_SWITCHES) and so operators can filter the
+    # catalog by engine (e.g., "show me every NSIS app we support").
+    # See INSTALLER_FAMILIES for the controlled vocabulary.
+    installer_family: Optional[str] = None
     # MSI identity
     upgrade_code: Optional[str] = None
     product_code: Optional[str] = None
     product_name_pattern: Optional[str] = None
     publisher: Optional[str] = None
-    # EXE identity (reserved for follow-up PR; loader tolerates today)
+    # EXE identity (read from the PE VS_VERSIONINFO resource at packaging
+    # time; loader tolerates today, EXE packaging consumer arrives in a
+    # follow-up PR).
     pe_company_name: Optional[str] = None
     pe_product_name: Optional[str] = None
     # Binary fingerprint (any type)
     sha256: Optional[str] = None
+    # ---- Detection rules ------------------------------------------------
+    # List of normalized detection rule dicts (see DETECTION_RULE_KINDS
+    # for the kind vocabulary and detection_rule_to_graph() for the
+    # Graph-payload conversion). For MSI packages the pipeline derives a
+    # ProductCode rule automatically from the MSI's metadata, so this
+    # field is normally left unset for type='msi'. For EXE packages,
+    # operators MUST supply at least one rule -- there's no MSI
+    # ProductCode to lean on and the synthetic registry rule
+    # PackagingAgent generates today is a poor stand-in.
+    detection_rules: Optional[list] = None
     # ---- Intune app-attribute overrides --------------------------------
     # All four are agnostic curated knowledge: same value across every
     # operator / tenant for a given installer. Belong in the baseline.

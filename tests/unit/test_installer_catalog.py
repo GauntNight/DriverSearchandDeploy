@@ -380,3 +380,242 @@ class TestLoadMergeOrder:
         entry = ic.load_catalog().by_id("7-zip")
         assert "ADDLOCAL=ALL" in entry.install_command_template
         assert "Local override" in entry.notes
+
+
+# ---------------------------------------------------------------------------
+# EXE schema additions: installer_family, detection_rules, helpers
+# ---------------------------------------------------------------------------
+
+class TestInstallerFamilySwitches:
+    """Stable mapping is load-bearing for EXE packaging: when an entry sets
+    installer_family but omits install_command_template, the family default
+    drives the silent-install string. A regression here ships installs with
+    the wrong switches (or none) and breaks every EXE deployment.
+    """
+
+    def test_every_family_has_a_switch_entry(self):
+        for fam in ic.INSTALLER_FAMILIES:
+            assert fam in ic.INSTALLER_FAMILY_SWITCHES, fam
+
+    def test_wrapped_families_have_no_direct_switches(self):
+        # wrapped_msi / wrapped_zip must surface as None so callers know to
+        # invoke a pre-stage extractor rather than running the EXE/ZIP
+        # directly with a guessed switch string.
+        assert ic.INSTALLER_FAMILY_SWITCHES['wrapped_msi'] is None
+        assert ic.INSTALLER_FAMILY_SWITCHES['wrapped_zip'] is None
+
+    def test_custom_family_returns_empty_string(self):
+        # 'custom' means "operator supplied install_command_template; do
+        # not append anything". Distinct from None (= no derivation).
+        assert ic.INSTALLER_FAMILY_SWITCHES['custom'] == ''
+
+    def test_known_family_defaults(self):
+        assert ic.default_silent_switches('inno_setup') == '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES'
+        assert ic.default_silent_switches('nsis') == '/S'
+        assert ic.default_silent_switches('msft_bootstrapper') == '/quiet /norestart'
+        assert ic.default_silent_switches('wix_burn') == '/quiet /norestart'
+        assert ic.default_silent_switches('msi') == '/qn /norestart'
+
+    def test_unknown_family_returns_none(self):
+        # None / typo / unknown: caller falls back to operator-supplied
+        # install_command_template rather than running a wrong command.
+        assert ic.default_silent_switches(None) is None
+        assert ic.default_silent_switches('') is None
+        assert ic.default_silent_switches('innosetup') is None  # typo
+
+
+class TestDetectionRuleToGraph:
+    """Catalog rule dicts must convert to Graph win32LobApp*Rule payloads
+    exactly. A bad mapping ships broken detection that lets every device
+    re-attempt the install forever (false negative), or marks every device
+    "installed" when nothing changed (false positive).
+    """
+
+    def test_msi_product_code_with_version_compare(self):
+        r = ic.detection_rule_to_graph({
+            'kind': 'msi_product_code',
+            'product_code': '{ABC}',
+            'operator': 'greaterThanOrEqual',
+            'version': '1.2.3',
+        })
+        assert r['@odata.type'] == '#microsoft.graph.win32LobAppProductCodeRule'
+        assert r['ruleType'] == 'detection'
+        assert r['productCode'] == '{ABC}'
+        assert r['productVersionOperator'] == 'greaterThanOrEqual'
+        assert r['productVersion'] == '1.2.3'
+
+    def test_msi_product_code_minimal(self):
+        r = ic.detection_rule_to_graph({'kind': 'msi_product_code', 'product_code': '{X}'})
+        assert r['productCode'] == '{X}'
+        assert r['productVersionOperator'] == 'notConfigured'
+        assert r['productVersion'] is None
+
+    def test_file_exists_with_file(self):
+        r = ic.detection_rule_to_graph({
+            'kind': 'file_exists',
+            'path': r'C:\Program Files\App',
+            'file': 'app.exe',
+        })
+        assert r['@odata.type'] == '#microsoft.graph.win32LobAppFileSystemRule'
+        assert r['operationType'] == 'exists'
+        assert r['path'] == r'C:\Program Files\App'
+        assert r['fileOrFolderName'] == 'app.exe'
+        assert r['check32BitOn64System'] is False
+
+    def test_file_exists_with_folder(self):
+        # Graph's fileOrFolderName carries either; we accept 'folder' as
+        # the YAML alias for readability when the operator means a dir.
+        r = ic.detection_rule_to_graph({
+            'kind': 'file_exists',
+            'path': r'C:\Program Files',
+            'folder': 'AppName',
+        })
+        assert r['fileOrFolderName'] == 'AppName'
+
+    def test_file_version_compare(self):
+        r = ic.detection_rule_to_graph({
+            'kind': 'file_version',
+            'path': r'C:\Program Files\App',
+            'file': 'app.exe',
+            'operator': 'greaterThanOrEqual',
+            'value': '1.0.0.0',
+        })
+        assert r['operationType'] == 'version'
+        assert r['operator'] == 'greaterThanOrEqual'
+        assert r['comparisonValue'] == '1.0.0.0'
+
+    def test_registry_exists(self):
+        r = ic.detection_rule_to_graph({
+            'kind': 'registry_exists',
+            'key': r'HKLM\Software\App',
+            'value_name': 'Installed',
+        })
+        assert r['@odata.type'] == '#microsoft.graph.win32LobAppRegistryRule'
+        assert r['operationType'] == 'exists'
+        assert r['keyPath'] == r'HKLM\Software\App'
+        assert r['valueName'] == 'Installed'
+
+    def test_registry_value_string_compare(self):
+        r = ic.detection_rule_to_graph({
+            'kind': 'registry_value',
+            'key': r'HKLM\Software\App',
+            'value_name': 'Channel',
+            'operator': 'equal',
+            'value': 'stable',
+        })
+        assert r['operationType'] == 'string'
+        assert r['comparisonValue'] == 'stable'
+
+    def test_registry_version_compare(self):
+        # The 90% case for EXE detection -- vendors put DisplayVersion under
+        # the standard Uninstall key. Inno Setup / NSIS / Microsoft
+        # bootstrappers all use this pattern.
+        r = ic.detection_rule_to_graph({
+            'kind': 'registry_version',
+            'key': r'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\App',
+            'value_name': 'DisplayVersion',
+            'operator': 'greaterThanOrEqual',
+            'value': '1.2.3',
+        })
+        assert r['operationType'] == 'version'
+        assert r['operator'] == 'greaterThanOrEqual'
+        assert r['comparisonValue'] == '1.2.3'
+
+    def test_check_32bit_on_64bit_flows_through(self):
+        r = ic.detection_rule_to_graph({
+            'kind': 'registry_exists',
+            'key': r'HKLM\Software\Wow6432Node\App',
+            'check_32bit_on_64bit': True,
+        })
+        assert r['check32BitOn64System'] is True
+
+    def test_requirement_rule_type_overrides_detection(self):
+        # Requirement rules use the same shapes as detection rules; only
+        # ruleType differs. Same converter, different rule_type kwarg.
+        r = ic.detection_rule_to_graph(
+            {'kind': 'file_exists', 'path': r'C:\\', 'file': 'x'},
+            rule_type='requirement',
+        )
+        assert r['ruleType'] == 'requirement'
+
+    def test_unknown_kind_raises(self):
+        with pytest.raises(ValueError, match='Unknown detection rule kind'):
+            ic.detection_rule_to_graph({'kind': 'magic_rule', 'foo': 'bar'})
+
+    def test_missing_kind_raises(self):
+        with pytest.raises(ValueError, match='Unknown detection rule kind'):
+            ic.detection_rule_to_graph({'product_code': '{X}'})
+
+
+class TestCatalogEntryExeFields:
+    def test_loads_installer_family_and_detection_rules(self, temp_catalog_paths):
+        baseline, _local = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [{
+                'id': 'notepad-plus-plus',
+                'type': 'exe',
+                'installer_family': 'nsis',
+                'pe_company_name': 'Notepad++ Team',
+                'pe_product_name': 'Notepad++',
+                'install_command_template': '{installer_filename} /S',
+                'uninstall_command_template': r'"C:\Program Files\Notepad++\uninstall.exe" /S',
+                'detection_rules': [
+                    {
+                        'kind': 'registry_version',
+                        'key': r'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\Notepad++',
+                        'value_name': 'DisplayVersion',
+                        'operator': 'greaterThanOrEqual',
+                        'value': '8.0.0',
+                    }
+                ],
+            }],
+        })
+        e = ic.load_catalog().by_id('notepad-plus-plus')
+        assert e.type == 'exe'
+        assert e.installer_family == 'nsis'
+        assert e.pe_company_name == 'Notepad++ Team'
+        assert e.pe_product_name == 'Notepad++'
+        assert isinstance(e.detection_rules, list)
+        assert len(e.detection_rules) == 1
+        assert e.detection_rules[0]['kind'] == 'registry_version'
+
+    def test_existing_msi_entry_loads_without_new_fields(self, temp_catalog_paths):
+        # New fields are all optional. A pre-existing MSI entry that
+        # predates this schema bump must continue to load cleanly.
+        baseline, _local = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [{
+                'id': '7-zip', 'type': 'msi',
+                'install_command_template': 'msiexec /i {installer_filename} /qn /norestart',
+            }],
+        })
+        e = ic.load_catalog().by_id('7-zip')
+        assert e.installer_family is None
+        assert e.detection_rules is None
+
+    def test_round_trip_through_local_overlay_write(self, temp_catalog_paths):
+        # Adding an EXE entry to the overlay must preserve the new fields
+        # across a write+read cycle. _write_local strips empty values, so
+        # we verify detection_rules with content survives.
+        _baseline, local = temp_catalog_paths
+        _write_yaml(local, {
+            'version': 1,
+            'entries': [{
+                'id': 'demo',
+                'type': 'exe',
+                'installer_family': 'inno_setup',
+                'install_command_template': '{installer_filename} /VERYSILENT',
+                'detection_rules': [{'kind': 'file_exists', 'path': r'C:\App', 'folder': 'App'}],
+            }],
+        })
+        # record_use writes the overlay back out -- if our dataclass
+        # serialization loses installer_family or detection_rules, the
+        # next load shows it missing.
+        ic.record_use('demo')
+        reloaded = ic.load_catalog().by_id('demo')
+        assert reloaded.installer_family == 'inno_setup'
+        assert reloaded.detection_rules == [
+            {'kind': 'file_exists', 'path': r'C:\App', 'folder': 'App'}
+        ]
