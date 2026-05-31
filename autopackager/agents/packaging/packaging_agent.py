@@ -404,6 +404,33 @@ exit 0
             package_metadata['msi_product_code'] = msi_meta.get('product_code')
             package_metadata['msi_upgrade_code'] = msi_meta.get('upgrade_code')
             package_metadata['msi_product_version'] = msi_meta.get('product_version')
+            # Additional MSI fields used by DeploymentAgent to populate
+            # informationUrl / notes / largeIcon in the Intune app payload.
+            # These come straight from the MSI's own Property table so a
+            # newly-packaged app shows up in Intune with the vendor's help
+            # link, a short description, and an icon -- without operator
+            # configuration. The catalog can still override any of these.
+            all_props = msi_meta.get('all_properties') or {}
+            help_link = all_props.get('ARPHELPLINK') or all_props.get('ARPURLINFOABOUT')
+            if help_link:
+                package_metadata['msi_help_link'] = help_link
+            subject = msi_meta.get('subject') or all_props.get('ARPCOMMENTS')
+            if subject:
+                package_metadata['msi_subject'] = subject
+            # Extract the MSI's product icon (when it ships as a usable image
+            # rather than a PE with embedded icon resources). Stored base64 in
+            # the package row so DeploymentAgent doesn't have to re-read the
+            # MSI at publish time.
+            try:
+                from autopackager.utils.msi_metadata import read_msi_icon
+                icon_result = read_msi_icon(installer_path)
+                if icon_result:
+                    import base64
+                    mime, blob = icon_result
+                    package_metadata['msi_icon_mime'] = mime
+                    package_metadata['msi_icon_b64'] = base64.b64encode(blob).decode('ascii')
+            except Exception as icon_exc:  # noqa: BLE001 -- icon extraction is opportunistic
+                logger.debug("MSI icon extraction skipped", error=str(icon_exc))
 
         with db_session_scope() as session:
             package = Package(

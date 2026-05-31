@@ -16,9 +16,11 @@
 # BASELINE vs OVERLAY -- read before editing this file.
 #
 # This baseline carries only environment-AGNOSTIC fields: the MSI / EXE's own
-# identity (UpgradeCode, ProductCode, ProductName, Publisher) and the silent
-# install / uninstall commands that derive from it. Those values are the same
-# in every tenant, every operator, every machine.
+# identity (UpgradeCode, ProductCode, ProductName, Publisher), the silent
+# install / uninstall commands that derive from it, AND curated Intune
+# app-attribute overrides (information_url, description, categories,
+# min_os_version, icon_b64). Those values are the same in every tenant,
+# every operator, every machine.
 #
 # Environment-SPECIFIC fields -- `first_seen`, `last_used`, `use_count`, and
 # `verified_versions` (which carries `verified_intune_app_id`, a tenant-bound
@@ -29,6 +31,22 @@
 #
 # To promote a useful local entry to this baseline, copy the agnostic fields
 # only (drop usage counts and verified_versions) and open a PR.
+#
+# Intune app-attribute override fields (all optional; each falls back to a
+# sensible MSI-derived default when unset):
+#   information_url    -- "Help and support" URL shown in the Intune portal.
+#                         Defaults to MSI's ARPHELPLINK / ARPURLINFOABOUT.
+#   description        -- Short app description (portal Notes field).
+#                         Defaults to the MSI's Subject summary property.
+#   categories         -- List of Intune mobileAppCategory names attached
+#                         to the published app, e.g. ["Productivity"].
+#                         Empty list / unset = no categories.
+#   min_os_version     -- Required Windows release, e.g. "1607", "1809",
+#                         "22H2". Defaults to "1607" (Win10 1607+).
+#   icon_b64           -- Base64-encoded image bytes for the app icon.
+#                         Use this when the MSI ships an icon as a PE
+#                         resource (the pure-Python extractor can't reach
+#                         those) and you want a real icon in the portal.
 
 version: 1
 entries:
@@ -40,4 +58,8 @@ entries:
     publisher: "Igor Pavlov"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
     uninstall_command_template: "msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart"
+    information_url: "https://www.7-zip.org/"
+    description: "Free open-source file archiver with a high compression ratio."
+    categories: ["Productivity"]
+    min_os_version: "1607"
     notes: "Standard MSI silent install. Uninstall via ProductCode."

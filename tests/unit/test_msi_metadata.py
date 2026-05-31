@@ -17,6 +17,8 @@ from autopackager.utils.msi_metadata import (
     resolve_local_path,
     decode_streamname,
     read_msi_metadata,
+    read_msi_icon,
+    _detect_image_mime,
     _read_property_table,
 )
 
@@ -371,6 +373,256 @@ class TestEndToEndMSIParsing(unittest.TestCase):
         # Sanity: none of the sub-storage's poison values bled through.
         self.assertNotIn('WRONG', meta.product_name)
         self.assertNotIn('00000000-0000-0000-0000-000000000000', meta.product_code)
+
+
+class TestImageMimeSniff(unittest.TestCase):
+    """``_detect_image_mime`` keeps Intune's ``largeIcon`` from being fed bytes
+    Intune can't display. Specifically: MSIs that ship icons as PE resources
+    (``MZ`` header) must NOT be passed through as raw bytes -- the portal
+    can't render them and they'd be silently broken.
+    """
+
+    def test_png(self):
+        self.assertEqual(_detect_image_mime(b'\x89PNG\r\n\x1a\n' + b'\x00' * 10), 'image/png')
+
+    def test_jpeg(self):
+        self.assertEqual(_detect_image_mime(b'\xff\xd8\xff\xe0' + b'\x00' * 10), 'image/jpeg')
+
+    def test_gif(self):
+        self.assertEqual(_detect_image_mime(b'GIF89a' + b'\x00' * 10), 'image/gif')
+
+    def test_ico(self):
+        self.assertEqual(_detect_image_mime(b'\x00\x00\x01\x00' + b'\x00' * 10), 'image/x-icon')
+
+    def test_pe_rejected(self):
+        # PE / .exe -- MSIs that ship icons as PE resources fall through here.
+        self.assertIsNone(_detect_image_mime(b'MZ\x90\x00' + b'\x00' * 10))
+
+    def test_too_short(self):
+        self.assertIsNone(_detect_image_mime(b''))
+        self.assertIsNone(_detect_image_mime(b'\x89'))
+
+    def test_unknown(self):
+        self.assertIsNone(_detect_image_mime(b'\x42\x43\x44\x45'))
+
+
+class TestReadMsiIcon(unittest.TestCase):
+    """Icon extraction reads a stream named ``Icon.<ARPPRODUCTICON-value>``
+    from the root storage and returns ``(mime, bytes)`` when the bytes
+    sniff as a usable image.
+    """
+
+    def _build_msi_with_icon(self, icon_name: str, icon_bytes: bytes,
+                             stream_name: str = None):
+        """Build a synthetic MSI carrying an Icon-table stream.
+
+        ``stream_name`` defaults to ``Icon.<icon_name>`` (what MSIs actually
+        produce). Override to test mismatched / corrupt cases.
+        """
+        if stream_name is None:
+            stream_name = f'Icon.{icon_name}'
+        # Use a private helper to build a minimal MSI with extra streams
+        # alongside Property/_StringPool/_StringData. We reuse
+        # _build_minimal_msi's machinery by hand-crafting a tiny MSI here so
+        # we don't depend on it learning about Icon streams.
+        from math import ceil
+        import struct
+
+        props = {'ARPPRODUCTICON': icon_name, 'ProductName': 'IconTest'}
+        prop_stream, pool, sdata = _build_property_table_blob(props)
+        streams = {'Property': prop_stream, '_StringPool': pool,
+                   '_StringData': sdata, stream_name: icon_bytes}
+
+        sectors, fat = [], []
+
+        def add_chain(data):
+            if not data:
+                return _ENDOFCHAIN
+            nsec = ceil(len(data) / _SECTOR)
+            start = len(sectors)
+            for i in range(nsec):
+                sectors.append(data[i * _SECTOR:(i + 1) * _SECTOR].ljust(_SECTOR, b'\x00'))
+                fat.append(0)
+            for i in range(nsec):
+                fat[start + i] = (start + i + 1) if i < nsec - 1 else _ENDOFCHAIN
+            return start
+
+        mini_streams = {k: v for k, v in streams.items() if len(v) < _MINI_CUTOFF}
+        big_streams = {k: v for k, v in streams.items() if len(v) >= _MINI_CUTOFF}
+
+        ministream, minifat, mini_start = b'', [], {}
+        for name, data in mini_streams.items():
+            msec = ceil(len(data) / _MINI)
+            start = len(minifat)
+            mini_start[name] = start
+            for i in range(msec):
+                minifat.append((start + i + 1) if i < msec - 1 else _ENDOFCHAIN)
+            ministream += data.ljust(msec * _MINI, b'\x00')
+
+        big_start = {name: add_chain(data) for name, data in big_streams.items()}
+        cont_start = add_chain(ministream) if ministream else _ENDOFCHAIN
+
+        if minifat:
+            minifat_bytes = struct.pack('<%dI' % len(minifat), *minifat)
+            minifat_start = add_chain(minifat_bytes)
+            num_minifat = ceil(len(minifat_bytes) / _SECTOR)
+        else:
+            minifat_start, num_minifat = _ENDOFCHAIN, 0
+
+        def dirent(name, etype, start, size, left=_NOSTREAM, right=_NOSTREAM, child=_NOSTREAM):
+            b = bytearray(128)
+            nm = name.encode('utf-16-le')
+            b[0:len(nm)] = nm
+            struct.pack_into('<H', b, 0x40, len(nm) + 2)
+            b[0x42] = etype
+            b[0x43] = 1
+            struct.pack_into('<I', b, 0x44, left)
+            struct.pack_into('<I', b, 0x48, right)
+            struct.pack_into('<I', b, 0x4C, child)
+            struct.pack_into('<I', b, 0x74, 0 if start == _ENDOFCHAIN else start)
+            struct.pack_into('<Q', b, 0x78, size)
+            return bytes(b)
+
+        items = list(streams.items())
+        dir_bytes = dirent('Root Entry', 5, cont_start, len(ministream), child=1)
+        for idx, (name, data) in enumerate(items):
+            s = big_start[name] if name in big_start else mini_start[name]
+            right = (idx + 2) if idx + 1 < len(items) else _NOSTREAM
+            dir_bytes += dirent(name, 2, s, len(data), right=right)
+        if len(dir_bytes) % _SECTOR:
+            dir_bytes += b'\x00' * (_SECTOR - len(dir_bytes) % _SECTOR)
+        dir_start = add_chain(dir_bytes)
+
+        D = len(sectors)
+        nfat = 1
+        while ceil((D + nfat) / (_SECTOR // 4)) > nfat:
+            nfat += 1
+        fat.extend([_FREESECT] * (D + nfat - len(fat)))
+        fat_indices = list(range(D, D + nfat))
+        for idx in fat_indices:
+            fat[idx] = 0xFFFFFFFD  # FATSECT
+        fat_padded = fat + [_FREESECT] * (nfat * (_SECTOR // 4) - len(fat))
+        fat_bytes = struct.pack('<%dI' % len(fat_padded), *fat_padded)
+        for i in range(nfat):
+            sectors.append(fat_bytes[i * _SECTOR:(i + 1) * _SECTOR])
+
+        hdr = bytearray(_SECTOR)
+        hdr[0:8] = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
+        struct.pack_into('<H', hdr, 0x1A, 0x0003)
+        struct.pack_into('<H', hdr, 0x1C, 0xFFFE)
+        struct.pack_into('<H', hdr, 0x1E, 9)
+        struct.pack_into('<H', hdr, 0x20, 6)
+        struct.pack_into('<I', hdr, 0x2C, nfat)
+        struct.pack_into('<I', hdr, 0x30, dir_start)
+        struct.pack_into('<I', hdr, 0x38, _MINI_CUTOFF)
+        struct.pack_into('<I', hdr, 0x3C, minifat_start)
+        struct.pack_into('<I', hdr, 0x40, num_minifat)
+        struct.pack_into('<I', hdr, 0x44, _ENDOFCHAIN)
+        struct.pack_into('<I', hdr, 0x48, 0)
+        difat = fat_indices + [_FREESECT] * (109 - len(fat_indices))
+        struct.pack_into('<109I', hdr, 0x4C, *difat[:109])
+        return bytes(hdr) + b''.join(sectors)
+
+    def _write_tmp(self, data: bytes) -> str:
+        fd, path = tempfile.mkstemp(suffix='.msi')
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        return path
+
+    def test_extracts_embedded_png_from_ico_container(self):
+        """Modern .ico files embed PNG payloads for larger sizes. Intune
+        rejects raw ICO with "Icon in invalid format.", so the extractor
+        must dig the PNG out of the ICO directory and return it as
+        ``image/png`` -- otherwise every PATCH carrying an MSI-extracted
+        icon fails at the Graph boundary.
+        """
+        import struct
+        # Minimum-valid PNG: signature + IHDR chunk (width=128, height=128,
+        # rest zeros) + 100 bytes of filler payload. The validator only
+        # parses the IHDR width/height; the rest can be junk.
+        ihdr_data = struct.pack('>IIBBBBB', 128, 128, 8, 6, 0, 0, 0)
+        png = (
+            b'\x89PNG\r\n\x1a\n'              # signature
+            + struct.pack('>I', 13)            # IHDR chunk length
+            + b'IHDR' + ihdr_data              # IHDR chunk
+            + b'\x00\x00\x00\x00'              # IHDR CRC (junk, validator doesn't check)
+            + b'P' * 100                        # trailing data
+        )
+        # ICO header: reserved=0, type=1 (icon), count=1
+        # 1 ICONDIRENTRY: width=128, height=128, colors=0, reserved=0, planes=1,
+        # bitcount=32, bytesInRes=len(png), offset=22 (6-byte header + 16-byte entry)
+        ico = (
+            b'\x00\x00\x01\x00'             # reserved, type=icon
+            + struct.pack('<H', 1)          # count
+            + b'\x80\x80\x00\x00'           # width=128, height=128, colors=0, reserved=0
+            + struct.pack('<HH', 1, 32)     # planes=1, bitcount=32
+            + struct.pack('<II', len(png), 22)  # bytesInRes, imageOffset
+            + png
+        )
+        data = self._build_msi_with_icon('test.ico', ico)
+        path = self._write_tmp(data)
+        try:
+            result = read_msi_icon(path)
+        finally:
+            os.unlink(path)
+        self.assertIsNotNone(result)
+        mime, blob = result
+        self.assertEqual(mime, 'image/png')
+        self.assertEqual(blob, png)
+
+    def test_returns_none_when_ico_carries_only_bmp(self):
+        """ICO containers that only ship BMP payloads can't be Intune-shipped
+        without an image-encoding library. Returning None lets the operator
+        override via the catalog's ``icon_b64`` field instead of failing
+        Graph with the BMP bytes.
+        """
+        import struct
+        bmp_payload = b'BM' + b'B' * 200  # not a PNG, looks like a BMP header
+        ico = (
+            b'\x00\x00\x01\x00'
+            + struct.pack('<H', 1)
+            + b'\x40\x40\x00\x00'
+            + struct.pack('<HH', 1, 32)
+            + struct.pack('<II', len(bmp_payload), 22)
+            + bmp_payload
+        )
+        data = self._build_msi_with_icon('test.ico', ico)
+        path = self._write_tmp(data)
+        try:
+            self.assertIsNone(read_msi_icon(path))
+        finally:
+            os.unlink(path)
+
+    def test_returns_none_when_arpproducticon_missing(self):
+        from math import ceil
+        # Synthetic MSI without ARPPRODUCTICON -- no icon expected
+        from tests.unit.test_msi_metadata import _build_minimal_msi
+        data = _build_minimal_msi({'ProductName': 'NoIconHere'})
+        path = self._write_tmp(data)
+        try:
+            self.assertIsNone(read_msi_icon(path))
+        finally:
+            os.unlink(path)
+
+    def test_returns_none_when_stream_is_pe(self):
+        # ARPPRODUCTICON points at a stream containing PE bytes (MSIs in the
+        # wild do this -- KeePass and Slack are real examples). Extractor
+        # should refuse to ship PE bytes through as largeIcon.
+        pe = b'MZ\x90\x00' + b'\x00' * 200
+        data = self._build_msi_with_icon('_abc.exe', pe)
+        path = self._write_tmp(data)
+        try:
+            self.assertIsNone(read_msi_icon(path))
+        finally:
+            os.unlink(path)
+
+    def test_returns_none_on_unreadable_msi(self):
+        # Random non-MSI bytes shouldn't crash -- just return None.
+        path = self._write_tmp(b'not an MSI at all')
+        try:
+            self.assertIsNone(read_msi_icon(path))
+        finally:
+            os.unlink(path)
 
 
 class TestParseInstallCommand(unittest.TestCase):

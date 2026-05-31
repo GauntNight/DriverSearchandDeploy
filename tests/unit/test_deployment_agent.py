@@ -247,6 +247,161 @@ class TestDeploymentAgentCore(unittest.TestCase):
         app_data = self.agent._prepare_app_data(self.package, self.job)
         self.assertEqual(app_data['msiInformation']['packageType'], 'perUser')
 
+    def test_prepare_app_data_always_includes_standard_msi_return_codes(self):
+        """Without returnCodes, Intune marks every non-zero MSI exit as
+        failure -- including 3010 (reboot required, install succeeded) and
+        1641 (install succeeded, reboot initiated). This sets the standard
+        Windows Installer success / reboot / retry codes that map every
+        successful real-world exit to a non-failure state.
+        """
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        codes = {(c['returnCode'], c['type']) for c in app_data['returnCodes']}
+        self.assertIn((0, 'success'), codes)
+        self.assertIn((1707, 'success'), codes)
+        self.assertIn((3010, 'softReboot'), codes)
+        self.assertIn((1641, 'hardReboot'), codes)
+        self.assertIn((1618, 'retry'), codes)
+
+    def test_prepare_app_data_min_os_defaults_to_1607(self):
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertEqual(app_data['minimumSupportedOperatingSystem'], {'v10_1607': True})
+
+    @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
+    def test_prepare_app_data_min_os_from_catalog_override(self, mock_load):
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+        self.package.package_metadata = {
+            'msi_product_code': '{X}', 'msi_product_version': '1.0',
+        }
+        mock_load.return_value = Catalog(entries=[CatalogEntry(
+            id='x', type='msi', install_command_template='',
+            product_code='{X}', min_os_version='22H2',
+        )])
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertEqual(app_data['minimumSupportedOperatingSystem'], {'v10_22H2': True})
+
+    def test_prepare_app_data_information_url_from_msi_help_link(self):
+        """When the catalog has no override and the driver vendor map yields
+        nothing, the MSI's ARPHELPLINK is the right informationUrl source.
+        """
+        self.package.package_metadata = {'msi_help_link': 'https://example.com/help'}
+        self.job.vendor = 'OperatorBoughtIt'  # not Dell/HP/Lenovo
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertEqual(app_data['informationUrl'], 'https://example.com/help')
+
+    @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
+    def test_prepare_app_data_information_url_catalog_wins_over_msi(self, mock_load):
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+        self.package.package_metadata = {
+            'msi_product_code': '{X}', 'msi_product_version': '1.0',
+            'msi_help_link': 'https://msi-default.example.com',
+        }
+        mock_load.return_value = Catalog(entries=[CatalogEntry(
+            id='x', type='msi', install_command_template='',
+            product_code='{X}', information_url='https://curated.example.com',
+        )])
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertEqual(app_data['informationUrl'], 'https://curated.example.com')
+
+    def test_prepare_app_data_notes_includes_msi_subject(self):
+        """MSI's Subject summary property is the natural app-description
+        source when the operator hasn't supplied one via the catalog.
+        """
+        self.package.package_metadata = {'msi_subject': 'A great app'}
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertIn('A great app', app_data['notes'])
+
+    @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
+    def test_prepare_app_data_notes_catalog_description_wins(self, mock_load):
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+        self.package.package_metadata = {
+            'msi_product_code': '{X}', 'msi_product_version': '1.0',
+            'msi_subject': 'Generic MSI subject',
+        }
+        mock_load.return_value = Catalog(entries=[CatalogEntry(
+            id='x', type='msi', install_command_template='',
+            product_code='{X}', description='Curated description',
+        )])
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertIn('Curated description', app_data['notes'])
+        self.assertNotIn('Generic MSI subject', app_data['notes'])
+
+    def test_prepare_app_data_includes_large_icon_from_msi(self):
+        """ICO/PNG/JPG/GIF bytes extracted by PackagingAgent flow through as
+        Intune's largeIcon mimeContent block. Without this, the portal shows
+        a generic placeholder for every app.
+        """
+        import base64
+        ico_bytes = b'\x00\x00\x01\x00' + b'\x00' * 100  # plausible ICO header
+        self.package.package_metadata = {
+            'msi_icon_mime': 'image/x-icon',
+            'msi_icon_b64': base64.b64encode(ico_bytes).decode('ascii'),
+        }
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertIn('largeIcon', app_data)
+        self.assertEqual(app_data['largeIcon']['type'], 'image/x-icon')
+        self.assertEqual(
+            base64.b64decode(app_data['largeIcon']['value']), ico_bytes
+        )
+
+    @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
+    def test_prepare_app_data_catalog_icon_overrides_msi_extracted(self, mock_load):
+        import base64
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+        msi_ico = b'\x00\x00\x01\x00' + b'M' * 50  # MSI-extracted ICO
+        catalog_png = b'\x89PNG\r\n\x1a\n' + b'C' * 50  # catalog override PNG
+        self.package.package_metadata = {
+            'msi_product_code': '{X}', 'msi_product_version': '1.0',
+            'msi_icon_mime': 'image/x-icon',
+            'msi_icon_b64': base64.b64encode(msi_ico).decode('ascii'),
+        }
+        mock_load.return_value = Catalog(entries=[CatalogEntry(
+            id='x', type='msi', install_command_template='',
+            product_code='{X}',
+            icon_b64=base64.b64encode(catalog_png).decode('ascii'),
+        )])
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        # Catalog override wins, and mime is re-sniffed from the catalog bytes
+        # (not blindly taken from the MSI metadata hint).
+        self.assertEqual(app_data['largeIcon']['type'], 'image/png')
+        self.assertEqual(
+            base64.b64decode(app_data['largeIcon']['value']), catalog_png
+        )
+
+    def test_assign_categories_resolves_names_to_refs(self):
+        graph_client = Mock()
+        graph_client.get.return_value = {
+            'value': [
+                {'id': 'cat-prod', 'displayName': 'Productivity'},
+                {'id': 'cat-biz',  'displayName': 'Business'},
+            ]
+        }
+        self.agent._assign_categories(graph_client, 'app-123', ['Productivity', 'Business'])
+        # Two POSTs, both to the $ref endpoint, with the right category IDs
+        self.assertEqual(graph_client.post.call_count, 2)
+        ids_seen = []
+        for call in graph_client.post.call_args_list:
+            endpoint = call.args[0] if call.args else call.kwargs.get('endpoint', '')
+            self.assertEqual(endpoint, 'deviceAppManagement/mobileApps/app-123/categories/$ref')
+            ref = call.kwargs.get('data') or (call.args[1] if len(call.args) > 1 else {})
+            ids_seen.append(ref['@odata.id'].split('/')[-1])
+        self.assertEqual(set(ids_seen), {'cat-prod', 'cat-biz'})
+
+    def test_assign_categories_skips_unknown_category(self):
+        graph_client = Mock()
+        graph_client.get.return_value = {
+            'value': [{'id': 'cat-prod', 'displayName': 'Productivity'}]
+        }
+        self.agent._assign_categories(graph_client, 'app-123',
+                                      ['Productivity', 'NotARealCategory'])
+        # Only the resolved one POSTs.
+        self.assertEqual(graph_client.post.call_count, 1)
+
+    def test_assign_categories_noop_on_empty_list(self):
+        graph_client = Mock()
+        self.agent._assign_categories(graph_client, 'app-123', [])
+        graph_client.get.assert_not_called()
+        graph_client.post.assert_not_called()
+
     def test_prepare_app_data_msi_information_falls_back_upgrade_to_product_code(self):
         """If the MSI metadata reader didn't recover an UpgradeCode (some
         MSIs legitimately lack one; some parser bugs miss it), fall back to
