@@ -5,6 +5,7 @@ AutoPackager CLI - Command Line Interface for AutoPackager
 
 import re
 import sys
+from typing import Optional
 
 import click
 from rich.console import Console
@@ -87,17 +88,25 @@ def create_driver_job(vendor, model, driver_type, current_version):
         raise click.Abort()
 
 
+def _installer_is_exe(installer_path: Optional[str], download_url: Optional[str]) -> bool:
+    """Return True when the operator's --installer-path / --download-url
+    points at an EXE (case-insensitive extension match). MSI is the default
+    for everything else."""
+    src = installer_path or download_url or ''
+    return src.lower().split('?')[0].endswith('.exe')
+
+
 @cli.command('create-software-job')
 @click.option('--install-command',
-              help='MSI install command, e.g. "msiexec /i 7z2408-x64.msi /qn /norestart". '
-                   'If omitted, AutoPackager will look the installer up in the catalog '
-                   '(autopackager/data/installer_catalog.yaml plus the local overlay) and '
-                   'fall back to interactive prompt if no match is found.')
+              help='Install command. For MSI, e.g. "msiexec /i 7z2408-x64.msi /qn /norestart". '
+                   'For EXE, the silent-install command, e.g. "Git-2.46.0-64-bit.exe /VERYSILENT". '
+                   'If omitted, AutoPackager looks the installer up in the catalog '
+                   '(autopackager/data/installer_catalog.yaml plus the local overlay).')
 @click.option('--installer-path', type=click.Path(exists=True, dir_okay=False),
-              help='Local path to the MSI (its metadata is read to auto-fill the package)')
-@click.option('--download-url', help='URL to download the MSI from during packaging')
-@click.option('--name', help='Override the product/display name (defaults to MSI ProductName)')
-@click.option('--publisher', help='Override the publisher (defaults to MSI Manufacturer)')
+              help='Local path to the MSI or EXE (metadata is read to auto-fill the package)')
+@click.option('--download-url', help='URL to download the installer from during packaging')
+@click.option('--name', help='Override the product/display name')
+@click.option('--publisher', help='Override the publisher')
 @click.option('--current-version', help='Currently installed version, if any')
 @click.option('--no-assignment', is_flag=True, default=False,
               help='Publish the app to Intune without assigning it to any ring '
@@ -107,27 +116,36 @@ def create_driver_job(vendor, model, driver_type, current_version):
                    '(the local overlay). The committed baseline is never modified at runtime.')
 def create_software_job(install_command, installer_path, download_url, name, publisher,
                         current_version, no_assignment, no_save_catalog):
-    """Create an MSI software packaging job from an install command + MSI metadata.
+    """Create a software packaging job for an MSI or EXE installer.
 
-    Provide the MSI (via --installer-path and/or --download-url) and its install
-    command; the factory reads the MSI metadata to fill in the Intune package,
-    builds the deployment, and assigns deployment rings automatically.
+    MSI path: provide the MSI via --installer-path and/or --download-url. The
+    factory reads MSI metadata to auto-fill the Intune package, derives the
+    detection rule from the ProductCode, and assigns deployment rings.
 
-    If --install-command is omitted, AutoPackager consults the installer catalog
-    by UpgradeCode/ProductCode/ProductName and uses the recorded command. On a
-    catalog miss, you'll be prompted for the command interactively. Successful
-    jobs auto-append to the local overlay (use --no-save-catalog to skip).
+    EXE path: provide the EXE via --installer-path and/or --download-url. The
+    factory reads PE VS_VERSIONINFO and looks the binary up in the installer
+    catalog (by SHA-256, then by CompanyName + ProductName). The catalog
+    entry MUST supply detection_rules -- the EXE pipeline refuses to publish
+    without them (Intune treats apps with no detection rule as never-installed
+    and re-runs the install on every check-in).
     """
+    if not installer_path and not download_url:
+        console.print("[bold red]✗[/bold red] Provide --installer-path and/or --download-url")
+        raise click.Abort()
+
+    if _installer_is_exe(installer_path, download_url):
+        _create_exe_software_job(
+            install_command, installer_path, download_url,
+            name, publisher, current_version, no_assignment, no_save_catalog,
+        )
+        return
+
     from autopackager.utils.msi_metadata import (
         read_msi_metadata,
         parse_install_command,
         MSIParseError,
     )
     from autopackager.utils import installer_catalog
-
-    if not installer_path and not download_url:
-        console.print("[bold red]✗[/bold red] Provide --installer-path and/or --download-url")
-        raise click.Abort()
 
     console.print("[bold blue]Creating MSI software job...[/bold blue]")
 
@@ -245,6 +263,197 @@ def create_software_job(install_command, installer_path, download_url, name, pub
     except Exception as e:
         console.print(f"[bold red]✗[/bold red] Failed to create job: {str(e)}")
         raise click.Abort()
+
+
+def _create_exe_software_job(install_command, installer_path, download_url, name,
+                             publisher, current_version, no_assignment, no_save_catalog):
+    """EXE-specific create-software-job flow. Called from create_software_job
+    when the installer extension is .exe.
+
+    EXE differs from MSI in two important ways:
+      1. There's no MSI ProductCode to lean on for the detection rule, so
+         we require a catalog entry whose detection_rules list is non-empty.
+         Refusing to publish without rules is deliberate -- an Intune Win32
+         app with no detection rule is treated as never-installed and the
+         IME re-runs the install on every device check-in.
+      2. The silent-install command varies per installer family (NSIS '/S',
+         Inno Setup '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES', Microsoft
+         bootstrappers '/quiet /norestart'). The catalog's installer_family
+         drives the default; --install-command overrides per-run.
+    """
+    from autopackager.utils.pe_metadata import read_pe_metadata, sha256_file, PEParseError
+    from autopackager.utils import installer_catalog
+
+    console.print("[bold blue]Creating EXE software job...[/bold blue]")
+
+    pe_meta = None
+    pe_sha256 = None
+    if installer_path:
+        try:
+            metadata = read_pe_metadata(installer_path)
+            pe_meta = metadata.to_dict()
+            pe_sha256 = sha256_file(installer_path)
+            console.print("\n[bold]Detected PE metadata:[/bold]")
+            console.print(f"  Company Name:     {metadata.company_name or 'N/A'}")
+            console.print(f"  Product Name:     {metadata.product_name or 'N/A'}")
+            console.print(f"  Product Version:  {metadata.product_version or 'N/A'}")
+            console.print(f"  File Version:     {metadata.file_version or 'N/A'}")
+            console.print(f"  Original Name:    {metadata.original_filename or 'N/A'}")
+            console.print(f"  SHA-256:          {pe_sha256[:16]}...")
+        except PEParseError as e:
+            console.print(f"[yellow]⚠[/yellow] Could not read PE metadata: {e}")
+
+    catalog = installer_catalog.load_catalog()
+    catalog_entry = catalog.match_exe(pe_metadata=pe_meta, sha256=pe_sha256)
+
+    if not catalog_entry:
+        console.print(
+            "\n[bold red]✗ No catalog entry matched this EXE.[/bold red]\n"
+            "EXE installers require a catalog entry with detection_rules so the\n"
+            "Intune Win32 app has a valid detection rule. Add an entry to\n"
+            "[cyan]autopackager/data/installer_catalog.yaml[/cyan] (baseline, shared)\n"
+            "or [cyan]data/installer_catalog.local.yaml[/cyan] (tenant-only) with at\n"
+            "least: type: exe, installer_family, install_command_template,\n"
+            "pe_company_name / pe_product_name (for lookup), and detection_rules.\n"
+            "See the Notepad++ baseline entry for a worked example."
+        )
+        raise click.Abort()
+
+    if not catalog_entry.detection_rules:
+        console.print(
+            f"\n[bold red]✗ Catalog entry '{catalog_entry.id}' has no "
+            "detection_rules.[/bold red]\n"
+            "EXE Win32 apps with no detection rule are re-installed by Intune on\n"
+            "every device check-in (the IME has no way to tell the app is\n"
+            "already there). Add at least one rule -- the 90% case is a\n"
+            "registry_version check against the Uninstall key DisplayVersion.\n"
+            "See the Notepad++ baseline entry for a worked example."
+        )
+        raise click.Abort()
+
+    console.print(
+        f"\n[bold green]Catalog hit:[/bold green] {catalog_entry.id} "
+        f"(used {catalog_entry.use_count}x, last {catalog_entry.last_used or 'never'})"
+    )
+    console.print(f"  Family:           {catalog_entry.installer_family or 'unknown'}")
+    console.print(f"  Detection rules:  {len(catalog_entry.detection_rules)} rule(s)")
+
+    installer_filename = (
+        Path(installer_path).name if installer_path
+        else Path(download_url).name if download_url else 'installer.exe'
+    )
+
+    if not install_command:
+        install_command = catalog_entry.render_install_command(installer_filename)
+    console.print(f"  Install command:  [cyan]{install_command}[/cyan]")
+
+    product_name = name or (pe_meta or {}).get('product_name')
+    if not product_name:
+        console.print("[bold red]✗[/bold red] Could not determine product name; pass --name")
+        raise click.Abort()
+    vendor = publisher or (pe_meta or {}).get('company_name') or 'Unknown'
+    target_version = (pe_meta or {}).get('product_version') or (pe_meta or {}).get('file_version')
+
+    installer_source = download_url or str(Path(installer_path).resolve())
+    job_metadata = {
+        'install_command': install_command,
+        'download_url': installer_source,
+        'installer_source': installer_source,
+        'catalog_entry_id': catalog_entry.id,
+    }
+    if target_version:
+        job_metadata['target_version'] = target_version
+    if pe_meta:
+        job_metadata['exe_metadata'] = pe_meta
+    if pe_sha256:
+        job_metadata['sha256'] = pe_sha256
+    if no_assignment:
+        job_metadata['no_assignment'] = True
+
+    try:
+        result = create_packaging_job.delay(
+            job_type=JobType.NEW_SOFTWARE.value,
+            software_title=product_name,
+            vendor=vendor,
+            current_version=current_version,
+            metadata=job_metadata,
+        )
+        console.print(f"\n[bold green]✓[/bold green] EXE job created successfully")
+        console.print(f"  Product: {product_name}")
+        console.print(f"  Vendor:  {vendor}")
+        console.print(f"  Version: {target_version or 'unknown'}")
+        console.print(f"  Task ID: {result.id}")
+        console.print(f"\nUse 'autopackager jobs list' to check status")
+
+        # Bump catalog use_count. Don't auto-add brand-new EXEs to the
+        # overlay -- that creates entries without detection_rules, which
+        # this CLI just refused to enqueue. Operator adds the catalog
+        # entry first (with rules), then re-runs.
+        if not no_save_catalog:
+            try:
+                installer_catalog.record_use(catalog_entry.id)
+                console.print(f"  [dim]Catalog: bumped use_count for '{catalog_entry.id}'[/dim]")
+            except Exception as catalog_exc:
+                console.print(f"  [yellow]⚠ Catalog update skipped: {catalog_exc}[/yellow]")
+    except Exception as e:
+        console.print(f"[bold red]✗[/bold red] Failed to create job: {str(e)}")
+        raise click.Abort()
+
+
+@cli.command('inspect-exe')
+@click.argument('exe_path', type=click.Path(exists=True, dir_okay=False))
+def inspect_exe_command(exe_path):
+    """Read a PE binary and preview the catalog lookup fields.
+
+    Shows the VS_VERSIONINFO StringFileInfo fields the catalog uses to
+    match an installer (CompanyName + ProductName) plus the SHA-256
+    fingerprint. Use the output to fill in a catalog entry's
+    pe_company_name / pe_product_name when you're seeding a new EXE.
+    """
+    from autopackager.utils.pe_metadata import read_pe_metadata, sha256_file, PEParseError
+    from autopackager.utils import installer_catalog
+
+    try:
+        metadata = read_pe_metadata(exe_path)
+    except PEParseError as e:
+        console.print(f"[bold red]✗[/bold red] {e}")
+        raise click.Abort()
+
+    sha = sha256_file(exe_path)
+
+    table = Table(title=f"PE Metadata: {Path(exe_path).name}")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="white")
+    for label, key in [
+        ("Company Name", "company_name"),
+        ("Product Name", "product_name"),
+        ("Product Version", "product_version"),
+        ("File Version", "file_version"),
+        ("File Description", "file_description"),
+        ("Original Filename", "original_filename"),
+        ("Legal Copyright", "legal_copyright"),
+    ]:
+        val = getattr(metadata, key, '') or 'N/A'
+        table.add_row(label, val)
+    table.add_row("SHA-256", sha)
+    console.print(table)
+
+    catalog = installer_catalog.load_catalog()
+    entry = catalog.match_exe(pe_metadata=metadata.to_dict(), sha256=sha)
+    if entry:
+        console.print(
+            f"\n[bold green]Catalog hit:[/bold green] {entry.id} "
+            f"(family: {entry.installer_family or 'unknown'}, "
+            f"{len(entry.detection_rules or [])} detection rule(s))"
+        )
+        console.print(f"  install_command_template: [cyan]{entry.install_command_template}[/cyan]")
+    else:
+        console.print(
+            "\n[yellow]No catalog match.[/yellow] To enable publishing this EXE, "
+            "add a catalog entry with type: exe, the company/product fields "
+            "above, an installer_family, install_command_template, and at least "
+            "one detection rule."
+        )
 
 
 @cli.command('inspect-msi')

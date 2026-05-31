@@ -416,13 +416,18 @@ class DiscoveryAgent:
         return None
 
     def _discover_software(self, job: Job) -> Dict[str, Any]:
-        """Discover software metadata for an MSI-based packaging job.
+        """Discover software metadata for an MSI or EXE packaging job.
 
         Unlike driver discovery (which scans OEM catalogs for newer versions),
-        software discovery inspects the provided MSI to auto-fill the version,
-        publisher, product code and detection details. The admin supplies the
-        installer (local path or URL) and an ``msiexec`` install command; this
-        step turns the MSI's own metadata into everything packaging/Intune need.
+        software discovery inspects the provided installer to auto-fill the
+        version, publisher, and identification fields. The admin supplies the
+        installer (local path or URL) and an install command; this step turns
+        the installer's own metadata into everything packaging / Intune need.
+
+        Branches on file extension: .msi -> read MSI Property table; .exe ->
+        read PE VS_VERSIONINFO. Both end up in job_metadata under their
+        respective keys (msi_metadata / exe_metadata) so PackagingAgent can
+        tell them apart.
         """
         from autopackager.utils.msi_metadata import MSIMetadata, read_msi_metadata
 
@@ -430,6 +435,11 @@ class DiscoveryAgent:
 
         metadata = job.job_metadata or {}
         install_command = metadata.get('install_command')
+
+        # EXE branch: PE VS_VERSIONINFO instead of MSI Property table.
+        is_exe = self._software_source_is_exe(job)
+        if is_exe:
+            return self._discover_exe(job, metadata, install_command)
 
         # Reuse metadata already read at job-creation time when available, so
         # workers don't need access to the admin's local MSI file.
@@ -468,6 +478,106 @@ class DiscoveryAgent:
             'product_name': msi_meta.get('product_name'),
             'manufacturer': msi_meta.get('manufacturer'),
         }
+
+    @staticmethod
+    def _software_source_is_exe(job: Job) -> bool:
+        """True when the job's installer source has an .exe extension."""
+        metadata = job.job_metadata or {}
+        src = (metadata.get('installer_source')
+               or metadata.get('download_url')
+               or job.download_url or '')
+        return str(src).lower().split('?')[0].endswith('.exe')
+
+    def _discover_exe(self, job: Job, metadata: dict, install_command: Optional[str]) -> Dict[str, Any]:
+        """Discovery for EXE software jobs: read PE VS_VERSIONINFO + SHA-256.
+
+        The catalog entry that matched at job-creation time is referenced by
+        catalog_entry_id in job_metadata; packaging will resolve it again at
+        publish time to get the detection_rules and installer_family.
+        """
+        from autopackager.utils.pe_metadata import PEMetadata, read_pe_metadata, sha256_file
+
+        exe_meta = metadata.get('exe_metadata')
+        sha = metadata.get('sha256')
+        if not exe_meta or not sha:
+            # CLI usually pre-populates these; only re-read when the worker
+            # is processing a job created from a URL-only source.
+            local_path = self._ensure_local_exe(job)
+            if local_path:
+                try:
+                    if not exe_meta:
+                        exe_meta = read_pe_metadata(local_path).to_dict()
+                    if not sha:
+                        sha = sha256_file(local_path)
+                    logger.info(
+                        "Read PE metadata",
+                        job_id=job.id,
+                        product_name=exe_meta.get('product_name'),
+                        product_version=exe_meta.get('product_version'),
+                    )
+                except Exception as e:
+                    logger.warning("Failed to read PE metadata", job_id=job.id, error=str(e))
+
+        exe_meta = exe_meta or PEMetadata().to_dict()
+
+        latest_version = (
+            exe_meta.get('product_version')
+            or exe_meta.get('file_version')
+            or metadata.get('target_version')
+            or job.target_version
+            or 'unknown'
+        )
+
+        return {
+            'update_available': True,
+            'latest_version': latest_version,
+            'download_url': metadata.get('download_url') or job.download_url,
+            'release_notes': metadata.get('release_notes') or job.release_notes or '',
+            'exe_metadata': exe_meta,
+            'sha256': sha,
+            'catalog_entry_id': metadata.get('catalog_entry_id'),
+            'install_command': install_command,
+            'product_name': exe_meta.get('product_name'),
+            'manufacturer': exe_meta.get('company_name'),
+        }
+
+    def _ensure_local_exe(self, job: Job) -> Optional[Path]:
+        """Return a local path to the job's EXE, downloading it if it is a URL.
+
+        Mirrors the MSI version exactly; kept separate so each branch can
+        evolve independently (e.g., EXE may want to verify a signature
+        before reading metadata).
+        """
+        from autopackager.utils.msi_metadata import resolve_local_path
+
+        metadata = job.job_metadata or {}
+        source = (
+            metadata.get('installer_source')
+            or metadata.get('download_url')
+            or job.download_url
+        )
+        if not source:
+            return None
+
+        local = resolve_local_path(source)
+        if local is not None:
+            return local if local.exists() else None
+
+        try:
+            cache_dir = Path(self.config['paths']['downloads'])
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            filename = source.split('/')[-1].split('?')[0] or 'installer.exe'
+            dest = cache_dir / filename
+            if not dest.exists() or self._is_cache_stale(dest):
+                logger.info("Downloading EXE for metadata read", url=source)
+                response = requests.get(source, timeout=300)
+                response.raise_for_status()
+                with open(dest, 'wb') as f:
+                    f.write(response.content)
+            return dest
+        except Exception as e:
+            logger.warning("Could not fetch EXE for metadata read", error=str(e))
+            return None
 
     def _ensure_local_msi(self, job: Job) -> Optional[Path]:
         """Return a local path to the job's MSI, downloading it if it is a URL."""

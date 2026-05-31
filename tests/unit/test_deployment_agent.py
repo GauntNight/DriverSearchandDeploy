@@ -402,6 +402,57 @@ class TestDeploymentAgentCore(unittest.TestCase):
         graph_client.get.assert_not_called()
         graph_client.post.assert_not_called()
 
+    @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
+    def test_lookup_catalog_entry_finds_exe_by_catalog_entry_id(self, mock_load):
+        """EXE packages don't have an MSI ProductCode -- catalog lookup
+        falls through to ``catalog_entry_id`` captured at create-job time
+        and stored in package_metadata. Without this path, deployment can't
+        reach the catalog's detection_rules and informationUrl / notes
+        overrides for EXE packages.
+        """
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+
+        self.package.package_metadata = {
+            'catalog_entry_id': 'notepad-plus-plus',
+            'exe_product_name': 'Notepad++',
+        }
+        fake = CatalogEntry(
+            id='notepad-plus-plus', type='exe', installer_family='nsis',
+            install_command_template='{installer_filename} /S',
+            information_url='https://notepad-plus-plus.org/',
+        )
+        mock_load.return_value = Catalog(entries=[fake])
+
+        result = self.agent._lookup_catalog_entry(self.package)
+        assert result is fake
+
+    @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
+    def test_lookup_catalog_entry_prefers_msi_product_code_over_catalog_id(self, mock_load):
+        """When a package somehow has both (shouldn't happen in practice
+        but defend against it), MSI ProductCode wins -- it's the more
+        specific identifier and matches the curated baseline entry across
+        every operator's tenant.
+        """
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+
+        self.package.package_metadata = {
+            'msi_product_code': '{ABC}',
+            'catalog_entry_id': 'should-not-win',
+        }
+        msi_entry = CatalogEntry(
+            id='by-product-code', type='msi',
+            install_command_template='msiexec /i {installer_filename} /qn',
+            product_code='{ABC}',
+        )
+        wrong_entry = CatalogEntry(
+            id='should-not-win', type='exe',
+            install_command_template='wrong.exe /S',
+        )
+        mock_load.return_value = Catalog(entries=[msi_entry, wrong_entry])
+
+        result = self.agent._lookup_catalog_entry(self.package)
+        assert result.id == 'by-product-code'
+
     def test_prepare_app_data_msi_information_falls_back_upgrade_to_product_code(self):
         """If the MSI metadata reader didn't recover an UpgradeCode (some
         MSIs legitimately lack one; some parser bugs miss it), fall back to

@@ -311,6 +311,92 @@ class Catalog:
                 return e
         return None
 
+    def match_exe(self, pe_metadata: Optional[dict] = None,
+                  sha256: Optional[str] = None) -> Optional[CatalogEntry]:
+        """Find an EXE catalog entry by PE metadata or sha256 fingerprint.
+
+        Match priority (highest -> lowest):
+          1. sha256 exact (catches a specific known build, e.g. a tested
+             version we've pinned in the baseline)
+          2. pe_company_name + pe_product_name (case-insensitive substring
+             match -- vendors often suffix builds with extra text, e.g.
+             "Notepad++" vs "Notepad++ (32-bit)")
+
+        Returns None for non-EXE matches (use match_msi for MSIs).
+        """
+        exe_entries = [e for e in self.entries if e.type == "exe"]
+
+        if sha256:
+            sha = sha256.strip().lower()
+            for e in exe_entries:
+                if (e.sha256 or "").strip().lower() == sha:
+                    return e
+
+        if not pe_metadata:
+            return None
+        company = (pe_metadata.get("company_name") or "").lower()
+        product = (pe_metadata.get("product_name") or "").lower()
+        if not (company or product):
+            return None
+        for e in exe_entries:
+            cat_company = (e.pe_company_name or "").lower()
+            cat_product = (e.pe_product_name or "").lower()
+            if cat_company and company and cat_company not in company and company not in cat_company:
+                continue
+            if cat_product and product and cat_product not in product and product not in cat_product:
+                continue
+            if cat_company or cat_product:
+                return e
+        return None
+
+
+def add_exe_entry(
+    pe_metadata: dict,
+    install_command_template: str,
+    *,
+    installer_family: Optional[str] = None,
+    detection_rules: Optional[list] = None,
+    sha256: Optional[str] = None,
+    notes: str = "",
+) -> 'CatalogEntry':
+    """Append a new EXE entry to the local overlay.
+
+    ``detection_rules`` is required for type='exe' in practice (the pipeline
+    needs at least one rule to publish into Intune), but we don't enforce
+    it here -- it's the CLI's job to refuse a catalog miss without an
+    operator-supplied rule. Storing an entry without rules is fine for
+    discovery / fingerprinting purposes.
+    """
+    product = (pe_metadata.get("product_name") or "").strip()
+    entry_id = _slugify(product) or _slugify(
+        pe_metadata.get("original_filename") or "exe-app"
+    )
+
+    overlay = _local_overlay_entries()
+    if any(e.id == entry_id for e in overlay):
+        record_use(entry_id)
+        return next(e for e in overlay if e.id == entry_id)
+
+    today = _today_iso()
+    entry = CatalogEntry(
+        id=entry_id,
+        type="exe",
+        installer_family=installer_family,
+        install_command_template=install_command_template,
+        pe_company_name=pe_metadata.get("company_name") or None,
+        pe_product_name=product or None,
+        sha256=sha256,
+        detection_rules=detection_rules,
+        notes=notes,
+        first_seen=today,
+        last_used=today,
+        use_count=1,
+    )
+    overlay.append(entry)
+    _write_local(overlay)
+    logger.info("Catalog entry added", entry_id=entry_id, type="exe")
+    return entry
+
 
 def _normalise_guid(value: Optional[str]) -> Optional[str]:
     """Canonicalise an MSI GUID for case- and brace-insensitive comparison."""

@@ -595,6 +595,92 @@ class TestCatalogEntryExeFields:
         assert e.installer_family is None
         assert e.detection_rules is None
 
+    def test_match_exe_by_sha256(self, temp_catalog_paths):
+        """SHA-256 match wins over PE-name match -- pins a specific known
+        build and avoids accidentally matching a different installer that
+        happens to share CompanyName/ProductName.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [{
+                'id': 'notepad-plus-plus',
+                'type': 'exe',
+                'install_command_template': '{installer_filename} /S',
+                'sha256': 'abc123' + 'd' * 58,
+                'pe_company_name': 'Notepad++ Team',
+                'pe_product_name': 'Notepad++',
+            }],
+        })
+        entry = ic.load_catalog().match_exe(sha256='abc123' + 'd' * 58)
+        assert entry is not None
+        assert entry.id == 'notepad-plus-plus'
+
+    def test_match_exe_by_pe_company_and_product(self, temp_catalog_paths):
+        """Falls back to CompanyName + ProductName when SHA-256 unmatched.
+        Substring match in both directions so vendor build suffixes like
+        "Notepad++ (32-bit)" still match the catalog "Notepad++" entry.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [{
+                'id': 'notepad-plus-plus',
+                'type': 'exe',
+                'install_command_template': '{installer_filename} /S',
+                'pe_company_name': 'Notepad++ Team',
+                'pe_product_name': 'Notepad++',
+            }],
+        })
+        entry = ic.load_catalog().match_exe(pe_metadata={
+            'company_name': 'Notepad++ Team',
+            'product_name': 'Notepad++ (32-bit)',
+        })
+        assert entry is not None
+        assert entry.id == 'notepad-plus-plus'
+
+    def test_match_exe_returns_none_when_unmatched(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [{
+                'id': 'notepad-plus-plus',
+                'type': 'exe',
+                'install_command_template': '{installer_filename} /S',
+                'pe_company_name': 'Notepad++ Team',
+                'pe_product_name': 'Notepad++',
+            }],
+        })
+        # No SHA-256 match, PE names don't overlap
+        entry = ic.load_catalog().match_exe(pe_metadata={
+            'company_name': 'Some Other Vendor',
+            'product_name': 'Unrelated App',
+        })
+        assert entry is None
+
+    def test_match_exe_does_not_return_msi_entries(self, temp_catalog_paths):
+        """match_exe must not return type=msi entries even when the
+        PE/SHA fields would otherwise look like a match. Different
+        installer type means different packaging path.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [{
+                'id': '7-zip-msi', 'type': 'msi',
+                'install_command_template': 'msiexec /i {installer_filename} /qn',
+                'sha256': 'sharedsha' + 'd' * 55,
+                # pe_* fields shouldn't be on MSI entries in practice but
+                # tolerate them defensively.
+                'pe_company_name': 'Igor Pavlov',
+                'pe_product_name': '7-Zip',
+            }],
+        })
+        assert ic.load_catalog().match_exe(sha256='sharedsha' + 'd' * 55) is None
+        assert ic.load_catalog().match_exe(pe_metadata={
+            'company_name': 'Igor Pavlov', 'product_name': '7-Zip',
+        }) is None
+
     def test_round_trip_through_local_overlay_write(self, temp_catalog_paths):
         # Adding an EXE entry to the overlay must preserve the new fields
         # across a write+read cycle. _write_local strips empty values, so

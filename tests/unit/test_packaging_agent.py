@@ -185,15 +185,50 @@ class TestPackagingAgentPackaging(unittest.TestCase):
         self.assertIn('1.0.0', result)
         self.assertIn('20240427_123000', result)
 
-    def test_generate_install_commands_exe(self):
-        """Test install command generation for EXE files"""
+    def test_generate_install_commands_exe_without_catalog_falls_back_to_nsis_default(self):
+        """EXE without a catalog entry falls back to '<filename> /S' (NSIS
+        default). Uninstall is a no-op because EXE uninstall semantics are
+        installer-specific (NSIS uninstall.exe, Inno Setup unins000.exe,
+        Microsoft bootstrappers MsiExec.exe /X) and there's no safe generic
+        guess. The CLI's create-exe path refuses to enqueue without a
+        catalog entry; this is the safety net for jobs queued by other means.
+        """
         installer_path = Path('/test/installer.exe')
 
         install_cmd, uninstall_cmd = self.agent._generate_install_commands(self.job, installer_path)
 
         self.assertIn('installer.exe', install_cmd)
         self.assertIn('/S', install_cmd)
-        self.assertIn('uninstall', uninstall_cmd)
+        self.assertEqual(uninstall_cmd, 'cmd /c exit 0')
+
+    def test_generate_install_commands_exe_uses_catalog_template_when_matched(self):
+        """When the job carries a catalog_entry_id, packaging renders the
+        catalog's install_command_template + uninstall_command_template
+        instead of the bare NSIS fallback. This is the production EXE path:
+        operator pre-registers the EXE in the catalog with correct silent
+        switches and the vendor's uninstall command.
+        """
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+
+        installer_path = Path('/test/Git-2.46-64-bit.exe')
+        self.job.job_metadata = dict(self.job.job_metadata or {})
+        self.job.job_metadata['catalog_entry_id'] = 'git-for-windows'
+
+        fake_catalog = Catalog(entries=[CatalogEntry(
+            id='git-for-windows', type='exe', installer_family='inno_setup',
+            install_command_template='{installer_filename} /VERYSILENT /NORESTART /SUPPRESSMSGBOXES',
+            uninstall_command_template='"C:\\Program Files\\Git\\unins000.exe" /VERYSILENT',
+        )])
+        with patch('autopackager.utils.installer_catalog.load_catalog',
+                   return_value=fake_catalog):
+            install_cmd, uninstall_cmd = self.agent._generate_install_commands(
+                self.job, installer_path,
+            )
+
+        self.assertIn('Git-2.46-64-bit.exe', install_cmd)
+        self.assertIn('/VERYSILENT', install_cmd)
+        self.assertIn('/NORESTART', install_cmd)
+        self.assertIn('unins000.exe', uninstall_cmd)
 
     def test_generate_install_commands_msi(self):
         """Test install command generation for MSI files"""
@@ -205,6 +240,43 @@ class TestPackagingAgentPackaging(unittest.TestCase):
         self.assertIn('/i', install_cmd)
         self.assertIn('setup.msi', install_cmd)
         self.assertIn('/quiet', install_cmd)
+
+    def test_generate_detection_rules_uses_catalog_for_exe(self):
+        """EXE jobs with no MSI metadata pull detection rules from their
+        catalog entry. Without this, the only fallback is the synthetic
+        registry-detection rule -- which is good enough for drivers (where
+        no catalog entry exists) but breaks EXE detection in Intune (the
+        IME would re-install the EXE on every device check-in).
+        """
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+
+        self.job.job_metadata = dict(self.job.job_metadata or {})
+        self.job.job_metadata.pop('msi_metadata', None)
+        self.job.job_metadata['catalog_entry_id'] = 'notepad-plus-plus'
+
+        fake_catalog = Catalog(entries=[CatalogEntry(
+            id='notepad-plus-plus', type='exe', installer_family='nsis',
+            install_command_template='{installer_filename} /S',
+            detection_rules=[{
+                'kind': 'registry_version',
+                'key': r'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\Notepad++',
+                'value_name': 'DisplayVersion',
+                'operator': 'greaterThanOrEqual',
+                'value': '8.0.0',
+            }],
+        )])
+        with patch('autopackager.utils.installer_catalog.load_catalog',
+                   return_value=fake_catalog):
+            rules = self.agent._generate_detection_rules(self.job)
+
+        self.assertEqual(len(rules), 1)
+        rule = rules[0]
+        self.assertEqual(rule['@odata.type'], '#microsoft.graph.win32LobAppRegistryRule')
+        self.assertEqual(rule['operationType'], 'version')
+        self.assertEqual(rule['operator'], 'greaterThanOrEqual')
+        self.assertEqual(rule['comparisonValue'], '8.0.0')
+        # Sanity: the synthetic-fallback key path was NOT used
+        self.assertNotIn('UpdatePackage', rule['keyPath'])
 
     @patch('autopackager.agents.packaging.packaging_agent.PackagingAgent._generate_cab_install_script')
     def test_generate_install_commands_cab(self, mock_gen_script):
