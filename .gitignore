@@ -68,11 +68,20 @@ tools/IntuneWinAppUtil.exe
 celerybeat-schedule
 celerybeat.pid
 
+# Redis
+# Default snapshot file when redis-server runs out of the repo root.
+dump.rdb
+
 # Testing
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
 *.cover
+
+# Packaging output -- IntuneWin packages live under data/packages/ which is
+# already ignored, but catch any that land elsewhere during ad-hoc runs.
+*.intunewin
 
 # Temporary files
 *.tmp
