@@ -29,30 +29,46 @@ _FATSECT = 0xFFFFFFFD
 _NOSTREAM = 0xFFFFFFFF
 
 
-def _build_minimal_msi(props, pad_stringdata_to=0):
-    """Construct a minimal but valid OLE2/MSI compound file from a property dict.
-
-    Stream names are stored as plain ASCII; the reader's name de-mangling is a
-    no-op on ASCII, so this exercises the full OLE2 container path (FAT chains,
-    directory, mini stream) and the MSI string-pool / Property-table decode.
-    """
+def _build_property_table_blob(props):
+    """Build (Property-table, _StringPool, _StringData) blobs for ``props``."""
     strings, name_ids, value_ids = [], {}, {}
     for name, value in props.items():
         strings.append(name)
         name_ids[name] = len(strings)
         strings.append(value)
         value_ids[name] = len(strings)
-
     header = struct.pack('<I', 1252)
     pool = header + b''.join(struct.pack('<HH', len(s.encode('cp1252')), 1) for s in strings)
     sdata = b''.join(s.encode('cp1252') for s in strings)
+    refs = [name_ids[n] for n in props] + [value_ids[n] for n in props]
+    prop_stream = struct.pack('<%dH' % len(refs), *refs)
+    return prop_stream, pool, sdata
+
+
+def _build_minimal_msi(props, pad_stringdata_to=0, substorage_props=None,
+                       substorage_name='TransformStorage'):
+    """Construct a minimal but valid OLE2/MSI compound file from a property dict.
+
+    Stream names are stored as plain ASCII; the reader's name de-mangling is a
+    no-op on ASCII, so this exercises the full OLE2 container path (FAT chains,
+    directory, mini stream) and the MSI string-pool / Property-table decode.
+
+    When ``substorage_props`` is provided, the file also contains a child
+    storage with its own ``Property`` / ``_StringPool`` / ``_StringData``
+    streams, mimicking the language-transform sub-storages real MSIs (Webex,
+    Office, anything with a Wix bundle of localizations) carry. The parser
+    must return values from the root tables, not the sub-storage tables.
+    """
+    prop_stream, pool, sdata = _build_property_table_blob(props)
     if pad_stringdata_to and len(sdata) < pad_stringdata_to:
         sdata += b'\x00' * (pad_stringdata_to - len(sdata))
 
-    refs = [name_ids[n] for n in props] + [value_ids[n] for n in props]
-    prop_stream = struct.pack('<%dH' % len(refs), *refs)
-
     streams = {'Property': prop_stream, '_StringPool': pool, '_StringData': sdata}
+
+    sub_streams = {}
+    if substorage_props:
+        sub_prop, sub_pool, sub_sdata = _build_property_table_blob(substorage_props)
+        sub_streams = {'Property': sub_prop, '_StringPool': sub_pool, '_StringData': sub_sdata}
 
     sectors, fat = [], []
 
@@ -68,8 +84,13 @@ def _build_minimal_msi(props, pad_stringdata_to=0):
             fat[start + i] = (start + i + 1) if i < nsec - 1 else _ENDOFCHAIN
         return start
 
-    mini_streams = {k: v for k, v in streams.items() if len(v) < _MINI_CUTOFF}
-    big_streams = {k: v for k, v in streams.items() if len(v) >= _MINI_CUTOFF}
+    # Namespace sub-storage streams when allocating space so they don't
+    # collide with the root streams that share their names.
+    all_streams = dict(streams)
+    for name, data in sub_streams.items():
+        all_streams[f'__SUB__{name}'] = data
+    mini_streams = {k: v for k, v in all_streams.items() if len(v) < _MINI_CUTOFF}
+    big_streams = {k: v for k, v in all_streams.items() if len(v) >= _MINI_CUTOFF}
 
     ministream, minifat, mini_start = b'', [], {}
     for name, data in mini_streams.items():
@@ -90,24 +111,47 @@ def _build_minimal_msi(props, pad_stringdata_to=0):
     else:
         minifat_start, num_minifat = _ENDOFCHAIN, 0
 
-    def dirent(name, etype, start, size):
+    def dirent(name, etype, start, size, left=_NOSTREAM, right=_NOSTREAM, child=_NOSTREAM):
         b = bytearray(128)
         nm = name.encode('utf-16-le')
         b[0:len(nm)] = nm
         struct.pack_into('<H', b, 0x40, len(nm) + 2)
         b[0x42] = etype
         b[0x43] = 1
-        struct.pack_into('<I', b, 0x44, _NOSTREAM)
-        struct.pack_into('<I', b, 0x48, _NOSTREAM)
-        struct.pack_into('<I', b, 0x4C, _NOSTREAM)
+        struct.pack_into('<I', b, 0x44, left)
+        struct.pack_into('<I', b, 0x48, right)
+        struct.pack_into('<I', b, 0x4C, child)
         struct.pack_into('<I', b, 0x74, 0 if start == _ENDOFCHAIN else start)
         struct.pack_into('<Q', b, 0x78, size)
         return bytes(b)
 
-    dir_bytes = dirent('Root Entry', 5, cont_start, len(ministream))
-    for name, data in streams.items():
+    # Directory layout:
+    #   0:                       Root Entry (type 5) -> child = first root stream
+    #   1..n_root:               root streams, right-chained
+    #   n_root+1:                substorage (type 1, only when sub_streams) -> child = first sub stream
+    #   n_root+2..n_root+1+n_sub:sub streams, right-chained
+    #
+    # The last root stream's right points at the substorage so the OLE2
+    # red-black-tree walk reaches it as part of the root storage's children.
+    root_items = list(streams.items())
+    sub_items = list(sub_streams.items())
+    n_root, n_sub = len(root_items), len(sub_items)
+    sub_entry_id = n_root + 1 if n_sub else _NOSTREAM
+    sub_first_id = n_root + 2 if n_sub else _NOSTREAM
+
+    dir_bytes = dirent('Root Entry', 5, cont_start, len(ministream),
+                       child=1 if root_items else sub_entry_id)
+    for idx, (name, data) in enumerate(root_items):
         s = big_start[name] if name in big_start else mini_start[name]
-        dir_bytes += dirent(name, 2, s, len(data))
+        right = (idx + 2) if idx + 1 < n_root else sub_entry_id
+        dir_bytes += dirent(name, 2, s, len(data), right=right)
+    if n_sub:
+        dir_bytes += dirent(substorage_name, 1, 0, 0, child=sub_first_id)
+        for idx, (name, data) in enumerate(sub_items):
+            key = f'__SUB__{name}'
+            s = big_start[key] if key in big_start else mini_start[key]
+            right = (sub_first_id + idx + 1) if idx + 1 < n_sub else _NOSTREAM
+            dir_bytes += dirent(name, 2, s, len(data), right=right)
     if len(dir_bytes) % _SECTOR:
         dir_bytes += b'\x00' * (_SECTOR - len(dir_bytes) % _SECTOR)
     dir_start = add_chain(dir_bytes)
@@ -275,6 +319,58 @@ class TestEndToEndMSIParsing(unittest.TestCase):
         meta = self._round_trip(pad=5000)
         self.assertEqual(meta.product_name, '7-Zip 24.08 (x64)')
         self.assertEqual(meta.product_code, '{23170F69-40C1-2702-2408-000001000000}')
+
+    def test_substorage_property_table_does_not_shadow_root(self):
+        """A sub-storage's ``Property`` stream must NOT shadow the root one.
+
+        Real-world MSIs that embed language transforms or feature variants
+        (Webex App, multi-locale Office bundles, anything Wix-bundled with a
+        per-locale storage) keep one ``Property`` / ``_StringPool`` /
+        ``_StringData`` trio per sub-storage in addition to the root tables.
+
+        A flat scan over ``cfb.entries`` followed by a name-keyed dict picks
+        the **last** Property stream encountered and silently shadows the
+        real root Property table with a transform fragment -- typically only
+        12-18 bytes, decoding to 1-2 useless rows. After
+        ``read_msi_metadata`` falls back to the SummaryInformation stream
+        for ``ProductName`` and ``Manufacturer`` (the only two values it
+        knows how to recover from outside the Property table),
+        ``ProductCode``, ``ProductVersion``, ``UpgradeCode`` and
+        ``ProductLanguage`` come back as ``''`` -- which then propagates into
+        an empty Intune detection rule and a ``msiexec /x <filename>``
+        uninstall command (no ProductCode), both of which silently break.
+
+        The parser now walks the OLE2 red-black sibling tree under the root
+        storage and only considers root-level streams. This test pins that
+        behaviour so a regression to a flat scan is caught immediately.
+        """
+        substorage_props = {
+            'ProductName': 'WRONG_NAME_FROM_TRANSFORM',
+            'ProductVersion': '0.0.0.0',
+            'ProductCode': '{00000000-0000-0000-0000-000000000000}',
+            'UpgradeCode': '{11111111-1111-1111-1111-111111111111}',
+            'Manufacturer': 'WRONG_MFR',
+            'ProductLanguage': '9999',
+        }
+        data = _build_minimal_msi(self.PROPS, substorage_props=substorage_props,
+                                  substorage_name='Transform1033')
+        fd, path = tempfile.mkstemp(suffix='.msi')
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(data)
+            meta = read_msi_metadata(path)
+        finally:
+            os.unlink(path)
+
+        self.assertEqual(meta.product_name, '7-Zip 24.08 (x64)')
+        self.assertEqual(meta.product_version, '24.08.00.0')
+        self.assertEqual(meta.product_code, '{23170F69-40C1-2702-2408-000001000000}')
+        self.assertEqual(meta.upgrade_code, '{23170F69-40C1-2702-0000-000004000000}')
+        self.assertEqual(meta.manufacturer, 'Igor Pavlov')
+        self.assertEqual(meta.language, '1033')
+        # Sanity: none of the sub-storage's poison values bled through.
+        self.assertNotIn('WRONG', meta.product_name)
+        self.assertNotIn('00000000-0000-0000-0000-000000000000', meta.product_code)
 
 
 class TestParseInstallCommand(unittest.TestCase):

@@ -39,6 +39,7 @@ class _CompoundFile:
     _SIGNATURE = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
     ENDOFCHAIN = 0xFFFFFFFE
     FREESECT = 0xFFFFFFFF
+    NOSTREAM = 0xFFFFFFFF
 
     def __init__(self, data: bytes):
         if data[:8] != self._SIGNATURE:
@@ -113,10 +114,49 @@ class _CompoundFile:
             self.entries.append({
                 'name': name,
                 'type': entry[0x42],
+                'left':  struct.unpack_from('<I', entry, 0x44)[0],
+                'right': struct.unpack_from('<I', entry, 0x48)[0],
+                'child': struct.unpack_from('<I', entry, 0x4c)[0],
                 'start': struct.unpack_from('<I', entry, 0x74)[0],
                 'size': struct.unpack_from('<Q', entry, 0x78)[0],
             })
         self.root = next((e for e in self.entries if e['type'] == 5), None)
+        self._root_children_cache = None
+
+    def root_children(self):
+        """Return entries that are direct children of the root storage.
+
+        MSIs commonly embed language transforms / feature sub-storages, each
+        carrying their own copies of standard tables (``Property``,
+        ``_StringPool``, ``_StringData``, ``\\x05SummaryInformation``). A flat
+        iteration over ``self.entries`` mixes those with the root-level tables;
+        a dict keyed by table name then silently shadows the real root table
+        with a 12-18 byte transform fragment. Walking the OLE2 red-black
+        sibling tree under ``root._Child`` keeps us inside the root storage.
+        """
+        if self._root_children_cache is not None:
+            return self._root_children_cache
+        out: List[dict] = []
+        if not self.root:
+            self._root_children_cache = out
+            return out
+        seen = set()
+        stack = [self.root['child']]
+        # Iterative in-order traversal to avoid Python recursion limits on
+        # MSIs whose root storage child trees are deep and degenerate.
+        while stack:
+            idx = stack.pop()
+            if idx == self.NOSTREAM or idx >= len(self.entries) or idx in seen:
+                continue
+            seen.add(idx)
+            node = self.entries[idx]
+            if node['right'] != self.NOSTREAM:
+                stack.append(node['right'])
+            out.append(node)
+            if node['left'] != self.NOSTREAM:
+                stack.append(node['left'])
+        self._root_children_cache = out
+        return out
 
     def _read_minichain(self, start: int, size: int) -> bytes:
         if not hasattr(self, '_ministream'):
@@ -192,9 +232,15 @@ def _codepage_to_encoding(codepage: int) -> str:
 
 
 def _streams_by_table_name(cfb: _CompoundFile) -> Dict[str, dict]:
+    """Map decoded table name -> entry for root-storage streams only.
+
+    Restricting to ``cfb.root_children()`` prevents transform sub-storages
+    (whose ``Property`` / ``_StringPool`` streams share decoded names with the
+    root tables) from shadowing the real root tables in the returned dict.
+    """
     return {
         decode_streamname(e['name']): e
-        for e in cfb.entries
+        for e in cfb.root_children()
         if e['type'] == 2
     }
 
@@ -290,7 +336,7 @@ def _read_propvalue(data: bytes, pos: int, vtype: int):
 
 def _read_summary_information(cfb: _CompoundFile) -> Dict[str, object]:
     entry = next(
-        (e for e in cfb.entries
+        (e for e in cfb.root_children()
          if e['type'] == 2 and e['name'] and ord(e['name'][0]) == 5 and 'SummaryInformation' in e['name']),
         None,
     )
