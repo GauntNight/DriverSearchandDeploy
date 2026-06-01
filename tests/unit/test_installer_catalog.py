@@ -658,6 +658,40 @@ class TestCatalogEntryExeFields:
         })
         assert entry is None
 
+    def test_wrapped_installer_fields_load_and_round_trip(self, temp_catalog_paths):
+        """wrapped_msi entries need extract_command_template +
+        extracted_msi_pattern to survive the YAML round trip; wrapped_zip
+        only needs the pattern. Both must reach the dataclass intact so
+        extract_wrapped() can read them.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [
+                {
+                    'id': 'powertoys', 'type': 'exe',
+                    'installer_family': 'wrapped_msi',
+                    'install_command_template': 'msiexec /i {installer_filename} /qn',
+                    'extract_command_template': '"{installer_path}" --extract_msi',
+                    'extracted_msi_pattern': 'PowerToys*.msi',
+                },
+                {
+                    'id': 'foxit-pdf-reader', 'type': 'exe',
+                    'installer_family': 'wrapped_zip',
+                    'install_command_template': 'msiexec /i {installer_filename} /qn',
+                    'extracted_msi_pattern': 'FoxitPDFReader*.msi',
+                },
+            ],
+        })
+        catalog = ic.load_catalog()
+        pt = catalog.by_id('powertoys')
+        assert pt.extract_command_template == '"{installer_path}" --extract_msi'
+        assert pt.extracted_msi_pattern == 'PowerToys*.msi'
+
+        foxit = catalog.by_id('foxit-pdf-reader')
+        assert foxit.extract_command_template is None  # wrapped_zip doesn't need one
+        assert foxit.extracted_msi_pattern == 'FoxitPDFReader*.msi'
+
     def test_match_exe_does_not_return_msi_entries(self, temp_catalog_paths):
         """match_exe must not return type=msi entries even when the
         PE/SHA fields would otherwise look like a match. Different

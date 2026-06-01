@@ -96,6 +96,55 @@ def _installer_is_exe(installer_path: Optional[str], download_url: Optional[str]
     return src.lower().split('?')[0].endswith('.exe')
 
 
+def _try_unwrap_installer(installer_path: Optional[str]) -> Optional[str]:
+    """If the installer matches a wrapped catalog entry, extract the inner
+    MSI and return its path. Otherwise return None.
+
+    Handles both wrapped_msi (EXE that bundles an MSI -- Adobe Reader DC,
+    PowerToys) and wrapped_zip (ZIP containing an MSI -- Foxit Reader).
+    Runs as a pre-stage before extension dispatch so the rest of
+    create-software-job sees a regular MSI.
+
+    Returns the extracted MSI path on success; None when the installer
+    isn't a recognised wrapper. ExtractionError propagates -- a wrapped
+    catalog entry that fails to extract is an operator-visible problem.
+    """
+    if not installer_path:
+        return None
+    path = Path(installer_path)
+    ext = path.suffix.lower()
+    if ext not in ('.exe', '.zip'):
+        return None
+
+    from autopackager.utils import installer_catalog
+    from autopackager.utils.extractors import extract_wrapped
+    from autopackager.utils.pe_metadata import read_pe_metadata, sha256_file, PEParseError
+
+    sha = sha256_file(path)
+    pe_meta = None
+    if ext == '.exe':
+        try:
+            pe_meta = read_pe_metadata(path).to_dict()
+        except PEParseError:
+            pe_meta = None
+
+    entry = installer_catalog.load_catalog().match_exe(pe_metadata=pe_meta, sha256=sha)
+    if not entry or entry.installer_family not in ('wrapped_msi', 'wrapped_zip'):
+        return None
+
+    # Stage extraction output under data/downloads/extracted/<entry-id>/
+    # so it survives across CLI -> worker handoff. Caller is responsible
+    # for cleanup; for now we let it accumulate (operator can prune).
+    extract_dir = Path('data/downloads/extracted') / entry.id
+    console.print(
+        f"\n[bold]Wrapped {entry.installer_family}[/bold] catalog hit: [cyan]{entry.id}[/cyan]"
+    )
+    console.print(f"  Extracting inner MSI into {extract_dir}...")
+    inner_msi = extract_wrapped(path, entry, extract_dir)
+    console.print(f"  Inner MSI: [cyan]{inner_msi}[/cyan]")
+    return str(inner_msi)
+
+
 @cli.command('create-software-job')
 @click.option('--install-command',
               help='Install command. For MSI, e.g. "msiexec /i 7z2408-x64.msi /qn /norestart". '
@@ -132,6 +181,18 @@ def create_software_job(install_command, installer_path, download_url, name, pub
     if not installer_path and not download_url:
         console.print("[bold red]✗[/bold red] Provide --installer-path and/or --download-url")
         raise click.Abort()
+
+    # Wrapped-installer pre-stage: if the file is a known wrapped_msi /
+    # wrapped_zip per the catalog, extract the inner MSI now so the rest
+    # of this command treats it as a normal MSI. Anything that's not a
+    # wrapper falls through unchanged.
+    try:
+        unwrapped = _try_unwrap_installer(installer_path)
+    except Exception as exc:  # noqa: BLE001 -- extraction is the operator's problem
+        console.print(f"[bold red]✗[/bold red] Wrapped-installer extraction failed: {exc}")
+        raise click.Abort()
+    if unwrapped:
+        installer_path = unwrapped
 
     if _installer_is_exe(installer_path, download_url):
         _create_exe_software_job(

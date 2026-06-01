@@ -231,6 +231,30 @@ class CatalogEntry:
     #   and the pure-Python extractor returns nothing. Mime type sniffed
     #   from the leading magic bytes at publish time.
     icon_b64: Optional[str] = None
+    # ---- Wrapped-installer extraction --------------------------------
+    # Only meaningful for installer_family in {'wrapped_msi', 'wrapped_zip'}.
+    # The catalog "wrapper" entry identifies the outer EXE/ZIP; the
+    # inner MSI it produces is what actually ships through the rest of
+    # the pipeline.
+    #
+    # extract_command_template -- shell command that extracts the inner
+    #   MSI from a wrapped_msi installer. Template variables:
+    #     {installer_path}  -- absolute path to the wrapper EXE
+    #     {extract_dir}     -- absolute path to extraction destination
+    #   The command runs with cwd=extract_dir so installers that write
+    #   to the current directory (PowerToys: --extract_msi) land their
+    #   output in the right place. Vendor-specific:
+    #     Adobe Reader DC: '"{installer_path}" -sfx_o "{extract_dir}" -sfx_ne'
+    #     PowerToys      : '"{installer_path}" --extract_msi'
+    #   Ignored when family is wrapped_zip (zipfile.extractall handles it).
+    extract_command_template: Optional[str] = None
+    # extracted_msi_pattern -- glob (rglob form) matched against the
+    #   extraction directory to locate the inner MSI. Defaults to '*.msi'.
+    #   Override when the wrapper produces multiple MSIs and you need to
+    #   pick a specific one (e.g., 'Reader-en_US.msi' for Adobe). The
+    #   largest match wins -- defends against tiny accessory MSIs
+    #   bundled alongside the main product MSI.
+    extracted_msi_pattern: Optional[str] = None
     # Lifecycle / usage
     notes: str = ""
     first_seen: str = ""
