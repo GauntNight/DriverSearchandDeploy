@@ -1,3 +1,33 @@
+## [1.6.0] - 2026-06-01
+
+### Added
+
+- **Catalog supersedence schema.** New `CatalogEntry.supersedence` block declares a CAPABILITY (which versions in which line, by what strategy) without forcing any behaviour at publish time. Supersedence is **never automatic** — the operator opts in per publish via the CLI's `--supersede` (catalog-mode) or `--supersedes <id...>` (manual override) flag. Four modes via the new `SUPERSEDENCE_MODES` controlled vocabulary:
+  - `generic`: newer version supersedes older within the same `line`, by PEP 440 ordering.
+  - `specific`: same as generic, but `version_pattern` (a `re.fullmatch` regex) filters which versions belong to the line. Used for parallel-maintained sub-lines (e.g., `^1\\.6\\.\\d+$` for Java 1.6.x).
+  - `manual`: catalog declares explicit `supersedes: [entry-id, ...]` list.
+  - `none`: **DENY in both directions** — entry never supersedes anything and is shielded from being marked superseded. Overrides any operator opt-in flag. Use for developer middleware where parallel versions are intentional (JDK 8 / 11 / 17 / 21, .NET 6 / 8 / 9, Python 3.x lines, Node LTS lines).
+- **`status` field on `verified_versions[]` rows.** New `VERIFIED_VERSION_STATUSES` controlled vocabulary: `newest`, `superseded`, `historical`, `manual`, `pending`. Machine-maintained by `record_verification()` (sets `newest` on each new verify) and the publish-time state machine (lands with the CLI integration PR — demotes prior `newest` to `historical` or `superseded` depending on whether the operator opted into supersedence). Visible in the overlay YAML for audit.
+- **Per-entry `version` field (overlay-only).** The current/intended version of an entry's installer. Distinct from `verified_versions` (publish history). Different operators may be on different versions of the same product at the same time, so this is intentionally tenant-private state — a contract test asserts the committed baseline never carries this field.
+- **Two new contract tests** in `tests/unit/test_installer_catalog.py`:
+  - `test_baseline_has_no_top_level_version_field` — reads the actual baseline YAML and asserts no entry has the per-tenant `version` field. Prevents one operator's state from leaking into every other operator's pulled catalog.
+  - `test_baseline_entries_declare_explicit_supersedence_mode` — every baseline entry must spell out `supersedence.mode` even when it's `none`. Audit-friendliness; ambiguity is a code-review smell.
+- **`add_msi_entry` / `add_exe_entry` default supersedence block.** Auto-added entries now ship with `supersedence: {line: <id>, mode: generic}`. Capability-only declaration; operator opts in at publish time. Operators who want a stricter default (`mode: none` for developer middleware) edit the overlay after the auto-add.
+
+### Changed
+
+- **Baseline YAML header docs** expanded with the supersedence semantics, the overlay-only contract for `version` / `verified_versions[].status`, and the controlled-vocabulary references. The "What must never appear in the baseline" subsection is the new authoritative list for catalog contributors.
+- **All five committed baseline entries** (7-Zip, Notepad++, PowerToys, Adobe Reader DC, Foxit PDF Reader) gain explicit `supersedence: {line: <id>, mode: generic}` blocks. Operators can override per-tenant in their overlay (e.g., `mode: none` for compliance lock).
+- **`record_verification`** sets `status: newest` on every new verified_versions row. Demotion of prior `newest` to `historical` / `superseded` lands with the next PR (publish-time state machine).
+
+### Version
+
+- `__version__` bumped to `1.6.0`.
+
+Full suite: 604 pass, 1 known pre-existing flake.
+
+---
+
 ## [1.5.0] - 2026-06-01
 
 ### Added

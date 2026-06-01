@@ -104,6 +104,43 @@ DETECTION_RULE_KINDS = {
 }
 
 
+# Controlled vocabulary for CatalogEntry.supersedence.mode. The catalog
+# entry declares CAPABILITY -- the strategy that applies IF an operator
+# opts in at publish time via the CLI's --supersede / --supersedes flag.
+# Supersedence is never automatic: the operator must opt in per publish.
+#
+# 'none' is a DENY rule: it overrides any operator opt-in. The entry's
+# verified_versions are shielded from being marked superseded, and the
+# entry itself cannot supersede anything. Use for developer middleware
+# (multiple JDKs, Python interpreters, .NET runtimes) where parallel
+# versions are intentional.
+SUPERSEDENCE_MODES = {
+    'generic',   # Newer version supersedes older within the same line (PEP 440 ordering).
+    'specific',  # Only versions matching supersedence.version_pattern (re.fullmatch) are in the line.
+    'manual',    # Operator-declared explicit supersedes: [entry-id, ...] list.
+    'none',      # DENY both directions. Cannot supersede, cannot be superseded.
+}
+
+
+# Controlled vocabulary for the ``status`` field on each verified_versions
+# row. Machine-maintained by the publish flow and the polling hook; not
+# expected to be hand-edited (though it's visible in the YAML for audit).
+#
+# State transitions:
+#   First publish in line                  -> status: newest
+#   Newer version, no --supersede          -> new = newest, prior newest = historical
+#   Newer version, --supersede             -> new = newest, prior newest = superseded
+#   Older version (rollback / mis-keyed)   -> new = manual, prior newest unchanged
+#   Anything targeting a mode=none entry   -> error to operator; nothing written
+VERIFIED_VERSION_STATUSES = {
+    'newest',      # Current top of this supersedence line.
+    'superseded',  # Explicitly replaced via Intune supersedingApps. Devices get cleanup.
+    'historical',  # Was newest, no longer is; no Intune-level supersedence was applied.
+    'manual',      # Published out of natural order (rollback or override). Sits outside the chain.
+    'pending',     # Publish in-flight; verified_intune_app_id may not be set yet.
+}
+
+
 def default_silent_switches(family: Optional[str]) -> Optional[str]:
     """Return the standard silent-install switch string for ``family``.
 
@@ -287,14 +324,63 @@ class CatalogEntry:
     #   largest match wins -- defends against tiny accessory MSIs
     #   bundled alongside the main product MSI.
     extracted_msi_pattern: Optional[str] = None
+    # ---- Supersedence -------------------------------------------------
+    # CAPABILITY declaration -- catalog says what supersedence IS possible
+    # for this entry; the operator opts in (or doesn't) at publish time
+    # via the CLI's --supersede / --supersedes flag. Supersedence is never
+    # automatic.
+    #
+    # Shape (all fields optional, all under one nested dict):
+    #   line              -- supersedence chain identifier. All entries
+    #                        sharing a line participate together. Defaults
+    #                        to the entry's `id` when omitted.
+    #   mode              -- one of SUPERSEDENCE_MODES (generic | specific
+    #                        | manual | none). Default behaviour for an
+    #                        entry with no supersedence block at all is
+    #                        equivalent to mode: none -- but baseline
+    #                        contributors must declare mode explicitly so
+    #                        audits stay unambiguous (enforced by a
+    #                        contract test).
+    #   version_pattern   -- (specific only) re.fullmatch regex used to
+    #                        filter line membership. E.g. '^17\\.\\d+\\.\\d+$'
+    #                        to match Java 17.x.x versions exclusively.
+    #   supersedes        -- (manual only) list of catalog entry IDs whose
+    #                        verified_versions get marked superseded when
+    #                        this entry publishes (subject to each target
+    #                        entry's own mode -- mode: none on a target
+    #                        SHIELDS it, even from a manual list).
+    #
+    # mode: none is a DENY rule: blocks supersedence in BOTH directions
+    # (the entry can't supersede; the entry can't be superseded by
+    # anything else). Used for developer middleware where parallel
+    # versions are intentional (Java 8 / 11 / 17 / 21, .NET 6 / 8 / 9,
+    # Python 3.11 / 3.12 / 3.13).
+    supersedence: Optional[dict] = None
     # Lifecycle / usage
     notes: str = ""
     first_seen: str = ""
     last_used: str = ""
     use_count: int = 0
-    # Proven-good versions. Populated by record_verification() after a deploy
-    # is observed installing on a real device. Each item:
-    #   {product_version, verified_at (YYYY-MM-DD), verified_intune_app_id}
+    # ---- Per-tenant deployment state (OVERLAY-ONLY) -------------------
+    #
+    # version -- the current/intended version of THIS entry's installer.
+    # Distinct from verified_versions (which is the publish history).
+    # OVERLAY-ONLY: different operators may be on different versions of
+    # the same product at the same time; baseline cannot carry one
+    # canonical answer. Set by the publish flow when create-software-job
+    # records a new install. A contract test asserts the committed
+    # baseline never has this field.
+    version: Optional[str] = None
+    # Proven-good versions. Populated by record_verification() after a
+    # deploy is observed installing on a real device. Each row:
+    #   product_version       -- string parsed by packaging.version.Version
+    #   verified_at           -- ISO date (YYYY-MM-DD)
+    #   verified_intune_app_id-- tenant-bound Intune Win32 app GUID
+    #   status                -- one of VERIFIED_VERSION_STATUSES
+    #                            (newest | superseded | historical |
+    #                            manual | pending). Machine-maintained.
+    # OVERLAY-ONLY -- carries tenant-bound GUIDs and per-tenant install
+    # history.
     verified_versions: list = field(default_factory=list)
 
     def render_install_command(self, installer_filename: str) -> str:
@@ -445,6 +531,12 @@ def add_exe_entry(
         sha256=sha256,
         detection_rules=detection_rules,
         distribution=distribution,
+        # See add_msi_entry for the rationale on the default supersedence
+        # block: capability-only declaration, operator opts in at
+        # publish time. Operator edits the overlay if they want a stricter
+        # default (e.g., mode: none for parallel-version EXE installers
+        # like multiple JDK / Python builds).
+        supersedence={"line": entry_id, "mode": "generic"},
         notes=notes,
         first_seen=today,
         last_used=today,
@@ -619,6 +711,13 @@ def add_msi_entry(
         product_name_pattern=name or None,
         publisher=msi_metadata.get("manufacturer") or None,
         distribution=distribution,
+        # Default supersedence: generic within a line named after the
+        # entry. Capability-only declaration -- supersedence still
+        # requires the operator to opt in at publish time via
+        # --supersede / --supersedes. Operators who want a stricter
+        # default (e.g., mode: none for developer middleware) edit the
+        # overlay after the auto-add.
+        supersedence={"line": entry_id, "mode": "generic"},
         notes=notes,
         first_seen=today,
         last_used=today,
@@ -670,6 +769,14 @@ def record_verification(
         "product_version": product_version or "unknown",
         "verified_at": _today_iso(),
         "verified_intune_app_id": intune_app_id or "",
+        # Status reflects the verified version's standing in the
+        # supersedence chain. Minimum behaviour (schema PR): mark every
+        # newly-verified record as 'newest'. The publish-time
+        # state-machine that demotes prior 'newest' entries to
+        # 'historical' / 'superseded' lands with the CLI integration
+        # PR -- this row stays accurate as a single-version record
+        # until then.
+        "status": "newest",
     }
 
     # Idempotency: same (product_version, intune_app_id) is treated as a no-op

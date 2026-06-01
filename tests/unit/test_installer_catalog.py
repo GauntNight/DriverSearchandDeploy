@@ -808,6 +808,138 @@ class TestCatalogEntryExeFields:
             "Mark explicitly as 'standard' or 'enterprise'."
         )
 
+    def test_supersedence_field_loads_from_yaml(self, temp_catalog_paths):
+        """All four mode values round-trip through YAML, including the
+        mode-specific extras (version_pattern, supersedes list).
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [
+                {
+                    'id': 'vlc', 'type': 'msi', 'distribution': 'standard',
+                    'install_command_template': 'msiexec /i {installer_filename} /qn',
+                    'supersedence': {'line': 'vlc', 'mode': 'generic'},
+                },
+                {
+                    'id': 'foo-1.6', 'type': 'msi', 'distribution': 'standard',
+                    'install_command_template': 'msiexec /i {installer_filename} /qn',
+                    'supersedence': {
+                        'line': 'foo', 'mode': 'specific',
+                        'version_pattern': r'^1\.6\.\d+$',
+                    },
+                },
+                {
+                    'id': 'enterprise-app-2008', 'type': 'msi', 'distribution': 'enterprise',
+                    'install_command_template': 'msiexec /i {installer_filename} /qn',
+                    'supersedence': {
+                        'mode': 'manual',
+                        'supersedes': ['enterprise-app-2007', 'enterprise-app-2006'],
+                    },
+                },
+                {
+                    'id': 'java-jdk-17', 'type': 'msi', 'distribution': 'standard',
+                    'install_command_template': 'msiexec /i {installer_filename} /qn',
+                    'supersedence': {'mode': 'none'},
+                },
+            ],
+        })
+        catalog = ic.load_catalog()
+        assert catalog.by_id('vlc').supersedence == {'line': 'vlc', 'mode': 'generic'}
+        assert catalog.by_id('foo-1.6').supersedence['version_pattern'] == r'^1\.6\.\d+$'
+        assert catalog.by_id('enterprise-app-2008').supersedence['supersedes'] == [
+            'enterprise-app-2007', 'enterprise-app-2006',
+        ]
+        assert catalog.by_id('java-jdk-17').supersedence == {'mode': 'none'}
+
+    def test_supersedence_modes_controlled_vocabulary(self):
+        """Pin the mode set so a typo or rename in any consumer breaks a
+        test, not the deploy pipeline silently. Operators and machine
+        generators both depend on this vocabulary."""
+        assert ic.SUPERSEDENCE_MODES == {'generic', 'specific', 'manual', 'none'}
+
+    def test_verified_version_statuses_controlled_vocabulary(self):
+        """Same -- the publish-time state machine writes these values
+        and the polling hook reads them. Stable vocabulary required."""
+        assert ic.VERIFIED_VERSION_STATUSES == {
+            'newest', 'superseded', 'historical', 'manual', 'pending',
+        }
+
+    def test_record_verification_marks_new_records_newest(self, temp_catalog_paths):
+        """Minimum status state-machine behaviour: a freshly verified
+        deployment lands with status='newest'. Demotion of prior
+        'newest' rows to 'historical' / 'superseded' is the publish-time
+        responsibility (separate PR).
+        """
+        baseline, local = temp_catalog_paths
+        _write_yaml(local, {
+            'version': 1,
+            'entries': [{
+                'id': 'app1', 'type': 'msi',
+                'install_command_template': 'msiexec /i {installer_filename} /qn',
+                'product_code': '{ABC}',
+                'verified_versions': [],
+            }],
+        })
+        ic.record_verification('app1', '1.2.3', 'app-id-1')
+        entry = ic.load_catalog().by_id('app1')
+        assert len(entry.verified_versions) == 1
+        assert entry.verified_versions[0]['status'] == 'newest'
+
+    def test_add_msi_entry_sets_default_supersedence_block(self, temp_catalog_paths):
+        """New auto-added entries get supersedence={line: id, mode: generic}.
+        Capability-only -- operator still has to opt in at publish time."""
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': []})
+        entry = ic.add_msi_entry(
+            {'product_name': 'NewApp', 'product_code': '{X}', 'manufacturer': 'V'},
+            install_command_template='msiexec /i {installer_filename} /qn',
+        )
+        assert entry.supersedence == {'line': entry.id, 'mode': 'generic'}
+
+    def test_baseline_has_no_top_level_version_field(self):
+        """Contract: the committed baseline is shared across all operators
+        and tenants; the ``version`` field is per-operator state (different
+        operators may be on different versions at the same time). Allowing
+        ``version`` in the baseline would leak one operator's state into
+        every other operator's view on the next pull.
+        """
+        from autopackager.utils.installer_catalog import BASELINE_PATH, _load_yaml_file
+        if not BASELINE_PATH.exists():
+            pytest.skip(f"Baseline missing at {BASELINE_PATH}")
+        raw = _load_yaml_file(BASELINE_PATH)
+        leaked = []
+        for entry_raw in raw.get('entries') or []:
+            if 'version' in entry_raw:
+                leaked.append(entry_raw.get('id'))
+        assert not leaked, (
+            f"Baseline entries with top-level 'version' field: {leaked}. "
+            "The 'version' field is overlay-only (per-tenant state). "
+            "Remove it from the baseline; create-software-job will set it "
+            "in the operator's overlay at publish time."
+        )
+
+    def test_baseline_entries_declare_explicit_supersedence_mode(self):
+        """Contract: every baseline entry must declare a supersedence.mode
+        explicitly. Silent default mode (anything in the YAML missing the
+        block) is fine at runtime but ambiguous for audit -- a reader of
+        the baseline file should never wonder "is this entry opted in to
+        supersedence or not?".
+        """
+        from autopackager.utils.installer_catalog import BASELINE_PATH, _load_yaml_file
+        if not BASELINE_PATH.exists():
+            pytest.skip(f"Baseline missing at {BASELINE_PATH}")
+        raw = _load_yaml_file(BASELINE_PATH)
+        unmarked = []
+        for entry_raw in raw.get('entries') or []:
+            sup = entry_raw.get('supersedence') or {}
+            if 'mode' not in sup:
+                unmarked.append(entry_raw.get('id'))
+        assert not unmarked, (
+            f"Baseline entries missing 'supersedence.mode': {unmarked}. "
+            "Declare explicitly as one of: generic, specific, manual, none."
+        )
+
     def test_round_trip_through_local_overlay_write(self, temp_catalog_paths):
         # Adding an EXE entry to the overlay must preserve the new fields
         # across a write+read cycle. _write_local strips empty values, so

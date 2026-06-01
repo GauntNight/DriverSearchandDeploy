@@ -60,6 +60,54 @@
 #                          carry both editions side-by-side when both
 #                          ship in your tenant.
 #
+# Supersedence (CAPABILITY declaration; opt-in at publish time only)
+# ------------------------------------------------------------------
+# Supersedence is NEVER automatic. Operators opt in per publish via the
+# CLI's --supersede (catalog-mode) or --supersedes <id...> (manual
+# override) flag. The catalog declares what's POSSIBLE; the publish
+# command controls what HAPPENS.
+#
+# supersedence.line          -- supersedence chain identifier. All
+#                               entries sharing a line participate
+#                               together. Defaults to entry's `id` when
+#                               omitted.
+# supersedence.mode          -- REQUIRED on every baseline entry. One of
+#                               SUPERSEDENCE_MODES:
+#                                 generic   -- newer supersedes older in
+#                                              the line (PEP 440 ordering)
+#                                 specific  -- only versions matching
+#                                              version_pattern are in the
+#                                              line (re.fullmatch)
+#                                 manual    -- operator-declared explicit
+#                                              `supersedes: [id, ...]`
+#                                 none      -- DENY in both directions
+#                                              (entry never supersedes,
+#                                              never gets superseded).
+#                                              Use for developer
+#                                              middleware where parallel
+#                                              versions are intentional
+#                                              (JDKs, Python interpreters,
+#                                              .NET runtimes). Overrides
+#                                              any operator opt-in flag.
+# supersedence.version_pattern (specific only) -- re.fullmatch regex.
+# supersedence.supersedes      (manual only)   -- list of entry IDs.
+#
+# WHAT MUST NEVER APPEAR IN THE BASELINE (overlay-only fields)
+# ------------------------------------------------------------
+# These are per-tenant state, not curated knowledge. A contract test
+# (tests/unit/test_installer_catalog.py) enforces their absence on
+# every baseline entry.
+#
+#   version          -- the current/intended version this entry is
+#                       tracking. Per-operator (different operators may
+#                       be on different versions of the same product at
+#                       the same time). Populated by create-software-job.
+#   verified_versions-- the publish history with tenant-bound
+#                       intune_app_id and per-record status. Populated
+#                       by record_verification() / the status state
+#                       machine.
+#   first_seen, last_used, use_count -- operator-private usage telemetry.
+#
 # EXE installer fields (type: exe):
 #   installer_family   -- Installer engine. One of:
 #                          msi, inno_setup, nsis, wix_burn,
@@ -109,6 +157,9 @@ entries:
     uninstall_command_template: "msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart"
     installer_family: msi
     distribution: standard
+    supersedence:
+      line: 7-zip
+      mode: generic
     information_url: "https://www.7-zip.org/"
     description: "Free open-source file archiver with a high compression ratio."
     categories: ["Productivity"]
@@ -126,6 +177,9 @@ entries:
     type: exe
     installer_family: nsis
     distribution: standard
+    supersedence:
+      line: notepad-plus-plus
+      mode: generic
     pe_company_name: "Don HO"  # PE VS_VERSIONINFO ships "Don HO don.h@free.fr"; substring match
     pe_product_name: "Notepad++"
     install_command_template: "{installer_filename} /S"
@@ -151,6 +205,9 @@ entries:
     type: exe
     installer_family: wrapped_msi
     distribution: standard
+    supersedence:
+      line: powertoys
+      mode: generic
     pe_company_name: "Microsoft"
     pe_product_name: "PowerToys"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
@@ -176,6 +233,9 @@ entries:
     type: exe
     installer_family: wrapped_msi
     distribution: standard  # Public Acrobat Reader DC download. The Adobe Customization Wizard / Enterprise pack would be a separate entry with distribution: enterprise.
+    supersedence:
+      line: adobe-reader-dc
+      mode: generic
     pe_company_name: "Adobe"
     pe_product_name: "Adobe Acrobat"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
@@ -199,6 +259,9 @@ entries:
     type: exe
     installer_family: wrapped_zip
     distribution: standard  # Public Foxit PDF Reader bundle. The Foxit Enterprise Pack (commercial license, separate URL) would be a separate entry with distribution: enterprise.
+    supersedence:
+      line: foxit-pdf-reader
+      mode: generic
     pe_company_name: "Foxit"
     pe_product_name: "Foxit PDF Reader"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
