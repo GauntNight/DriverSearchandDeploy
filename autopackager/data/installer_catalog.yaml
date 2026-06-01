@@ -48,6 +48,18 @@
 #                         resource (the pure-Python extractor can't reach
 #                         those) and you want a real icon in the portal.
 #
+# distribution         -- REQUIRED for new entries. One of:
+#                          standard, enterprise (see DISTRIBUTION_KINDS
+#                          in installer_catalog.py). Many COTS apps ship
+#                          both editions whose installers share
+#                          ProductName / Publisher but differ in install
+#                          commands and licensing (Adobe Reader DC vs
+#                          Acrobat Pro for Enterprise, Zoom standard vs
+#                          Zoom for Government, Slack vs Enterprise Grid).
+#                          Mark explicitly so audits stay unambiguous;
+#                          carry both editions side-by-side when both
+#                          ship in your tenant.
+#
 # EXE installer fields (type: exe):
 #   installer_family   -- Installer engine. One of:
 #                          msi, inno_setup, nsis, wix_burn,
@@ -96,6 +108,7 @@ entries:
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
     uninstall_command_template: "msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart"
     installer_family: msi
+    distribution: standard
     information_url: "https://www.7-zip.org/"
     description: "Free open-source file archiver with a high compression ratio."
     categories: ["Productivity"]
@@ -112,6 +125,7 @@ entries:
   - id: notepad-plus-plus
     type: exe
     installer_family: nsis
+    distribution: standard
     pe_company_name: "Don HO"  # PE VS_VERSIONINFO ships "Don HO don.h@free.fr"; substring match
     pe_product_name: "Notepad++"
     install_command_template: "{installer_filename} /S"
@@ -136,6 +150,7 @@ entries:
   - id: powertoys
     type: exe
     installer_family: wrapped_msi
+    distribution: standard
     pe_company_name: "Microsoft"
     pe_product_name: "PowerToys"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
@@ -160,6 +175,7 @@ entries:
   - id: adobe-reader-dc
     type: exe
     installer_family: wrapped_msi
+    distribution: standard  # Public Acrobat Reader DC download. The Adobe Customization Wizard / Enterprise pack would be a separate entry with distribution: enterprise.
     pe_company_name: "Adobe"
     pe_product_name: "Adobe Acrobat"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
@@ -182,6 +198,7 @@ entries:
   - id: foxit-pdf-reader
     type: exe
     installer_family: wrapped_zip
+    distribution: standard  # Public Foxit PDF Reader bundle. The Foxit Enterprise Pack (commercial license, separate URL) would be a separate entry with distribution: enterprise.
     pe_company_name: "Foxit"
     pe_product_name: "Foxit PDF Reader"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"

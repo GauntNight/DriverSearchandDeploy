@@ -33,6 +33,28 @@ logger = get_logger(__name__)
 CATALOG_VERSION = 1
 
 
+# Controlled vocabulary for CatalogEntry.distribution. Many COTS apps
+# ship both a consumer/standard edition and a vendor-managed enterprise
+# edition (Adobe Reader DC vs Acrobat Pro for enterprise; Zoom standard
+# vs Zoom for Government; Slack vs Slack Enterprise Grid). They often
+# share ProductName / Publisher / even partial ProductCodes -- but the
+# install command, licensing terms, MSI properties and supported config
+# overrides can diverge. Marking the distribution explicitly:
+#
+#   * lets the catalog carry both entries side-by-side without ambiguity
+#   * lets an operator search the catalog by audience
+#   * makes audits unambiguous (which build did we actually deploy)
+#
+# Disambiguation at match time is currently by SHA-256 (different builds
+# have different hashes); CLI flags to prefer a distribution are a
+# follow-up if we hit a case where ProductCode collides across editions.
+DISTRIBUTION_KINDS = {
+    'standard',    # Consumer / free / general download channel.
+    'enterprise',  # Vendor enterprise channel (different licensing,
+                   # often different MSI properties / supported flags).
+}
+
+
 # Controlled vocabulary for CatalogEntry.installer_family. Adding a new
 # value is fine; spelling typos that fall outside this set just log a
 # warning at load time and treat the entry as 'custom'.
@@ -174,6 +196,16 @@ class CatalogEntry:
     type: str  # 'msi' | 'exe'
     install_command_template: str
     uninstall_command_template: Optional[str] = None
+    # ---- Distribution channel ------------------------------------------
+    # See DISTRIBUTION_KINDS for the controlled vocabulary. Mark every
+    # entry: many COTS apps ship both 'standard' (consumer/free) and
+    # 'enterprise' (vendor-managed) editions whose installers share
+    # ProductName / Publisher but differ in install commands, licensing,
+    # and supported config flags. Leaving this unset on shared catalogs
+    # makes audits ambiguous ("which Acrobat did we ship?"). Default
+    # behaviour when unset is treated as standard, but the loader does
+    # not infer it -- explicit marking is the operator contract.
+    distribution: Optional[str] = None
     # ---- Installer engine family ----------------------------------------
     # Identifies the bootstrapper / installer framework so we can derive
     # silent-install switches when no install_command_template is supplied
@@ -382,6 +414,7 @@ def add_exe_entry(
     detection_rules: Optional[list] = None,
     sha256: Optional[str] = None,
     notes: str = "",
+    distribution: str = "standard",
 ) -> 'CatalogEntry':
     """Append a new EXE entry to the local overlay.
 
@@ -411,6 +444,7 @@ def add_exe_entry(
         pe_product_name=product or None,
         sha256=sha256,
         detection_rules=detection_rules,
+        distribution=distribution,
         notes=notes,
         first_seen=today,
         last_used=today,
@@ -549,6 +583,7 @@ def add_msi_entry(
     install_command_template: str,
     *,
     notes: str = "",
+    distribution: str = "standard",
 ) -> CatalogEntry:
     """Append a new MSI entry to the local overlay.
 
@@ -583,6 +618,7 @@ def add_msi_entry(
         product_code=product_code,
         product_name_pattern=name or None,
         publisher=msi_metadata.get("manufacturer") or None,
+        distribution=distribution,
         notes=notes,
         first_seen=today,
         last_used=today,
