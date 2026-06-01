@@ -370,3 +370,74 @@ class VersionComparator:
             True if versions are different (latest is newer), False otherwise
         """
         return self.is_newer(current, latest, vendor)
+
+
+# ---------------------------------------------------------------------------
+# Catalog supersedence: PEP 440 with vendor-format normalisation
+# ---------------------------------------------------------------------------
+
+def _normalise_for_pep440(v: str) -> str:
+    """Massage vendor-shaped version strings into something PEP 440 accepts.
+
+    PEP 440 rejects formats common in the wild:
+      * Java's ``1.8.0_341`` -- underscore-then-digits is not PEP 440. We map
+        ``_`` to ``.`` so it parses as ``1.8.0.341``. Ordering is preserved
+        because the digits after ``_`` are monotonically increasing builds.
+      * Some vendor builds use ``-`` as a build separator (``17.0.13-7``)
+        which PEP 440 treats as a pre-release suffix; we replace it with
+        ``.`` so the build number sorts naturally.
+
+    Leaves SemVer-y / Adobe-style / Mozilla-style versions untouched
+    (``3.0.23``, ``26.001.21563``, ``17.0.14`` etc. parse directly).
+    """
+    return (v or "").strip().replace("_", ".").replace("-", ".")
+
+
+def compare_catalog_versions(a: str, b: str) -> int:
+    """Compare two version strings used in catalog supersedence chains.
+
+    Returns -1 if a < b, 0 if a == b, +1 if a > b.
+
+    Uses ``packaging.version.Version`` (PEP 440) after _normalise_for_pep440
+    transforms vendor-shaped versions into a PEP 440-acceptable form. Falls
+    back to natural-sort tuple comparison on parse failure -- never raises,
+    so a malformed version doesn't take down the supersedence logic.
+    """
+    from packaging.version import Version, InvalidVersion
+
+    na, nb = _normalise_for_pep440(a), _normalise_for_pep440(b)
+    try:
+        va, vb = Version(na), Version(nb)
+    except InvalidVersion:
+        return _natural_sort_compare(na, nb)
+    if va < vb:
+        return -1
+    if va > vb:
+        return 1
+    return 0
+
+
+def _natural_sort_compare(a: str, b: str) -> int:
+    """Last-resort comparator: split on non-alphanumerics and compare
+    segments as ints when both sides are numeric, lexicographically otherwise.
+
+    Handles things like build IDs that PEP 440 can't parse. Won't be
+    semantically correct for every vendor's nonsense format, but it's
+    deterministic and reasonable -- which beats raising mid-publish.
+    """
+    def _segments(s: str):
+        return [int(part) if part.isdigit() else part.lower()
+                for part in re.split(r'[^A-Za-z0-9]+', s) if part]
+
+    sa, sb = _segments(a), _segments(b)
+    for x, y in zip(sa, sb):
+        if isinstance(x, int) and isinstance(y, int):
+            if x != y:
+                return -1 if x < y else 1
+        else:
+            xs, ys = str(x), str(y)
+            if xs != ys:
+                return -1 if xs < ys else 1
+    if len(sa) != len(sb):
+        return -1 if len(sa) < len(sb) else 1
+    return 0

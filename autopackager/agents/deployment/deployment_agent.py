@@ -166,12 +166,23 @@ class DeploymentAgent:
 
         graph_client = self._get_graph_client()
 
-        existing_apps = graph_client.get_win32_apps()
+        # When the operator requested supersedence at create-software-job
+        # time, this publish MUST land as a NEW Intune app -- not a PATCH
+        # of the existing displayName match. Intune supersedence is a
+        # link BETWEEN apps; PATCHing the existing app gives us nothing
+        # to link to (the old app id would equal the new one). Skipping
+        # the displayName lookup forces a clean create_win32_app() and
+        # supersedingApps lands on the new id pointing at the prior
+        # version's id.
+        supersedence_requested = bool((job.job_metadata or {}).get('supersedence_action'))
+
         existing_app = None
-        for app in existing_apps.get('value', []):
-            if app.get('displayName') == package.name:
-                existing_app = app
-                break
+        if not supersedence_requested:
+            existing_apps = graph_client.get_win32_apps()
+            for app in existing_apps.get('value', []):
+                if app.get('displayName') == package.name:
+                    existing_app = app
+                    break
 
         app_data = self._prepare_app_data(package, job)
 
@@ -214,10 +225,154 @@ class DeploymentAgent:
         if catalog_entry and catalog_entry.categories:
             self._assign_categories(graph_client, app_id, catalog_entry.categories)
 
-        # Upload .intunewin content and flip publishingState to 'published'
+        # Upload .intunewin content and flip publishingState to 'published'.
+        # MUST run before supersedence: Intune's updateRelationships action
+        # rejects calls against an app whose PublishingState is not
+        # 'Published' ("Invalid operation: app's PublishingState is not
+        # 'Published'", verified against the ngbg tenant 2026-06-01).
         self._upload_and_publish(graph_client, app_id, package)
 
+        # Beta-only field: displayVersion populates the Intune portal's
+        # "App Version" column. v1.0 POST/PATCH silently drops the field
+        # (no error, just doesn't persist), and v1.0 GET returns None even
+        # when the field is set via beta. Must be PATCHed AFTER
+        # _upload_and_publish: against an app still in 'notPublished' state
+        # the beta PATCH returns 200 but the value never lands (verified
+        # against the ngbg tenant 2026-06-01, app id 76468611...).
+        if package.version:
+            try:
+                import requests as _requests
+                _requests.patch(
+                    f'{graph_client.graph_endpoint}/beta/deviceAppManagement/mobileApps/{app_id}',
+                    headers=graph_client._get_headers(),
+                    json={
+                        '@odata.type': '#microsoft.graph.win32LobApp',
+                        'displayVersion': package.version,
+                    },
+                    timeout=30,
+                )
+                logger.info("displayVersion set via beta", app_id=app_id, version=package.version)
+            except Exception as exc:  # noqa: BLE001 -- portal cosmetic; don't fail publish
+                logger.warning("Could not set displayVersion via beta", error=str(exc))
+
+        # Apply supersedence (operator opted in via --supersede or
+        # --supersedes at create-software-job time). The CLI resolved the
+        # action against the catalog snapshot; we just execute it. Two
+        # operations:
+        #   1. POST /mobileApps/{id}/updateRelationships with a
+        #      mobileAppSupersedence per app being superseded.
+        #   2. Demote the matching verified_versions rows to
+        #      status='superseded' in the local overlay so the catalog
+        #      reflects the new chain state.
+        self._apply_supersedence(graph_client, app_id, job)
+
+        # Record the publish on the catalog overlay as a 'pending'
+        # verified_versions row. This lets the NEXT publish's
+        # resolve_supersedence find this app id in the catalog -- before
+        # the device has actually installed it. The polling hook later
+        # promotes 'pending' -> 'newest' / 'manual' / 'historical' once
+        # installed_count > 0 on a real device.
+        if catalog_entry and package.version:
+            try:
+                from autopackager.utils.installer_catalog import record_publish
+                record_publish(catalog_entry.id, package.version, app_id)
+            except Exception as rec_exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to record catalog publish",
+                    entry_id=catalog_entry.id, error=str(rec_exc),
+                )
+
         return app_id
+
+    def _apply_supersedence(self, graph_client, new_app_id: str, job: Job) -> None:
+        """Execute the supersedence action the CLI resolved (if any).
+
+        Reads ``job.job_metadata['supersedence_action']`` (dict produced by
+        ``resolve_supersedence``). When present, POSTs each
+        ``mobileAppSupersedence`` relationship via the Graph
+        ``updateRelationships`` action and then commits the status
+        demotions to the local catalog overlay. Failures inside the
+        relationship POST log + raise -- supersedence is a load-bearing
+        operator intent and silently dropping it would be worse than
+        failing the publish.
+        """
+        action = (job.job_metadata or {}).get('supersedence_action')
+        if not action:
+            return
+        superseded_ids = action.get('superseded_intune_app_ids') or []
+        if not superseded_ids:
+            logger.info("Supersedence action has no Intune app ids to link", app_id=new_app_id)
+        else:
+            relationships = [
+                {
+                    '@odata.type': '#microsoft.graph.mobileAppSupersedence',
+                    'targetId': sid,
+                    'supersedenceType': 'update',
+                }
+                for sid in superseded_ids
+            ]
+            # The Intune updateRelationships action is exposed only on the
+            # beta endpoint -- POST to /v1.0/.../updateRelationships
+            # returns "Resource not found for the segment
+            # 'updateRelationships'". Verified against the ngbg tenant
+            # 2026-06-01.
+            try:
+                graph_client._beta_post(
+                    f'deviceAppManagement/mobileApps/{new_app_id}/updateRelationships',
+                    data={'relationships': relationships},
+                )
+                logger.info(
+                    "Recorded supersedence relationships",
+                    new_app_id=new_app_id,
+                    superseded_count=len(superseded_ids),
+                    superseded_app_ids=superseded_ids,
+                )
+            except Exception as exc:  # noqa: BLE001 -- bubble up; operator wants to know
+                logger.error(
+                    "Failed to record supersedence relationships",
+                    new_app_id=new_app_id,
+                    error=str(exc),
+                )
+                raise
+
+        # Catalog overlay demotions. Idempotent at row level.
+        demoted = action.get('demoted_records') or []
+        if demoted:
+            try:
+                self._commit_supersedence_status(demoted)
+            except Exception as exc:  # noqa: BLE001 -- catalog drift, not a publish failure
+                logger.warning(
+                    "Could not commit supersedence status to overlay",
+                    error=str(exc),
+                )
+
+    @staticmethod
+    def _commit_supersedence_status(demoted_records: list) -> None:
+        """Mark the named (entry_id, intune_app_id) rows as superseded in
+        the local overlay. Mirror of
+        installer_catalog.apply_supersedence_status, fed by the dict-shaped
+        ``demoted_records`` we serialise into job_metadata (the original
+        SupersedenceResolution doesn't survive Celery serialisation as a
+        dataclass).
+        """
+        from autopackager.utils.installer_catalog import (
+            _local_overlay_entries, _write_local,
+        )
+        target_keys = {
+            (r['entry_id'], r.get('product_version'), r.get('verified_intune_app_id'))
+            for r in demoted_records
+        }
+        overlay = _local_overlay_entries()
+        changed = 0
+        for entry in overlay:
+            for vv in entry.verified_versions or []:
+                key = (entry.id, vv.get('product_version'), vv.get('verified_intune_app_id'))
+                if key in target_keys and vv.get('status') != 'superseded':
+                    vv['status'] = 'superseded'
+                    changed += 1
+        if changed:
+            _write_local(overlay)
+            logger.info("Catalog supersedence status committed", rows=changed)
 
     def _assign_categories(self, graph_client, app_id: str, category_names: list) -> None:
         """Attach Intune mobileAppCategory entries to ``app_id`` by display name.
@@ -282,11 +437,21 @@ class DeploymentAgent:
             logger.debug("Catalog load skipped", error=str(exc))
             return None
 
-        # MSI: lookup by ProductCode (the GUID matches the canonical
-        # baseline entry across all operators).
-        product_code = pkg_meta.get('msi_product_code')
-        if product_code:
-            entry = catalog.match_by_product_code(product_code)
+        # MSI: cascade through UpgradeCode -> ProductCode -> name/publisher.
+        # ProductCode alone is too tight: each released version of a product
+        # gets its own ProductCode, so a fresh version (e.g. 7.6.2 with a
+        # new GUID) misses the catalog entry that was registered against
+        # 7.6.1's GUID. UpgradeCode is the stable per-product identifier
+        # MSI guarantees across versions, which is exactly what supersedence
+        # needs to find the catalog row that owns this product line.
+        msi_meta_for_match = {
+            'product_code': pkg_meta.get('msi_product_code'),
+            'upgrade_code': pkg_meta.get('msi_upgrade_code'),
+            'product_name': pkg_meta.get('msi_product_name') or package.name,
+            'manufacturer': pkg_meta.get('msi_manufacturer') or package.vendor,
+        }
+        if any(msi_meta_for_match.values()):
+            entry = catalog.match_msi(msi_meta_for_match)
             if entry:
                 return entry
 

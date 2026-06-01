@@ -36,6 +36,11 @@ click==8.1.7
 rich==13.7.0
 tenacity==8.2.3
 python-dateutil==2.8.2
+# Used by autopackager.utils.version_comparison.compare_catalog_versions
+# for PEP 440-aware version ordering in supersedence chains. Transitively
+# present via pytest/setuptools but pinned explicitly so we don't break
+# if pytest changes deps.
+packaging>=22.0
 
 # Logging & Monitoring
 structlog==23.3.0
