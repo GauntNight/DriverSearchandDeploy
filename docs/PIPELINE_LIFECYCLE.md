@@ -297,20 +297,32 @@ testing:
 3. Verify package passed testing (blocks if `package.test_passed == false`)
 4. Authenticate with Microsoft Graph API
 5. Create or update Intune Win32 app:
-   - If app exists and `publishingState == "published"`: PATCH metadata
-   - If app exists but not published: DELETE broken app shell, recreate
-   - If app doesn't exist: CREATE new app
-6. Upload `.intunewin` content:
+   - **If the operator opted into supersedence (`--supersede` / `--supersedes`)**: skip the existing-app `displayName` lookup entirely and CREATE a new app, regardless of whether a same-name app already exists. Supersedence is a relationship *between* apps, so PATCHing the existing app would leave the deployment agent with no second app id to link to.
+   - Else if app exists and `publishingState == "published"`: PATCH metadata
+   - Else if app exists but not published: DELETE broken app shell, recreate
+   - Else: CREATE new app
+6. Attach Intune categories from the catalog (best-effort — failures don't block).
+7. Upload `.intunewin` content:
    - Create content version
    - Upload file in chunks (Azure Blob Storage)
    - Commit content version
    - Wait for `publishingState` to flip to `"published"`
-7. Assign to Ring 0 (IT Pilot):
-   - Target Entra ID group: `AutoPackager-Ring0-ITPilot`
-   - Assignment intent: `required`
-   - Notifications: enabled
-8. Save deployment record to database
-9. Mark job `completed`
+8. PATCH `displayVersion` via the **beta** endpoint. The v1.0 endpoint silently drops `displayVersion` on POST/PATCH (no error, just doesn't persist) and v1.0 GET returns `None` even when beta has set it — the Intune portal's "App Version" column reads from beta. Must run *after* step 7: PATCH against a `notPublished` app returns 204 but the value never lands.
+9. **Apply supersedence**, if the CLI stashed a `supersedence_action` in `job.job_metadata`:
+   - For each Intune app id in the action's `superseded_intune_app_ids` list, POST a `mobileAppSupersedence` relationship to `/beta/deviceAppManagement/mobileApps/{new-id}/updateRelationships` (`supersedenceType: 'update'`). The `updateRelationships` action is **beta-only** — v1.0 returns "Resource not found for the segment 'updateRelationships'".
+   - Demote the matching `verified_versions` rows in the local catalog overlay to `status: superseded`.
+   - Must run *after* step 7: Intune rejects `updateRelationships` against an app whose `publishingState` is not `Published` ("Invalid operation: app's PublishingState is not 'Published'").
+10. `record_publish()` writes a `pending` `verified_versions` row for this app id in the local catalog overlay. The polling hook later promotes it to `newest` (or `manual`, for rollback flows) on the first successful device install.
+11. Assign to Ring 0 (IT Pilot):
+    - Target Entra ID group: `AutoPackager-Ring0-ITPilot`
+    - Assignment intent: `required`
+    - Notifications: enabled
+12. Save deployment record to database
+13. Mark job `completed`
+
+**Ordering invariants surfaced live (do not reorder):**
+- `_upload_and_publish` (step 7) **must precede** both the `displayVersion` PATCH (step 8) and the supersedence POST (step 9). Both Intune actions reject calls against apps in `publishingState: notPublished`, and v1.0 PATCH on a notPublished app is a 204 no-op.
+- `_lookup_catalog_entry` uses `Catalog.match_msi` (UpgradeCode → ProductCode → name/publisher cascade), not ProductCode alone. Each MSI version has a unique ProductCode; UpgradeCode is the stable per-product identifier MSI guarantees across versions, which is what supersedence needs to find the catalog row that owns this product line.
 
 **Deployment Rings (Phase 1):**
 ```yaml

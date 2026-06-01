@@ -1,5 +1,7 @@
 ## [1.6.0] - 2026-06-01
 
+End-to-end MSI supersedence: the operator opts in per publish, AutoPackager creates a new Intune Win32 app for the new version, links it to the prior version via Intune's `mobileAppSupersedence` relationship, and updates the catalog overlay's `verified_versions` state machine to reflect the new chain. Pilot-verified live against the ngbg tenant with PowerShell 7.6.1 → 7.6.2 and PuTTY 0.83 → 0.84.
+
 ### Added
 
 - **Catalog supersedence schema.** New `CatalogEntry.supersedence` block declares a CAPABILITY (which versions in which line, by what strategy) without forcing any behaviour at publish time. Supersedence is **never automatic** — the operator opts in per publish via the CLI's `--supersede` (catalog-mode) or `--supersedes <id...>` (manual override) flag. Four modes via the new `SUPERSEDENCE_MODES` controlled vocabulary:
@@ -7,24 +9,38 @@
   - `specific`: same as generic, but `version_pattern` (a `re.fullmatch` regex) filters which versions belong to the line. Used for parallel-maintained sub-lines (e.g., `^1\\.6\\.\\d+$` for Java 1.6.x).
   - `manual`: catalog declares explicit `supersedes: [entry-id, ...]` list.
   - `none`: **DENY in both directions** — entry never supersedes anything and is shielded from being marked superseded. Overrides any operator opt-in flag. Use for developer middleware where parallel versions are intentional (JDK 8 / 11 / 17 / 21, .NET 6 / 8 / 9, Python 3.x lines, Node LTS lines).
-- **`status` field on `verified_versions[]` rows.** New `VERIFIED_VERSION_STATUSES` controlled vocabulary: `newest`, `superseded`, `historical`, `manual`, `pending`. Machine-maintained by `record_verification()` (sets `newest` on each new verify) and the publish-time state machine (lands with the CLI integration PR — demotes prior `newest` to `historical` or `superseded` depending on whether the operator opted into supersedence). Visible in the overlay YAML for audit.
+- **CLI opt-in.** `cli.py create-software-job` gains `--supersede` (use the catalog's declared chain at default `mode: generic`) and `--supersedes <id>` (explicit overrides, repeatable). Silent by default — no interactive prompt. Mutually exclusive. `mode: none` is a DENY shield that overrides both flags in either direction. Resolution runs at CLI time against the catalog snapshot and is stashed in `job.job_metadata['supersedence_action']` for the deployment agent to execute.
+- **`status` field on `verified_versions[]` rows.** New `VERIFIED_VERSION_STATUSES` controlled vocabulary: `newest`, `superseded`, `historical`, `manual`, `pending`. Machine-maintained by `record_publish()` (writes `pending` at publish time) and `record_verification()` (line-aware state machine: promotes `pending` → `newest` on the first device install, demotes prior `newest` → `superseded` or `historical` based on whether the operator opted in). Status is stored, not computed, and re-evaluated at publish time.
+- **`record_publish()`.** New idempotent function called by the deployment agent immediately after `_upload_and_publish` — writes a `pending` `verified_versions` row with the freshly-minted Intune app id. Without it, supersedence on the *next* publish has no target rows in the catalog (the overlay was empty until a device actually installed), and the `supersedingApps` relationship never got created.
+- **`apply_supersedence_status()`.** Companion that demotes the matching `verified_versions` rows to `status: superseded` in the local overlay once Intune confirms the relationship.
+- **`resolve_supersedence()`.** Pure-function planner: given a catalog, a publishing entry, the operator's opt-in (`--supersede` / `--supersedes`), and the catalog snapshot, returns a `SupersedenceResolution` with `mode_used`, `superseded_intune_app_ids` (for the Graph POST), `demoted_records` (for the overlay write), and `notes` (operator-visible). `mode: none` short-circuits both directions.
+- **Version comparison** (`autopackager/utils/version_comparison.py`). `compare_catalog_versions(a, b)` via PEP 440 `packaging.version.Version` with vendor-format normalisation: underscores and hyphens collapse to dots before parsing, so Java-style `1.8.0_341` and `1.8.0-341` compare against `1.8.0.341` correctly. Falls back to natural-sort for genuinely non-PEP440 strings.
+- **Graph wiring.** Supersedence relationships POST to `/beta/deviceAppManagement/mobileApps/{id}/updateRelationships` with the `mobileAppSupersedence` shape (`targetId`, `supersedenceType: 'update'`). The action is **beta-only** — v1.0 returns *"Resource not found for the segment 'updateRelationships'"*. Verified live against the ngbg tenant.
+- **`displayVersion` populated via beta PATCH.** The Intune portal's "App Version" column reads from this field, but v1.0 POST/PATCH silently drops it (no error, just doesn't persist) and v1.0 GET returns `None` even when beta has set it. The deployment agent now PATCHes `displayVersion` against `/beta/deviceAppManagement/mobileApps/{id}` after every content commit. Verified visible end-to-end against the test tenant.
 - **Per-entry `version` field (overlay-only).** The current/intended version of an entry's installer. Distinct from `verified_versions` (publish history). Different operators may be on different versions of the same product at the same time, so this is intentionally tenant-private state — a contract test asserts the committed baseline never carries this field.
-- **Two new contract tests** in `tests/unit/test_installer_catalog.py`:
-  - `test_baseline_has_no_top_level_version_field` — reads the actual baseline YAML and asserts no entry has the per-tenant `version` field. Prevents one operator's state from leaking into every other operator's pulled catalog.
-  - `test_baseline_entries_declare_explicit_supersedence_mode` — every baseline entry must spell out `supersedence.mode` even when it's `none`. Audit-friendliness; ambiguity is a code-review smell.
+- **17 new tests** in `tests/unit/test_installer_catalog.py` covering `resolve_supersedence` (catalog mode, manual mode, explicit `--supersedes`, `mode: none` DENY shield in both directions, no-prior-row), the `verified_versions` state machine (pending → newest, prior-newest demotion paths, manual flag), `record_publish` idempotency, and two contract tests that read the actual baseline YAML to assert no `version` field leaks and every entry spells out `supersedence.mode` explicitly.
 - **`add_msi_entry` / `add_exe_entry` default supersedence block.** Auto-added entries now ship with `supersedence: {line: <id>, mode: generic}`. Capability-only declaration; operator opts in at publish time. Operators who want a stricter default (`mode: none` for developer middleware) edit the overlay after the auto-add.
 
 ### Changed
 
+- **Deployment-stage ordering reworked**, in three places — every change was found on a live tenant rather than a unit-test surface:
+  - `_apply_supersedence` and `record_publish` now run **after** `_upload_and_publish`. Intune's `updateRelationships` action rejects calls against an app whose `publishingState` is not `Published` (*"Invalid operation: app's PublishingState is not 'Published'"*). The previous order raced ahead of content commit and left `notPublished` orphan apps behind on every supersedence attempt.
+  - `displayVersion` beta PATCH also moved **after** `_upload_and_publish`. PATCH against a `notPublished` app returns 204 but the value never lands — the portal "App Version" column stayed blank on every freshly-created app.
+  - `_lookup_catalog_entry` now uses `Catalog.match_msi` (UpgradeCode → ProductCode → name/publisher cascade) instead of `match_by_product_code` alone. Every released MSI version carries a unique ProductCode, so a fresh version missed the catalog entry registered against the prior version's GUID. UpgradeCode is the stable per-product identifier MSI guarantees across versions — exactly what supersedence needs to find the catalog row that owns this product line.
+- **`_create_or_update_intune_app` skips the existing-app `displayName` lookup when supersedence is requested.** Intune supersedence is a relationship *between* apps; PATCHing the existing app gives the deployment agent nothing to link to (the old app id would equal the new one). Skipping the lookup forces a clean `create_win32_app()` and `supersedingApps` lands on the new id pointing at the prior version's id.
 - **Baseline YAML header docs** expanded with the supersedence semantics, the overlay-only contract for `version` / `verified_versions[].status`, and the controlled-vocabulary references. The "What must never appear in the baseline" subsection is the new authoritative list for catalog contributors.
 - **All five committed baseline entries** (7-Zip, Notepad++, PowerToys, Adobe Reader DC, Foxit PDF Reader) gain explicit `supersedence: {line: <id>, mode: generic}` blocks. Operators can override per-tenant in their overlay (e.g., `mode: none` for compliance lock).
-- **`record_verification`** sets `status: newest` on every new verified_versions row. Demotion of prior `newest` to `historical` / `superseded` lands with the next PR (publish-time state machine).
+- **`record_verification`** is now line-aware: promotes the matching `pending` row to `newest` (or `manual` when the operator flagged the publish as manual rollback), demotes any prior `newest` for the same line to `superseded` (if the supersedence chain was honoured) or `historical` (if the operator did not opt in). Idempotent on `(product_version, intune_app_id)`.
+
+### Dependencies
+
+- `packaging>=22.0` added to `requirements.txt`. Used by `autopackager.utils.version_comparison.compare_catalog_versions` for PEP 440-aware version ordering. Transitively present via `pytest`/`setuptools`, but pinned explicitly so a downstream `pytest` change can't break supersedence comparison.
 
 ### Version
 
 - `__version__` bumped to `1.6.0`.
 
-Full suite: 604 pass, 1 known pre-existing flake.
+Full suite: 506 pass on the file-DB harness, 1 known pre-existing flake (`test_get_all_jobs_ordered_by_created_at` when `data/autopackager.db` has accumulated state — reproduces on `main` HEAD without supersedence changes).
 
 ---
 

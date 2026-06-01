@@ -92,7 +92,7 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | **Wrapped installers (`wrapped_msi` / `wrapped_zip`)** | ⚠️ Mechanism wired, baseline entries unverified | `autopackager/utils/extractors.py` unwraps EXE bundlers (`-sfx_o`, `--extract_msi`) and ZIPs into the data/downloads/extracted/ cache; the rest of the pipeline runs against the inner MSI. PowerToys / Adobe Reader DC / Foxit Reader baseline entries seeded as documented placeholders |
 | Packaging → `.intunewin` | ✅ Working | Requires Windows + `IntuneWinAppUtil.exe`; produces a placeholder file if the tool is absent |
 | Intune publishing (Graph API) | ✅ Working | Full content-upload + publish flow. Win32 app payload now carries the full attribute set: `msiInformation`, `returnCodes`, `informationUrl`, `notes`, `largeIcon`, `categories` (via the $ref sub-collection), `minimumSupportedOperatingSystem` |
-| **End-to-end install on managed device** | ✅ Verified | 7-Zip 24.08, VLC 3.0.23, KeePass 2.61.1, Node.js 24.16.0 LTS, Slack 4.48.102, Zoom 7.0.38856, Webex 46.5.0.35006 (all MSI), and Notepad++ 8.9.6.2 (EXE / NSIS) — pushed via the Celery pipeline, assigned to Ring 0, observed installing on a real Intune-managed device, then confirmed via per-device install report. All also uninstalled cleanly via their catalog uninstall commands |
+| **End-to-end install on managed device** | ✅ Verified | 7-Zip 24.08, VLC 3.0.23, KeePass 2.61.1, Node.js 24.16.0 LTS, Slack 4.48.102, Zoom 7.0.38856, Webex 46.5.0.35006, PowerShell 7.6.1 + 7.6.2, PuTTY 0.83 + 0.84 (all MSI), and Notepad++ 8.9.6.2 (EXE / NSIS) — pushed via the Celery pipeline, assigned to Ring 0, observed installing on a real Intune-managed device, then confirmed via per-device install report. All also uninstalled cleanly via their catalog uninstall commands. Supersedence chain (`7.6.1 → 7.6.2`, `0.83 → 0.84`) verified live via the `/beta` `updateRelationships` action and visible in the Intune portal's "Supersedence" tab |
 | **Installer catalog** | ✅ Working | Two-layer YAML catalog. Each entry carries: type (`msi` / `exe`), `installer_family` (controlled vocabulary: `msi`, `inno_setup`, `nsis`, `wix_burn`, `msft_bootstrapper`, `wrapped_msi`, `wrapped_zip`, `custom`), `distribution` (`standard` / `enterprise`), install + uninstall command templates, `detection_rules` (6 catalog-native rule kinds → `win32LobApp*Rule` Graph payloads), Intune attribute overrides (`information_url`, `description`, `categories`, `min_os_version`, `icon_b64`), wrapped-extraction config, and `verified_versions` tracking. Local overlay overrides baseline on `id` collision |
 | Testing | ⚠️ Basic | Smoke checks (file/command/rules) by default; real install testing requires Hyper-V (Windows host) |
 | Azure VM testing | ❌ Not implemented | Provider raises "not yet implemented" |
@@ -100,11 +100,11 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | Automatic ring promotion | ✅ Working | Scheduled via Celery Beat when `ring_promotion.auto_promote` is enabled |
 | Automatic rollback | ✅ Working | Evaluated during status polling against `rollback.failure_threshold_percent` |
 | Intune-native Driver Update Profiles | ⚠️ Available, not wired | `DeploymentAgent.deploy_driver_update_profile()` exists but the default pipeline uses the Win32 path |
-| Win32 supersedence | ❌ Stub | `_create_supersedence()` is a placeholder. Planned next: drive supersedence off the installer catalog so promoting a new MSI version auto-unassigns the old one |
+| **Win32 supersedence** | ✅ Working (MSI) | Operator opts in per publish via `cli.py create-software-job --supersede` (use the catalog's declared chain) or `--supersedes <id>` (explicit overrides). Deployment agent POSTs `mobileAppSupersedence` to `/beta/mobileApps/{id}/updateRelationships` (beta-only — v1.0 has no such action) and demotes the prior `verified_versions` row to `status: superseded` in the catalog overlay. `mode: none` on the catalog entry is a DENY shield that overrides operator opt-in in both directions. Pilot-verified: PowerShell 7.6.1 → 7.6.2 and PuTTY 0.83 → 0.84 on the ngbg test tenant |
 | Continuous catalog discovery | ✅ Working | Celery Beat scheduled OEM catalog scanning |
 | Deployment status polling | ✅ Working | Uses the modern `POST /beta/.../retrieveDeviceAppInstallationStatusReport` endpoint (the legacy `mobileApps/{id}/deviceStatuses` nav property was retired by Microsoft); records verified versions back into the installer catalog overlay |
 | Database tracking | ✅ Working | SQLite by default; PostgreSQL optional (install `psycopg2`) |
-| CLI | ✅ Working | `init`, `create-driver-job`, `create-software-job` (MSI + EXE dispatch, wrapped-installer unwrap pre-stage), `inspect-msi`, `inspect-exe`, `jobs list/status/cancel/promote/halt-promotion/purge`, `worker start/purge`, `validate-azure` (`jobs rollback` is a stub — rollback runs automatically via polling) |
+| CLI | ✅ Working | `init`, `create-driver-job`, `create-software-job` (MSI + EXE dispatch, wrapped-installer unwrap pre-stage, `--supersede` / `--supersedes <id>` opt-in flags), `inspect-msi`, `inspect-exe`, `jobs list/status/cancel/promote/halt-promotion/purge`, `worker start/purge`, `validate-azure` (`jobs rollback` is a stub — rollback runs automatically via polling) |
 | Web dashboard (FastAPI + REST) | ✅ Working | Job, deployment, discovery, and stats endpoints |
 | LLM-driven discovery / install-param research | ❌ Planned (Phase 2) | No LLM is used in the current code |
 | COTS / general software discovery | ⚠️ Partial | MSI applications are packaged from a supplied install command + MSI metadata (see [Packaging MSI Software](#packaging-msi-software)). Automatic *version* discovery for software (checking vendors for updates) is still Phase 2 |
@@ -339,6 +339,43 @@ Reading a catalog file end-to-end tells the next operator three things about eac
 *what command silently installs it*, *what command cleanly removes it*, and *which
 versions we've watched land on a real device*.
 
+#### Supersedence (opt-in per publish)
+
+Each catalog entry declares a `supersedence` block — a *capability*, not a behaviour:
+
+```yaml
+supersedence:
+  line: powershell-7-x64     # entries in the same line are upgrade candidates
+  mode: generic              # generic | specific | manual | none
+```
+
+Mode semantics:
+
+- `generic` — newer version supersedes older within the same `line`, by PEP 440 ordering. The common case for "stable product, latest replaces previous."
+- `specific` — same as generic, but a `version_pattern` regex (matched with `re.fullmatch`) decides which versions belong to the line. Used for products with parallel-maintained sub-lines (e.g., Java 1.6.x vs 1.7.x).
+- `manual` — the entry carries an explicit `supersedes: [entry-id, ...]` list.
+- `none` — **DENY shield in both directions.** Entry never supersedes anything and is shielded from being marked superseded by anyone else. Use for developer middleware where parallel versions are intentional (JDK 8 / 11 / 17 / 21, .NET 6 / 8 / 9, Python 3.x lines, Node LTS lines).
+
+Supersedence is **never automatic.** Even when the catalog declares `mode: generic`, AutoPackager does not link versions until the operator opts in at publish time:
+
+```powershell
+# Use the catalog's declared chain (the common case)
+./venv/Scripts/python.exe cli.py create-software-job `
+  --installer-path "C:\Downloads\PowerShell-7.6.2-win-x64.msi" `
+  --install-command "msiexec /i PowerShell-7.6.2-win-x64.msi /qn /norestart" `
+  --supersede
+
+# Or specify exactly which catalog entries to supersede (repeatable)
+./venv/Scripts/python.exe cli.py create-software-job `
+  --installer-path "C:\Downloads\foo-2.0.msi" `
+  --supersedes foo-1-x `
+  --supersedes foo-legacy
+```
+
+`--supersede` and `--supersedes` are mutually exclusive. Either flag against an entry whose `mode` is `none` is silently ignored — DENY overrides ALLOW.
+
+Mechanics: at publish time, the deployment agent creates a **new** Intune app (skipping the existing-app `displayName` lookup so the supersedence link has two distinct app ids to point between), uploads content, and POSTs `mobileAppSupersedence` to `/beta/deviceAppManagement/mobileApps/{new-id}/updateRelationships` (the action is beta-only). The catalog overlay's prior-version row is then demoted to `status: superseded`. The new version's row is written with `status: pending` and gets promoted to `newest` on the first successful device install (via the status polling hook).
+
 > **Note:** This packages a *specific* MSI you supply. Automatically discovering new software
 > *versions* from vendors (the way driver discovery scans OEM catalogs) remains a Phase 2
 > item — see [Roadmap](#roadmap).
@@ -471,7 +508,7 @@ Be aware of the following before relying on AutoPackager in production:
 - **Software packaging is MSI-only.** The metadata-driven path reads MSI files; `.exe` and other installer types still fall back to file-type heuristics for their install commands.
 - **No automatic software version discovery yet.** MSI packaging works from an installer you supply; it does not yet scan vendors for newer software releases (Phase 2).
 - **No LLM features yet.** Discovery and install-command generation are fully deterministic. The `llm` config block and the OpenAI/Anthropic dependencies are unused.
-- **Supersedence is not implemented.** New versions are published as separate apps; old versions are not automatically superseded.
+- **Supersedence is opt-in, not automatic.** New versions are published as separate Intune apps. The operator chooses whether to link them via `cli.py create-software-job --supersede` (catalog-declared chain) or `--supersedes <id>` (explicit), at publish time. Pilot-verified for MSI; EXE / `wrapped_*` supersedence has not been exercised live yet.
 - **Rollback requires a prior known-good package.** Automatic rollback only works if an earlier deployed + tested package for the same name exists in the database.
 
 ## Roadmap
