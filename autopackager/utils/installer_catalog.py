@@ -974,6 +974,73 @@ def add_msi_entry(
     return entry
 
 
+def record_publish(
+    entry_id: str,
+    product_version: Optional[str],
+    intune_app_id: Optional[str],
+) -> None:
+    """Record a freshly-published Intune app on the catalog entry.
+
+    Adds a verified_versions row with status='pending' as soon as the
+    deployment agent creates the Intune Win32 app -- BEFORE the polling
+    hook has seen a device install. Without this, supersedence on the
+    *next* publish has no target rows in the catalog (verified_versions
+    is empty until the device actually installs), and the
+    supersedingApps relationship never gets created.
+
+    Idempotent: re-running for the same (entry_id, product_version,
+    intune_app_id) is a no-op. The polling hook's record_verification()
+    later promotes the status from 'pending' to 'newest' / 'manual'.
+    """
+    overlay = _local_overlay_entries()
+    target: Optional[CatalogEntry] = None
+    for e in overlay:
+        if e.id == entry_id:
+            target = e
+            break
+
+    if target is None:
+        baseline_catalog = Catalog(
+            entries=[
+                _entry_from_dict(r)
+                for r in (_load_yaml_file(BASELINE_PATH).get("entries") or [])
+                if _entry_from_dict(r) is not None
+            ]
+        )
+        base = baseline_catalog.by_id(entry_id)
+        if base is None:
+            logger.warning("record_publish called for unknown entry", entry_id=entry_id)
+            return
+        target = CatalogEntry(**asdict(base))
+        overlay.append(target)
+
+    pending_record = {
+        "product_version": product_version or "unknown",
+        "verified_at": _today_iso(),
+        "verified_intune_app_id": intune_app_id or "",
+        "status": "pending",
+    }
+
+    for existing in (target.verified_versions or []):
+        if (
+            existing.get("product_version") == pending_record["product_version"]
+            and existing.get("verified_intune_app_id") == pending_record["verified_intune_app_id"]
+        ):
+            logger.debug("Publish already recorded", entry_id=entry_id)
+            return
+
+    if target.verified_versions is None:
+        target.verified_versions = []
+    target.verified_versions.append(pending_record)
+    _write_local(overlay)
+    logger.info(
+        "Catalog entry publish recorded (pending)",
+        entry_id=entry_id,
+        product_version=product_version,
+        intune_app_id=intune_app_id,
+    )
+
+
 def record_verification(
     entry_id: str,
     product_version: Optional[str],
@@ -1011,38 +1078,47 @@ def record_verification(
         overlay.append(target)
 
     new_status = _compute_verify_status(target, product_version)
-    new_record = {
-        "product_version": product_version or "unknown",
-        "verified_at": _today_iso(),
-        "verified_intune_app_id": intune_app_id or "",
-        "status": new_status,
-    }
+    pv = product_version or "unknown"
+    aid = intune_app_id or ""
 
-    # When the new row claims 'newest', demote any prior 'newest' in the
-    # same line to 'historical' (publish without --supersede path). When
-    # the new row is 'manual' (rollback case), prior 'newest' stays.
-    if new_status == 'newest':
-        for vv in target.verified_versions or []:
-            if vv.get('status') == 'newest':
-                vv['status'] = 'historical'
+    # Promotion case: a 'pending' row from record_publish() already exists
+    # for this (version, app_id). Upgrade it in place rather than
+    # appending a duplicate.
+    existing_pending = None
+    for vv in target.verified_versions or []:
+        if (vv.get('product_version') == pv
+                and vv.get('verified_intune_app_id') == aid):
+            existing_pending = vv
+            break
 
-    # Idempotency: same (product_version, intune_app_id) is treated as a no-op
-    # so the verified_versions list doesn't grow every time the poll runs.
-    for existing in (target.verified_versions or []):
-        if (
-            existing.get("product_version") == new_record["product_version"]
-            and existing.get("verified_intune_app_id") == new_record["verified_intune_app_id"]
-        ):
+    if existing_pending is not None:
+        if existing_pending.get('status') == new_status:
             logger.debug(
-                "Verification already recorded; skipping",
-                entry_id=entry_id,
-                product_version=product_version,
+                "Verification already recorded at same status; skipping",
+                entry_id=entry_id, product_version=product_version,
+                status=new_status,
             )
             return
-
-    if target.verified_versions is None:
-        target.verified_versions = []
-    target.verified_versions.append(new_record)
+        if new_status == 'newest':
+            for vv in target.verified_versions or []:
+                if vv is not existing_pending and vv.get('status') == 'newest':
+                    vv['status'] = 'historical'
+        existing_pending['status'] = new_status
+        existing_pending['verified_at'] = _today_iso()
+    else:
+        if new_status == 'newest':
+            for vv in target.verified_versions or []:
+                if vv.get('status') == 'newest':
+                    vv['status'] = 'historical'
+        new_record = {
+            "product_version": pv,
+            "verified_at": _today_iso(),
+            "verified_intune_app_id": aid,
+            "status": new_status,
+        }
+        if target.verified_versions is None:
+            target.verified_versions = []
+        target.verified_versions.append(new_record)
     _write_local(overlay)
     logger.info(
         "Catalog entry verified",
