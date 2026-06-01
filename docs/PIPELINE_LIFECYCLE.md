@@ -8,10 +8,20 @@ AutoPackager's core value proposition is its fully automated pipeline that trans
 Discovery → Packaging → Testing → Deployment
 ```
 
-The same four stages handle two kinds of work, routed by `job.job_type`:
+The same four stages handle three kinds of work, routed by `job.job_type` plus the installer's file extension:
 
 - **Driver updates** (`driver_update`) — discovery scans Dell/HP/Lenovo OEM catalogs for newer versions.
-- **MSI software** (`new_software`) — discovery reads metadata directly from a supplied MSI (product name, version, publisher, product code) rather than scanning a catalog. Packaging then builds the Intune app from that metadata and the admin's `msiexec` install command. See [Packaging MSI Software](../README.md#packaging-msi-software).
+- **MSI software** (`new_software`, `.msi`) — discovery reads metadata directly from a supplied MSI (product name, version, publisher, product code) rather than scanning a catalog. Packaging builds the Intune app from that metadata and the admin's `msiexec` install command. See [Packaging MSI Software](../README.md#packaging-msi-software).
+- **EXE software** (`new_software`, `.exe`) — discovery reads PE `VS_VERSIONINFO` (`CompanyName`, `ProductName`, `ProductVersion`, `FileVersion`) via `autopackager/utils/pe_metadata.py` and looks the binary up in the installer catalog by SHA-256, then by `pe_company_name` + `pe_product_name` substring. The CLI refuses to enqueue an EXE without a matching catalog entry whose `detection_rules` list is non-empty — Win32 apps with no detection rule cause the Intune IME to re-install on every device check-in. Packaging sources the silent-install string from the catalog's `install_command_template` (or `INSTALLER_FAMILY_SWITCHES` default per the entry's `installer_family`), and the detection rules from the catalog's `detection_rules` (converted to Graph `win32LobApp*Rule` payloads via `detection_rule_to_graph`).
+
+### Wrapped-installer pre-stage (`wrapped_msi` / `wrapped_zip`)
+
+Some vendors ship an MSI inside an outer wrapper. The catalog's `installer_family` flags this:
+
+- `wrapped_msi` — the wrapper is an EXE that bundles an MSI (Adobe Reader DC's `-sfx_o` self-extractor, PowerToys' `--extract_msi`, Microsoft bootstrappers). The catalog entry supplies `extract_command_template` (template vars: `{installer_path}`, `{extract_dir}`) and `extracted_msi_pattern` (rglob for the inner MSI).
+- `wrapped_zip` — the wrapper is a ZIP archive containing an MSI (Foxit's enterprise pack pattern). Uniform extraction via Python's `zipfile`.
+
+When `cli.py create-software-job` sees a wrapped catalog hit, `autopackager/utils/extractors.py::extract_wrapped` runs the extraction into `data/downloads/extracted/<entry-id>/`, picks the largest MSI matching the pattern (defends against accessory MSIs bundled alongside the main product), and substitutes the installer path before the rest of the command runs. By the time the pipeline kicks off, the job is a regular MSI job — Discovery / Packaging / Testing / Deployment treat the extracted MSI exactly like any other.
 
 Each stage is a separate Celery task that:
 - Updates job state in the database before execution

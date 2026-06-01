@@ -87,11 +87,13 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | Dell driver discovery | ✅ Working | Parses `DriverPackCatalog.cab` |
 | Lenovo driver discovery | ✅ Working | Parses `catalogv2.xml` |
 | HP driver discovery | ⚠️ Partial | Catalog parsing returns placeholder SoftPaq URLs; not production-ready |
-| MSI software packaging | ✅ Working | Reads MSI metadata (OLE2/Property table) to auto-fill name, version, publisher, product code; builds install/uninstall commands and product-code detection. Deterministic — no LLM |
+| MSI software packaging | ✅ Working | Reads MSI metadata (OLE2/Property table, sub-storage-aware) to auto-fill name, version, publisher, product code; builds install/uninstall commands and product-code detection. Deterministic — no LLM |
+| **EXE software packaging** | ✅ Working | Reads PE `VS_VERSIONINFO` (`autopackager/utils/pe_metadata.py`); catalog matches by SHA-256 / `pe_company_name` + `pe_product_name`; install command from catalog `install_command_template` or `INSTALLER_FAMILY_SWITCHES` default; detection from catalog `detection_rules`. Refuses to enqueue without a catalog hit (no detection rule = perpetual reinstall) |
+| **Wrapped installers (`wrapped_msi` / `wrapped_zip`)** | ⚠️ Mechanism wired, baseline entries unverified | `autopackager/utils/extractors.py` unwraps EXE bundlers (`-sfx_o`, `--extract_msi`) and ZIPs into the data/downloads/extracted/ cache; the rest of the pipeline runs against the inner MSI. PowerToys / Adobe Reader DC / Foxit Reader baseline entries seeded as documented placeholders |
 | Packaging → `.intunewin` | ✅ Working | Requires Windows + `IntuneWinAppUtil.exe`; produces a placeholder file if the tool is absent |
-| Intune publishing (Graph API) | ✅ Working | Full content-upload + publish flow |
-| **End-to-end install on managed device** | ✅ Verified | 7-Zip 24.08 (2026-05-29) and VLC 3.0.23 (2026-05-30) pushed via the Celery pipeline, assigned to Ring 0, observed installing on a real Intune-managed device, then confirmed via per-device install report. VLC also uninstalled cleanly via the catalog's stored uninstall command |
-| **Installer catalog** | ✅ Working | Two-layer YAML catalog (`autopackager/data/installer_catalog.yaml` baseline + `data/installer_catalog.local.yaml` overlay). Records install/uninstall command + MSI ProductCode + verified_versions per app. `create-software-job` consults the catalog before requiring `--install-command`; auto-appends on success. See [Installer catalog](#installer-catalog---install-command-is-now-optional) |
+| Intune publishing (Graph API) | ✅ Working | Full content-upload + publish flow. Win32 app payload now carries the full attribute set: `msiInformation`, `returnCodes`, `informationUrl`, `notes`, `largeIcon`, `categories` (via the $ref sub-collection), `minimumSupportedOperatingSystem` |
+| **End-to-end install on managed device** | ✅ Verified | 7-Zip 24.08, VLC 3.0.23, KeePass 2.61.1, Node.js 24.16.0 LTS, Slack 4.48.102, Zoom 7.0.38856, Webex 46.5.0.35006 (all MSI), and Notepad++ 8.9.6.2 (EXE / NSIS) — pushed via the Celery pipeline, assigned to Ring 0, observed installing on a real Intune-managed device, then confirmed via per-device install report. All also uninstalled cleanly via their catalog uninstall commands |
+| **Installer catalog** | ✅ Working | Two-layer YAML catalog. Each entry carries: type (`msi` / `exe`), `installer_family` (controlled vocabulary: `msi`, `inno_setup`, `nsis`, `wix_burn`, `msft_bootstrapper`, `wrapped_msi`, `wrapped_zip`, `custom`), `distribution` (`standard` / `enterprise`), install + uninstall command templates, `detection_rules` (6 catalog-native rule kinds → `win32LobApp*Rule` Graph payloads), Intune attribute overrides (`information_url`, `description`, `categories`, `min_os_version`, `icon_b64`), wrapped-extraction config, and `verified_versions` tracking. Local overlay overrides baseline on `id` collision |
 | Testing | ⚠️ Basic | Smoke checks (file/command/rules) by default; real install testing requires Hyper-V (Windows host) |
 | Azure VM testing | ❌ Not implemented | Provider raises "not yet implemented" |
 | Deployment rings (0–3) | ✅ Working | Initial assignment to Ring 0 on deploy; `_create_deployment_record` writes the tracking row |
@@ -102,11 +104,11 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | Continuous catalog discovery | ✅ Working | Celery Beat scheduled OEM catalog scanning |
 | Deployment status polling | ✅ Working | Uses the modern `POST /beta/.../retrieveDeviceAppInstallationStatusReport` endpoint (the legacy `mobileApps/{id}/deviceStatuses` nav property was retired by Microsoft); records verified versions back into the installer catalog overlay |
 | Database tracking | ✅ Working | SQLite by default; PostgreSQL optional (install `psycopg2`) |
-| CLI | ✅ Working | `init`, `create-driver-job`, `create-software-job`, `inspect-msi`, `jobs list/status/cancel/promote/halt-promotion/purge`, `worker start/purge`, `validate-azure` (`jobs rollback` is a stub — rollback runs automatically via polling) |
+| CLI | ✅ Working | `init`, `create-driver-job`, `create-software-job` (MSI + EXE dispatch, wrapped-installer unwrap pre-stage), `inspect-msi`, `inspect-exe`, `jobs list/status/cancel/promote/halt-promotion/purge`, `worker start/purge`, `validate-azure` (`jobs rollback` is a stub — rollback runs automatically via polling) |
 | Web dashboard (FastAPI + REST) | ✅ Working | Job, deployment, discovery, and stats endpoints |
 | LLM-driven discovery / install-param research | ❌ Planned (Phase 2) | No LLM is used in the current code |
 | COTS / general software discovery | ⚠️ Partial | MSI applications are packaged from a supplied install command + MSI metadata (see [Packaging MSI Software](#packaging-msi-software)). Automatic *version* discovery for software (checking vendors for updates) is still Phase 2 |
-| Automated test suite | ✅ Working | 506 tests passing — unit, integration, CLI, API |
+| Automated test suite | ✅ Working | 597+ tests passing — unit, integration, CLI, API |
 
 ## Quick Start
 
