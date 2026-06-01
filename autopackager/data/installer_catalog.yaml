@@ -112,7 +112,7 @@ entries:
   - id: notepad-plus-plus
     type: exe
     installer_family: nsis
-    pe_company_name: "Notepad++ Team"
+    pe_company_name: "Don HO"  # PE VS_VERSIONINFO ships "Don HO don.h@free.fr"; substring match
     pe_product_name: "Notepad++"
     install_command_template: "{installer_filename} /S"
     uninstall_command_template: '"C:\Program Files\Notepad++\uninstall.exe" /S'

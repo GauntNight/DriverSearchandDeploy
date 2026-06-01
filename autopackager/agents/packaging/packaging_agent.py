@@ -175,6 +175,27 @@ class PackagingAgent:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         return f"{safe_title}_{version}_{timestamp}"
 
+    def _catalog_entry_for_job(self, job: Job):
+        """Resolve the catalog entry referenced by an EXE software job.
+
+        CLI's _create_exe_software_job stores catalog_entry_id in
+        job_metadata after a successful catalog match. Packaging looks it
+        up again here rather than at job-creation time so the entry's
+        detection_rules / installer_family etc. are always picked up fresh
+        (operator may have edited the catalog between create and publish).
+        Returns None on miss; caller decides whether that's fatal.
+        """
+        catalog_entry_id = (job.job_metadata or {}).get('catalog_entry_id')
+        if not catalog_entry_id:
+            return None
+        try:
+            from autopackager.utils.installer_catalog import load_catalog
+            catalog = load_catalog()
+            return catalog.by_id(catalog_entry_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Catalog lookup failed", job_id=job.id, error=str(exc))
+            return None
+
     def _generate_install_commands(self, job: Job, installer_path: Path) -> tuple:
         """Generate install and uninstall commands based on installer type.
 
@@ -186,9 +207,7 @@ class PackagingAgent:
         filename = installer_path.name.lower()
 
         if filename.endswith('.exe'):
-            # Common silent install parameters for EXE
-            install_cmd = f"{installer_path.name} /S /quiet /norestart"
-            uninstall_cmd = f"{installer_path.name} /S /quiet /uninstall /norestart"
+            install_cmd, uninstall_cmd = self._generate_exe_commands(job, installer_path)
         elif filename.endswith('.msi'):
             install_cmd, uninstall_cmd = self._generate_msi_commands(job, installer_path)
         elif filename.endswith('.cab'):
@@ -207,6 +226,50 @@ class PackagingAgent:
             uninstall_cmd = "cmd /c exit 0"
 
         logger.info("Generated install command", install_cmd=install_cmd)
+
+        return install_cmd, uninstall_cmd
+
+    def _generate_exe_commands(self, job: Job, installer_path: Path) -> tuple:
+        """Build EXE install/uninstall commands.
+
+        Source priority:
+          1. Admin-supplied install_command in job_metadata (override)
+          2. Catalog entry's install_command_template (rendered against the
+             actual installer filename)
+          3. Family default switches from INSTALLER_FAMILY_SWITCHES, applied
+             to the bare installer filename
+          4. Last-resort: filename + ' /S' (NSIS default)
+
+        Uninstall: catalog uninstall_command_template wins; otherwise we
+        leave a no-op (cmd /c exit 0) and warn -- EXE uninstall is
+        installer-specific (NSIS expects 'uninstall.exe /S', Inno Setup
+        expects unins000.exe in INSTALLDIR, etc.) and there's no safe
+        generic fallback.
+        """
+        from autopackager.utils.installer_catalog import default_silent_switches
+
+        metadata = job.job_metadata or {}
+        user_command = metadata.get('install_command')
+        catalog_entry = self._catalog_entry_for_job(job)
+
+        if user_command:
+            install_cmd = user_command
+        elif catalog_entry and catalog_entry.install_command_template:
+            install_cmd = catalog_entry.render_install_command(installer_path.name)
+        else:
+            family = catalog_entry.installer_family if catalog_entry else None
+            switches = default_silent_switches(family) or '/S'
+            install_cmd = f"{installer_path.name} {switches}".strip()
+
+        uninstall_cmd = "cmd /c exit 0"
+        if catalog_entry and catalog_entry.uninstall_command_template:
+            uninstall_cmd = catalog_entry.render_uninstall_command(installer_path.name) or uninstall_cmd
+        else:
+            logger.warning(
+                "EXE has no catalog uninstall_command_template; publishing with no-op uninstall. "
+                "Intune will report uninstall success but the app stays installed.",
+                job_id=job.id,
+            )
 
         return install_cmd, uninstall_cmd
 
@@ -355,16 +418,41 @@ exit 0
         Graph API v1.0 uses ``rules`` with ``win32LobAppRegistryRule``
         (not the beta ``detectionRules`` / ``win32LobAppRegistryDetection``).
 
-        For MSI packages, the MSI product code yields a far more reliable
-        detection than a synthetic registry key, so prefer a product-code rule
-        whenever the MSI metadata provides one.
+        Source priority:
+          1. MSI ProductCode rule when MSI metadata supplies a product code.
+             Far more reliable than any synthetic key.
+          2. Catalog detection_rules converted via detection_rule_to_graph.
+             REQUIRED for EXE jobs -- the CLI rejects EXE jobs without
+             catalog entries, but this is a safety net for direct queue
+             insertion.
+          3. Synthetic registry detection (legacy driver path). Kept for
+             the OEM driver workflow where there's no MSI metadata and no
+             catalog entry; emits a placeholder rule the operator can fix
+             via the portal.
         """
+        from autopackager.utils.installer_catalog import detection_rule_to_graph
+
         msi_meta = (job.job_metadata or {}).get('msi_metadata') or {}
         product_code = msi_meta.get('product_code')
         if product_code:
             return [build_product_code_detection_rule(
                 product_code, msi_meta.get('product_version', '')
             )]
+
+        catalog_entry = self._catalog_entry_for_job(job)
+        if catalog_entry and catalog_entry.detection_rules:
+            converted = []
+            for raw_rule in catalog_entry.detection_rules:
+                try:
+                    converted.append(detection_rule_to_graph(raw_rule))
+                except ValueError as exc:
+                    logger.warning(
+                        "Skipping malformed catalog detection rule",
+                        catalog_entry=catalog_entry.id,
+                        error=str(exc),
+                    )
+            if converted:
+                return converted
 
         target_version = job.job_metadata.get('target_version', '')
         vendor = (job.vendor or 'Unknown').capitalize()
@@ -431,6 +519,22 @@ exit 0
                     package_metadata['msi_icon_b64'] = base64.b64encode(blob).decode('ascii')
             except Exception as icon_exc:  # noqa: BLE001 -- icon extraction is opportunistic
                 logger.debug("MSI icon extraction skipped", error=str(icon_exc))
+
+        # EXE branch: store the PE metadata + catalog reference so
+        # DeploymentAgent can tell EXE from MSI (skips msiInformation,
+        # sources detection rules from the catalog entry referenced here).
+        exe_meta = (job.job_metadata or {}).get('exe_metadata') or {}
+        if exe_meta and not msi_meta:
+            package_metadata['exe_product_name'] = exe_meta.get('product_name')
+            package_metadata['exe_company_name'] = exe_meta.get('company_name')
+            package_metadata['exe_product_version'] = exe_meta.get('product_version')
+            package_metadata['exe_file_version'] = exe_meta.get('file_version')
+            sha = (job.job_metadata or {}).get('sha256')
+            if sha:
+                package_metadata['sha256'] = sha
+            catalog_id = (job.job_metadata or {}).get('catalog_entry_id')
+            if catalog_id:
+                package_metadata['catalog_entry_id'] = catalog_id
 
         with db_session_scope() as session:
             package = Package(

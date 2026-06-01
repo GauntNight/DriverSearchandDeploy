@@ -259,24 +259,46 @@ class DeploymentAgent:
                 )
 
     def _lookup_catalog_entry(self, package: Package) -> 'CatalogEntry | None':
-        """Find the catalog entry whose ProductCode / UpgradeCode matches the
-        package's MSI metadata. Returns None for non-MSI packages or when no
-        catalog entry exists. Catalog lookup is best-effort: any failure
-        (missing files, parse errors) falls through to None so deployment
-        keeps working from MSI-derived defaults alone.
+        """Find the catalog entry that matches this package.
+
+        Two paths:
+          * MSI packages: lookup by msi_product_code (existing behaviour).
+          * EXE packages: lookup by catalog_entry_id captured at
+            create-software-job time. EXE packages always go through the
+            catalog (the CLI refuses to enqueue an EXE without one) so the
+            id is guaranteed to be in package_metadata when it's an EXE.
+
+        Returns None for packages with neither identifier or when the
+        catalog itself can't be loaded. Failure is non-fatal -- the rest of
+        _prepare_app_data tolerates a missing catalog entry and falls back
+        to package_metadata / hardcoded defaults.
         """
         pkg_meta = (package.package_metadata or {}) if hasattr(package, 'package_metadata') else {}
         if not isinstance(pkg_meta, dict):
-            return None
-        product_code = pkg_meta.get('msi_product_code')
-        if not product_code:
             return None
         try:
             catalog = load_catalog()
         except Exception as exc:  # noqa: BLE001 -- catalog is opportunistic
             logger.debug("Catalog load skipped", error=str(exc))
             return None
-        return catalog.match_by_product_code(product_code)
+
+        # MSI: lookup by ProductCode (the GUID matches the canonical
+        # baseline entry across all operators).
+        product_code = pkg_meta.get('msi_product_code')
+        if product_code:
+            entry = catalog.match_by_product_code(product_code)
+            if entry:
+                return entry
+
+        # EXE: lookup by the catalog id captured at job-creation time. The
+        # id is more stable than re-matching by SHA-256 / PE name because
+        # the operator may have updated the catalog entry between create
+        # and publish.
+        catalog_entry_id = pkg_meta.get('catalog_entry_id')
+        if catalog_entry_id:
+            return catalog.by_id(catalog_entry_id)
+
+        return None
 
     def _prepare_app_data(self, package: Package, job: Job) -> Dict[str, Any]:
         """Prepare Intune app data structure (Graph API v1.0 schema)."""
