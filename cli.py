@@ -163,8 +163,19 @@ def _try_unwrap_installer(installer_path: Optional[str]) -> Optional[str]:
 @click.option('--no-save-catalog', is_flag=True, default=False,
               help='Skip auto-appending this installer to data/installer_catalog.local.yaml '
                    '(the local overlay). The committed baseline is never modified at runtime.')
+@click.option('--supersede', is_flag=True, default=False,
+              help='Apply supersedence per the catalog entry\'s declared mode + line. '
+                   'Newer versions in the same line get listed in the new Intune Win32 '
+                   'app\'s supersedingApps. Mutually exclusive with --supersedes. '
+                   'Refused when the catalog entry has supersedence.mode=none.')
+@click.option('--supersedes', multiple=True, metavar='ENTRY_ID',
+              help='Manually mark the given catalog entry IDs as superseded by this '
+                   'publish. Overrides the catalog\'s declared mode/line/supersedes. '
+                   'Repeat the flag per ID: --supersedes vlc-3.0.21 --supersedes vlc-3.0.22. '
+                   'Mutually exclusive with --supersede.')
 def create_software_job(install_command, installer_path, download_url, name, publisher,
-                        current_version, no_assignment, no_save_catalog):
+                        current_version, no_assignment, no_save_catalog,
+                        supersede, supersedes):
     """Create a software packaging job for an MSI or EXE installer.
 
     MSI path: provide the MSI via --installer-path and/or --download-url. The
@@ -182,6 +193,12 @@ def create_software_job(install_command, installer_path, download_url, name, pub
         console.print("[bold red]✗[/bold red] Provide --installer-path and/or --download-url")
         raise click.Abort()
 
+    if supersede and supersedes:
+        console.print("[bold red]✗[/bold red] --supersede and --supersedes are mutually exclusive")
+        raise click.Abort()
+    supersedence_opt_in = bool(supersede or supersedes)
+    supersedes_ids = list(supersedes) if supersedes else None
+
     # Wrapped-installer pre-stage: if the file is a known wrapped_msi /
     # wrapped_zip per the catalog, extract the inner MSI now so the rest
     # of this command treats it as a normal MSI. Anything that's not a
@@ -198,6 +215,8 @@ def create_software_job(install_command, installer_path, download_url, name, pub
         _create_exe_software_job(
             install_command, installer_path, download_url,
             name, publisher, current_version, no_assignment, no_save_catalog,
+            supersedence_opt_in=supersedence_opt_in,
+            supersedes_ids=supersedes_ids,
         )
         return
 
@@ -283,6 +302,46 @@ def create_software_job(install_command, installer_path, download_url, name, pub
     if no_assignment:
         job_metadata['no_assignment'] = True
 
+    # Resolve supersedence at CLI time (snapshot of catalog state) so the
+    # deployment agent applies exactly what the operator saw. Catalog
+    # entry might not exist yet if this is a brand-new product -- in that
+    # case supersedence is a no-op regardless of --supersede.
+    if supersedence_opt_in and catalog_entry and target_version:
+        try:
+            resolution = installer_catalog.resolve_supersedence(
+                catalog, catalog_entry, target_version,
+                operator_opted_in=True,
+                explicit_supersedes=supersedes_ids,
+            )
+            if resolution.enabled:
+                job_metadata['supersedence_action'] = {
+                    'mode_used': resolution.mode_used,
+                    'superseded_intune_app_ids': resolution.superseded_intune_app_ids,
+                    'demoted_records': [
+                        {'entry_id': eid, 'product_version': vv.get('product_version'),
+                         'verified_intune_app_id': vv.get('verified_intune_app_id')}
+                        for eid, vv in resolution.demoted_records
+                    ],
+                    'notes': resolution.notes,
+                }
+                console.print(
+                    f"\n[bold]Supersedence:[/bold] mode={resolution.mode_used}, "
+                    f"will mark {len(resolution.demoted_records)} prior verified "
+                    f"row(s) superseded, {len(resolution.superseded_intune_app_ids)} "
+                    f"Intune app id(s) in supersedingApps"
+                )
+            else:
+                console.print("\n[yellow]Supersedence requested but no targets "
+                              "found in this line.[/yellow]")
+        except installer_catalog.SupersedenceError as exc:
+            console.print(f"[bold red]✗[/bold red] {exc}")
+            raise click.Abort()
+    elif supersedence_opt_in and not catalog_entry:
+        console.print(
+            "[yellow]⚠[/yellow] --supersede ignored: no catalog entry matched this "
+            "installer (supersedence requires a known catalog id)"
+        )
+
     try:
         result = create_packaging_job.delay(
             job_type=JobType.NEW_SOFTWARE.value,
@@ -327,7 +386,8 @@ def create_software_job(install_command, installer_path, download_url, name, pub
 
 
 def _create_exe_software_job(install_command, installer_path, download_url, name,
-                             publisher, current_version, no_assignment, no_save_catalog):
+                             publisher, current_version, no_assignment, no_save_catalog,
+                             *, supersedence_opt_in=False, supersedes_ids=None):
     """EXE-specific create-software-job flow. Called from create_software_job
     when the installer extension is .exe.
 
@@ -430,6 +490,39 @@ def _create_exe_software_job(install_command, installer_path, download_url, name
         job_metadata['sha256'] = pe_sha256
     if no_assignment:
         job_metadata['no_assignment'] = True
+
+    # EXE supersedence: same resolution shape as MSI, just sourced via the
+    # EXE catalog match path. See the MSI branch for the rationale.
+    if supersedence_opt_in and target_version:
+        try:
+            resolution = installer_catalog.resolve_supersedence(
+                catalog, catalog_entry, target_version,
+                operator_opted_in=True,
+                explicit_supersedes=supersedes_ids,
+            )
+            if resolution.enabled:
+                job_metadata['supersedence_action'] = {
+                    'mode_used': resolution.mode_used,
+                    'superseded_intune_app_ids': resolution.superseded_intune_app_ids,
+                    'demoted_records': [
+                        {'entry_id': eid, 'product_version': vv.get('product_version'),
+                         'verified_intune_app_id': vv.get('verified_intune_app_id')}
+                        for eid, vv in resolution.demoted_records
+                    ],
+                    'notes': resolution.notes,
+                }
+                console.print(
+                    f"\n[bold]Supersedence:[/bold] mode={resolution.mode_used}, "
+                    f"will mark {len(resolution.demoted_records)} prior verified "
+                    f"row(s) superseded, {len(resolution.superseded_intune_app_ids)} "
+                    f"Intune app id(s) in supersedingApps"
+                )
+            else:
+                console.print("\n[yellow]Supersedence requested but no targets "
+                              "found in this line.[/yellow]")
+        except installer_catalog.SupersedenceError as exc:
+            console.print(f"[bold red]✗[/bold red] {exc}")
+            raise click.Abort()
 
     try:
         result = create_packaging_job.delay(

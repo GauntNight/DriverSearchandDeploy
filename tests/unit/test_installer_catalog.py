@@ -940,6 +940,250 @@ class TestCatalogEntryExeFields:
             "Declare explicitly as one of: generic, specific, manual, none."
         )
 
+    def test_record_verification_demotes_prior_newest_to_historical_when_publishing_newer(self, temp_catalog_paths):
+        """Without --supersede (i.e., status state-machine only -- not the
+        Intune supersedence path), a newer publish should:
+          * mark the new row 'newest'
+          * demote the prior 'newest' row to 'historical' (no Intune action)
+        """
+        baseline, local = temp_catalog_paths
+        _write_yaml(local, {
+            'version': 1,
+            'entries': [{
+                'id': 'app1', 'type': 'msi', 'product_code': '{X}',
+                'install_command_template': 'msiexec /i {installer_filename} /qn',
+                'supersedence': {'line': 'app1', 'mode': 'generic'},
+                'verified_versions': [{
+                    'product_version': '1.0.0',
+                    'verified_at': '2026-05-01',
+                    'verified_intune_app_id': 'old-app',
+                    'status': 'newest',
+                }],
+            }],
+        })
+        ic.record_verification('app1', '1.1.0', 'new-app')
+        entry = ic.load_catalog().by_id('app1')
+        statuses = {vv['product_version']: vv['status'] for vv in entry.verified_versions}
+        assert statuses == {'1.0.0': 'historical', '1.1.0': 'newest'}
+
+    def test_record_verification_marks_rollback_as_manual(self, temp_catalog_paths):
+        """Publishing an OLDER version than the current 'newest' is a rollback:
+        the new row gets 'manual' status (sits outside the natural chain)
+        and the prior 'newest' row is NOT demoted.
+        """
+        baseline, local = temp_catalog_paths
+        _write_yaml(local, {
+            'version': 1,
+            'entries': [{
+                'id': 'app1', 'type': 'msi', 'product_code': '{X}',
+                'install_command_template': 'msiexec /i {installer_filename} /qn',
+                'supersedence': {'line': 'app1', 'mode': 'generic'},
+                'verified_versions': [{
+                    'product_version': '2.0.0',
+                    'verified_at': '2026-05-01',
+                    'verified_intune_app_id': 'top-app',
+                    'status': 'newest',
+                }],
+            }],
+        })
+        ic.record_verification('app1', '1.5.0', 'older-app')
+        entry = ic.load_catalog().by_id('app1')
+        statuses = {vv['product_version']: vv['status'] for vv in entry.verified_versions}
+        assert statuses == {'2.0.0': 'newest', '1.5.0': 'manual'}
+
+    def test_resolve_supersedence_no_opt_in_is_no_op(self, temp_catalog_paths):
+        """Without ``operator_opted_in=True`` the resolver returns a
+        disabled resolution regardless of what the catalog declares.
+        Supersedence is opt-in at publish time, never automatic.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': [{
+            'id': 'vlc', 'type': 'msi',
+            'install_command_template': 'msiexec /i {installer_filename} /qn',
+            'supersedence': {'line': 'vlc', 'mode': 'generic'},
+            'verified_versions': [{
+                'product_version': '3.0.22', 'verified_intune_app_id': 'old', 'status': 'newest',
+            }],
+        }]})
+        catalog = ic.load_catalog()
+        res = ic.resolve_supersedence(catalog, catalog.by_id('vlc'), '3.0.23',
+                                       operator_opted_in=False)
+        assert res.enabled is False
+        assert res.demoted_records == []
+
+    def test_resolve_supersedence_generic_marks_older_versions(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': [{
+            'id': 'vlc', 'type': 'msi',
+            'install_command_template': 'msiexec /i {installer_filename} /qn',
+            'supersedence': {'line': 'vlc', 'mode': 'generic'},
+            'verified_versions': [
+                {'product_version': '3.0.21', 'verified_intune_app_id': 'app-21', 'status': 'historical'},
+                {'product_version': '3.0.22', 'verified_intune_app_id': 'app-22', 'status': 'newest'},
+            ],
+        }]})
+        catalog = ic.load_catalog()
+        res = ic.resolve_supersedence(catalog, catalog.by_id('vlc'), '3.0.23',
+                                       operator_opted_in=True)
+        assert res.enabled is True
+        assert sorted(res.superseded_intune_app_ids) == ['app-21', 'app-22']
+        assert res.mode_used == 'generic'
+
+    def test_resolve_supersedence_generic_skips_equal_or_newer(self, temp_catalog_paths):
+        """Generic mode only demotes STRICTLY older rows. A re-publish of
+        the same version should not mark the existing row superseded
+        (that would be self-destructive)."""
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': [{
+            'id': 'vlc', 'type': 'msi',
+            'install_command_template': 'msiexec /i {installer_filename} /qn',
+            'supersedence': {'line': 'vlc', 'mode': 'generic'},
+            'verified_versions': [
+                {'product_version': '3.0.22', 'verified_intune_app_id': 'app-22', 'status': 'newest'},
+                {'product_version': '4.0.0',  'verified_intune_app_id': 'app-40', 'status': 'manual'},
+            ],
+        }]})
+        catalog = ic.load_catalog()
+        res = ic.resolve_supersedence(catalog, catalog.by_id('vlc'), '3.0.22',
+                                       operator_opted_in=True)
+        assert res.enabled is False
+        assert res.superseded_intune_app_ids == []
+
+    def test_resolve_supersedence_mode_none_on_publishing_entry_raises(self, temp_catalog_paths):
+        """The DENY shield in the from-direction. Catalog explicitly says
+        'this entry never supersedes anything' -- operator passing
+        --supersede gets a refusal, not a silent no-op.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': [{
+            'id': 'python-3.11', 'type': 'msi',
+            'install_command_template': 'msiexec /i {installer_filename} /qn',
+            'supersedence': {'mode': 'none'},
+            'verified_versions': [],
+        }]})
+        catalog = ic.load_catalog()
+        with pytest.raises(ic.SupersedenceError, match='mode=none'):
+            ic.resolve_supersedence(catalog, catalog.by_id('python-3.11'), '3.11.10',
+                                     operator_opted_in=True)
+
+    def test_resolve_supersedence_mode_none_on_target_shields_it(self, temp_catalog_paths):
+        """The DENY shield in the to-direction. Even when a publishing
+        entry's mode is generic and the line matches, a target with
+        mode: none cannot be marked superseded.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': [
+            {
+                'id': 'foo-current', 'type': 'msi',
+                'install_command_template': 'msiexec /i {installer_filename} /qn',
+                'supersedence': {'line': 'foo', 'mode': 'generic'},
+                'verified_versions': [],
+            },
+            {
+                'id': 'foo-legacy', 'type': 'msi',
+                'install_command_template': 'msiexec /i {installer_filename} /qn',
+                'supersedence': {'line': 'foo', 'mode': 'none'},
+                'verified_versions': [{
+                    'product_version': '0.5.0',
+                    'verified_intune_app_id': 'legacy-app',
+                    'status': 'newest',
+                }],
+            },
+        ]})
+        catalog = ic.load_catalog()
+        res = ic.resolve_supersedence(catalog, catalog.by_id('foo-current'), '2.0.0',
+                                       operator_opted_in=True)
+        # foo-legacy was in the line but shielded by mode: none
+        assert 'legacy-app' not in res.superseded_intune_app_ids
+        assert any('shielded_by_mode_none' in n for n in res.notes)
+
+    def test_resolve_supersedence_specific_uses_version_pattern(self, temp_catalog_paths):
+        """Specific mode -- the regex filters which verified_versions are
+        in this line, even when they all share the same `line` string.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': [{
+            'id': 'java-line-17', 'type': 'msi',
+            'install_command_template': 'msiexec /i {installer_filename} /qn',
+            'supersedence': {
+                'line': 'java',
+                'mode': 'specific',
+                'version_pattern': r'^17\.\d+\.\d+$',
+            },
+            'verified_versions': [
+                {'product_version': '17.0.12', 'verified_intune_app_id': 'j17-12', 'status': 'historical'},
+                {'product_version': '17.0.13', 'verified_intune_app_id': 'j17-13', 'status': 'newest'},
+                # An out-of-line row that happens to share entry+line
+                {'product_version': '21.0.4',  'verified_intune_app_id': 'j21-4',  'status': 'newest'},
+            ],
+        }]})
+        catalog = ic.load_catalog()
+        res = ic.resolve_supersedence(catalog, catalog.by_id('java-line-17'), '17.0.14',
+                                       operator_opted_in=True)
+        # Only the two 17.x rows are in the line; 21.x is filtered out by
+        # the version_pattern regex.
+        assert sorted(res.superseded_intune_app_ids) == ['j17-12', 'j17-13']
+
+    def test_resolve_supersedence_manual_uses_catalog_supersedes_list(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': [
+            {
+                'id': 'enterprise-app-2008', 'type': 'msi',
+                'install_command_template': 'msiexec /i {installer_filename} /qn',
+                'supersedence': {
+                    'mode': 'manual',
+                    'supersedes': ['enterprise-app-2007'],
+                },
+                'verified_versions': [],
+            },
+            {
+                'id': 'enterprise-app-2007', 'type': 'msi',
+                'install_command_template': 'msiexec /i {installer_filename} /qn',
+                'supersedence': {'line': 'eapp', 'mode': 'generic'},
+                'verified_versions': [{
+                    'product_version': '2007.4.7',
+                    'verified_intune_app_id': 'eapp-2007',
+                    'status': 'newest',
+                }],
+            },
+        ]})
+        catalog = ic.load_catalog()
+        res = ic.resolve_supersedence(catalog, catalog.by_id('enterprise-app-2008'),
+                                       '2008.4.7', operator_opted_in=True)
+        assert res.mode_used == 'manual'
+        assert 'eapp-2007' in res.superseded_intune_app_ids
+
+    def test_resolve_supersedence_explicit_supersedes_overrides_catalog(self, temp_catalog_paths):
+        """``explicit_supersedes`` (from --supersedes <ids>) takes precedence
+        over the catalog's mode/line/pattern. Honours the operator's intent.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': [
+            {
+                'id': 'a', 'type': 'msi',
+                'install_command_template': 'msiexec /i {installer_filename} /qn',
+                'supersedence': {'line': 'a', 'mode': 'generic'},
+                'verified_versions': [],
+            },
+            {
+                'id': 'b', 'type': 'msi',
+                'install_command_template': 'msiexec /i {installer_filename} /qn',
+                'supersedence': {'line': 'b', 'mode': 'generic'},
+                'verified_versions': [{
+                    'product_version': '1.0',
+                    'verified_intune_app_id': 'b-1',
+                    'status': 'newest',
+                }],
+            },
+        ]})
+        catalog = ic.load_catalog()
+        # Publishing 'a', but explicit_supersedes targets 'b' (cross-line).
+        res = ic.resolve_supersedence(catalog, catalog.by_id('a'), '2.0',
+                                       operator_opted_in=True,
+                                       explicit_supersedes=['b'])
+        assert res.mode_used == 'manual_cli'
+        assert 'b-1' in res.superseded_intune_app_ids
+
     def test_round_trip_through_local_overlay_write(self, temp_catalog_paths):
         # Adding an EXE entry to the overlay must preserve the new fields
         # across a write+read cycle. _write_local strips empty values, so

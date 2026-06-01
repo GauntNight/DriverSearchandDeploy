@@ -19,6 +19,7 @@ Match priority for MSIs (highest -> lowest):
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ from typing import Any, Optional
 import yaml
 
 from autopackager.utils.logger import get_logger
+from autopackager.utils.version_comparison import compare_catalog_versions
 
 logger = get_logger(__name__)
 
@@ -139,6 +141,249 @@ VERIFIED_VERSION_STATUSES = {
     'manual',      # Published out of natural order (rollback or override). Sits outside the chain.
     'pending',     # Publish in-flight; verified_intune_app_id may not be set yet.
 }
+
+
+class SupersedenceError(Exception):
+    """Raised when supersedence is requested but the catalog explicitly forbids
+    it (publishing entry has ``mode: none``). The CLI surfaces this as a
+    visible refusal so operators know the safety shield held.
+    """
+
+
+@dataclass
+class SupersedenceResolution:
+    """The output of resolve_supersedence -- everything the deployment flow
+    needs to actually act on a supersedence request.
+
+      enabled: True when supersedence is going to be executed (operator opted
+        in AND publishing entry's mode permits AND there's at least one
+        target). False otherwise (no-op publish).
+      superseded_intune_app_ids: list of Intune Win32 app GUIDs to include in
+        the new app's ``supersedingApps`` collection.
+      demoted_records: list of ``(entry_id, verified_version_dict)`` tuples
+        whose ``status`` will be set to 'superseded' on the overlay. These
+        rows still exist; their status is just bumped.
+      mode_used: the mode that was actually applied ('generic' / 'specific'
+        / 'manual'). None when ``enabled`` is False.
+      notes: human-readable trail for logging / audit.
+    """
+    enabled: bool = False
+    superseded_intune_app_ids: list = field(default_factory=list)
+    demoted_records: list = field(default_factory=list)
+    mode_used: Optional[str] = None
+    notes: list = field(default_factory=list)
+
+
+def resolve_supersedence(
+    catalog: 'Catalog',
+    publishing_entry: 'CatalogEntry',
+    publishing_version: str,
+    *,
+    operator_opted_in: bool,
+    explicit_supersedes: Optional[list] = None,
+) -> SupersedenceResolution:
+    """Compute the supersedence action for a publish.
+
+    Inputs:
+      catalog: the full merged catalog (baseline + overlay).
+      publishing_entry: the catalog entry being published.
+      publishing_version: the version about to be published.
+      operator_opted_in: did the operator pass --supersede or --supersedes?
+        Without this, the result is a no-op regardless of catalog mode --
+        supersedence is opt-in at publish time per the locked design.
+      explicit_supersedes: list of entry IDs from ``--supersedes``. When
+        provided, overrides the catalog's mode/line/pattern and treats the
+        named IDs as the candidate set.
+
+    Returns a ``SupersedenceResolution``. Raises ``SupersedenceError`` when
+    operator opted in but the publishing entry has ``mode: none`` (DENY in
+    the from-direction).
+
+    Side-effect-free: this function does not write the overlay. The caller
+    invokes ``apply_supersedence_status`` to commit the demotions.
+    """
+    if not operator_opted_in:
+        return SupersedenceResolution(
+            enabled=False,
+            notes=['operator did not opt in (--supersede / --supersedes not set)'],
+        )
+
+    pub_sup = publishing_entry.supersedence or {}
+    pub_mode = pub_sup.get('mode', 'none')
+
+    if pub_mode == 'none':
+        raise SupersedenceError(
+            f"Entry '{publishing_entry.id}' has supersedence.mode=none. "
+            "The catalog explicitly opts this entry out of being a "
+            "supersedence apex. Remove --supersede / --supersedes, or "
+            "change the catalog entry's mode if you actually want to "
+            "supersede older versions."
+        )
+
+    # Build the candidate-entries set: which catalog entries' verified_versions
+    # might be marked superseded.
+    if explicit_supersedes is not None:
+        # --supersedes a b c -- manual CLI override.
+        effective_mode = 'manual_cli'
+        candidate_entries = []
+        for eid in explicit_supersedes:
+            e = catalog.by_id(eid)
+            if e is None:
+                logger.warning("Explicit supersedes ID unknown", entry_id=eid)
+            else:
+                candidate_entries.append(e)
+    elif pub_mode == 'generic':
+        effective_mode = 'generic'
+        line = pub_sup.get('line') or publishing_entry.id
+        candidate_entries = [
+            e for e in catalog.entries
+            if (e.supersedence or {}).get('line') == line
+        ]
+    elif pub_mode == 'specific':
+        effective_mode = 'specific'
+        line = pub_sup.get('line') or publishing_entry.id
+        candidate_entries = [
+            e for e in catalog.entries
+            if (e.supersedence or {}).get('line') == line
+        ]
+        # version_pattern filters per-row below
+    elif pub_mode == 'manual':
+        effective_mode = 'manual'
+        ids = pub_sup.get('supersedes') or []
+        candidate_entries = []
+        for eid in ids:
+            e = catalog.by_id(eid)
+            if e is None:
+                logger.warning("Manual supersedes ID unknown", entry_id=eid)
+            else:
+                candidate_entries.append(e)
+    else:
+        return SupersedenceResolution(
+            enabled=False,
+            notes=[f"unknown publishing-entry mode: {pub_mode!r}"],
+        )
+
+    # Apply the DENY shield: candidate entries with mode=none cannot be
+    # marked superseded by any other entry. Filter them out.
+    shielded_ids = []
+    filtered = []
+    for cand in candidate_entries:
+        cand_mode = (cand.supersedence or {}).get('mode', 'none')
+        if cand_mode == 'none':
+            shielded_ids.append(cand.id)
+        else:
+            filtered.append(cand)
+    candidate_entries = filtered
+
+    # Compile version_pattern once when in specific mode.
+    pattern = None
+    if effective_mode == 'specific':
+        raw_pattern = pub_sup.get('version_pattern')
+        if raw_pattern:
+            try:
+                pattern = re.compile(raw_pattern)
+            except re.error as exc:
+                logger.warning(
+                    "Bad version_pattern; falling back to generic",
+                    pattern=raw_pattern, error=str(exc),
+                )
+                effective_mode = 'generic'
+
+    # Walk verified_versions on each candidate, decide which to demote.
+    superseded_app_ids = []
+    demoted = []
+    for cand in candidate_entries:
+        for vv in cand.verified_versions or []:
+            vv_version = vv.get('product_version', '')
+            if not vv_version or vv_version == 'unknown':
+                continue
+            # In specific mode the pattern decides line membership per row.
+            if effective_mode == 'specific' and pattern is not None:
+                if not pattern.fullmatch(vv_version):
+                    continue
+            # In generic/specific mode, only OLDER versions get superseded.
+            # Manual (or manual_cli) mode includes the operator's explicit
+            # list -- we honour their explicit intent even on equal/newer
+            # versions, with the version compare as a safety check below.
+            if effective_mode in ('generic', 'specific'):
+                if compare_catalog_versions(vv_version, publishing_version) >= 0:
+                    continue
+            # Skip rows already marked superseded (idempotent).
+            if vv.get('status') == 'superseded':
+                continue
+            app_id = vv.get('verified_intune_app_id')
+            if app_id:
+                superseded_app_ids.append(app_id)
+            demoted.append((cand.id, vv))
+
+    notes = [
+        f"mode={effective_mode}",
+        f"candidate_entries={[c.id for c in candidate_entries]}",
+        f"demoted_count={len(demoted)}",
+    ]
+    if shielded_ids:
+        notes.append(f"shielded_by_mode_none={shielded_ids}")
+
+    return SupersedenceResolution(
+        enabled=bool(demoted) or effective_mode == 'manual_cli',
+        superseded_intune_app_ids=superseded_app_ids,
+        demoted_records=demoted,
+        mode_used=effective_mode,
+        notes=notes,
+    )
+
+
+def apply_supersedence_status(resolution: SupersedenceResolution) -> int:
+    """Commit a SupersedenceResolution's status demotions to the overlay.
+
+    Marks every ``demoted_records`` row's ``status`` field as 'superseded'
+    and writes the overlay. Idempotent: rows already at 'superseded' are
+    skipped. Returns the number of rows actually changed.
+    """
+    if not resolution.enabled or not resolution.demoted_records:
+        return 0
+    targets = {(eid, _vv_key(vv)) for eid, vv in resolution.demoted_records}
+    overlay = _local_overlay_entries()
+    changed = 0
+    for entry in overlay:
+        for vv in entry.verified_versions or []:
+            key = (entry.id, _vv_key(vv))
+            if key in targets and vv.get('status') != 'superseded':
+                vv['status'] = 'superseded'
+                changed += 1
+    if changed:
+        _write_local(overlay)
+        logger.info("Applied supersedence status demotions", count=changed)
+    return changed
+
+
+def _vv_key(vv: dict) -> tuple:
+    return (vv.get('product_version'), vv.get('verified_intune_app_id'))
+
+
+def _compute_verify_status(entry: 'CatalogEntry', new_version: Optional[str]) -> str:
+    """Decide the ``status`` for a freshly-verified row in this entry's line.
+
+    'newest' when no prior row claims newest, or when the new version is
+    greater than or equal to the prior newest (in-place upgrade or first
+    publish). 'manual' when the new version is strictly older than an
+    existing 'newest' row (rollback case -- operator probably wants this
+    to sit outside the natural chain).
+    """
+    if not new_version or new_version == 'unknown':
+        return 'newest'
+    prior_newest = None
+    for vv in entry.verified_versions or []:
+        if vv.get('status') == 'newest':
+            prior_newest = vv.get('product_version')
+            break
+    if not prior_newest or prior_newest == 'unknown':
+        return 'newest'
+    try:
+        cmp_result = compare_catalog_versions(new_version, prior_newest)
+    except Exception:
+        return 'newest'
+    return 'manual' if cmp_result < 0 else 'newest'
 
 
 def default_silent_switches(family: Optional[str]) -> Optional[str]:
@@ -765,19 +1010,21 @@ def record_verification(
         target = CatalogEntry(**asdict(base))
         overlay.append(target)
 
+    new_status = _compute_verify_status(target, product_version)
     new_record = {
         "product_version": product_version or "unknown",
         "verified_at": _today_iso(),
         "verified_intune_app_id": intune_app_id or "",
-        # Status reflects the verified version's standing in the
-        # supersedence chain. Minimum behaviour (schema PR): mark every
-        # newly-verified record as 'newest'. The publish-time
-        # state-machine that demotes prior 'newest' entries to
-        # 'historical' / 'superseded' lands with the CLI integration
-        # PR -- this row stays accurate as a single-version record
-        # until then.
-        "status": "newest",
+        "status": new_status,
     }
+
+    # When the new row claims 'newest', demote any prior 'newest' in the
+    # same line to 'historical' (publish without --supersede path). When
+    # the new row is 'manual' (rollback case), prior 'newest' stays.
+    if new_status == 'newest':
+        for vv in target.verified_versions or []:
+            if vv.get('status') == 'newest':
+                vv['status'] = 'historical'
 
     # Idempotency: same (product_version, intune_app_id) is treated as a no-op
     # so the verified_versions list doesn't grow every time the poll runs.

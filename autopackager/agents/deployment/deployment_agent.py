@@ -214,10 +214,106 @@ class DeploymentAgent:
         if catalog_entry and catalog_entry.categories:
             self._assign_categories(graph_client, app_id, catalog_entry.categories)
 
+        # Apply supersedence (operator opted in via --supersede or
+        # --supersedes at create-software-job time). The CLI resolved the
+        # action against the catalog snapshot; we just execute it. Two
+        # operations:
+        #   1. POST /mobileApps/{id}/updateRelationships with a
+        #      mobileAppSupersedence per app being superseded.
+        #   2. Demote the matching verified_versions rows to
+        #      status='superseded' in the local overlay so the catalog
+        #      reflects the new chain state.
+        self._apply_supersedence(graph_client, app_id, job)
+
         # Upload .intunewin content and flip publishingState to 'published'
         self._upload_and_publish(graph_client, app_id, package)
 
         return app_id
+
+    def _apply_supersedence(self, graph_client, new_app_id: str, job: Job) -> None:
+        """Execute the supersedence action the CLI resolved (if any).
+
+        Reads ``job.job_metadata['supersedence_action']`` (dict produced by
+        ``resolve_supersedence``). When present, POSTs each
+        ``mobileAppSupersedence`` relationship via the Graph
+        ``updateRelationships`` action and then commits the status
+        demotions to the local catalog overlay. Failures inside the
+        relationship POST log + raise -- supersedence is a load-bearing
+        operator intent and silently dropping it would be worse than
+        failing the publish.
+        """
+        action = (job.job_metadata or {}).get('supersedence_action')
+        if not action:
+            return
+        superseded_ids = action.get('superseded_intune_app_ids') or []
+        if not superseded_ids:
+            logger.info("Supersedence action has no Intune app ids to link", app_id=new_app_id)
+        else:
+            relationships = [
+                {
+                    '@odata.type': '#microsoft.graph.mobileAppSupersedence',
+                    'targetId': sid,
+                    'supersedenceType': 'update',
+                }
+                for sid in superseded_ids
+            ]
+            try:
+                graph_client.post(
+                    f'deviceAppManagement/mobileApps/{new_app_id}/updateRelationships',
+                    data={'relationships': relationships},
+                )
+                logger.info(
+                    "Recorded supersedence relationships",
+                    new_app_id=new_app_id,
+                    superseded_count=len(superseded_ids),
+                    superseded_app_ids=superseded_ids,
+                )
+            except Exception as exc:  # noqa: BLE001 -- bubble up; operator wants to know
+                logger.error(
+                    "Failed to record supersedence relationships",
+                    new_app_id=new_app_id,
+                    error=str(exc),
+                )
+                raise
+
+        # Catalog overlay demotions. Idempotent at row level.
+        demoted = action.get('demoted_records') or []
+        if demoted:
+            try:
+                self._commit_supersedence_status(demoted)
+            except Exception as exc:  # noqa: BLE001 -- catalog drift, not a publish failure
+                logger.warning(
+                    "Could not commit supersedence status to overlay",
+                    error=str(exc),
+                )
+
+    @staticmethod
+    def _commit_supersedence_status(demoted_records: list) -> None:
+        """Mark the named (entry_id, intune_app_id) rows as superseded in
+        the local overlay. Mirror of
+        installer_catalog.apply_supersedence_status, fed by the dict-shaped
+        ``demoted_records`` we serialise into job_metadata (the original
+        SupersedenceResolution doesn't survive Celery serialisation as a
+        dataclass).
+        """
+        from autopackager.utils.installer_catalog import (
+            _local_overlay_entries, _write_local,
+        )
+        target_keys = {
+            (r['entry_id'], r.get('product_version'), r.get('verified_intune_app_id'))
+            for r in demoted_records
+        }
+        overlay = _local_overlay_entries()
+        changed = 0
+        for entry in overlay:
+            for vv in entry.verified_versions or []:
+                key = (entry.id, vv.get('product_version'), vv.get('verified_intune_app_id'))
+                if key in target_keys and vv.get('status') != 'superseded':
+                    vv['status'] = 'superseded'
+                    changed += 1
+        if changed:
+            _write_local(overlay)
+            logger.info("Catalog supersedence status committed", rows=changed)
 
     def _assign_categories(self, graph_client, app_id: str, category_names: list) -> None:
         """Attach Intune mobileAppCategory entries to ``app_id`` by display name.
