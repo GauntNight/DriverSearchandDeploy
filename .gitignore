@@ -34,8 +34,10 @@ data/installer_catalog.local.yaml
 
 # Third-party installer fixtures used by the verify_*.py harnesses.
 # Downloaded on demand by the scripts; not for distribution via this repo.
+# .zip covers wrapped_zip pilots (Foxit-style enterprise bundles).
 data/test_msis/*.msi
 data/test_msis/*.exe
+data/test_msis/*.zip
 
 # Database
 *.db

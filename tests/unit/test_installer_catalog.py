@@ -658,6 +658,40 @@ class TestCatalogEntryExeFields:
         })
         assert entry is None
 
+    def test_wrapped_installer_fields_load_and_round_trip(self, temp_catalog_paths):
+        """wrapped_msi entries need extract_command_template +
+        extracted_msi_pattern to survive the YAML round trip; wrapped_zip
+        only needs the pattern. Both must reach the dataclass intact so
+        extract_wrapped() can read them.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [
+                {
+                    'id': 'powertoys', 'type': 'exe',
+                    'installer_family': 'wrapped_msi',
+                    'install_command_template': 'msiexec /i {installer_filename} /qn',
+                    'extract_command_template': '"{installer_path}" --extract_msi',
+                    'extracted_msi_pattern': 'PowerToys*.msi',
+                },
+                {
+                    'id': 'foxit-pdf-reader', 'type': 'exe',
+                    'installer_family': 'wrapped_zip',
+                    'install_command_template': 'msiexec /i {installer_filename} /qn',
+                    'extracted_msi_pattern': 'FoxitPDFReader*.msi',
+                },
+            ],
+        })
+        catalog = ic.load_catalog()
+        pt = catalog.by_id('powertoys')
+        assert pt.extract_command_template == '"{installer_path}" --extract_msi'
+        assert pt.extracted_msi_pattern == 'PowerToys*.msi'
+
+        foxit = catalog.by_id('foxit-pdf-reader')
+        assert foxit.extract_command_template is None  # wrapped_zip doesn't need one
+        assert foxit.extracted_msi_pattern == 'FoxitPDFReader*.msi'
+
     def test_match_exe_does_not_return_msi_entries(self, temp_catalog_paths):
         """match_exe must not return type=msi entries even when the
         PE/SHA fields would otherwise look like a match. Different
@@ -680,6 +714,99 @@ class TestCatalogEntryExeFields:
         assert ic.load_catalog().match_exe(pe_metadata={
             'company_name': 'Igor Pavlov', 'product_name': '7-Zip',
         }) is None
+
+    def test_distribution_field_loads_from_yaml(self, temp_catalog_paths):
+        """Both DISTRIBUTION_KINDS values survive the YAML round trip.
+        Mixed-distribution catalogs (standard + enterprise sitting
+        side-by-side) are the intended use case -- many COTS apps ship
+        both editions and the catalog must carry them distinctly.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [
+                {
+                    'id': 'acrobat-reader', 'type': 'exe',
+                    'install_command_template': '{installer_filename} /qn',
+                    'distribution': 'standard',
+                },
+                {
+                    'id': 'acrobat-pro-enterprise', 'type': 'msi',
+                    'install_command_template': 'msiexec /i {installer_filename} /qn',
+                    'distribution': 'enterprise',
+                },
+            ],
+        })
+        catalog = ic.load_catalog()
+        assert catalog.by_id('acrobat-reader').distribution == 'standard'
+        assert catalog.by_id('acrobat-pro-enterprise').distribution == 'enterprise'
+
+    def test_distribution_optional_on_load(self):
+        """Existing catalogs that predate the field must still load. The
+        loader does NOT infer 'standard' on missing values -- it leaves
+        the field None so audits can distinguish 'unmarked' from
+        'explicitly standard'. CLI helpers (add_msi_entry / add_exe_entry)
+        do set 'standard' by default on newly-added entries.
+        """
+        from autopackager.utils.installer_catalog import _entry_from_dict
+        entry = _entry_from_dict({
+            'id': 'pre-existing', 'type': 'msi',
+            'install_command_template': 'msiexec /i {installer_filename} /qn',
+        })
+        assert entry.distribution is None
+
+    def test_distribution_kinds_controlled_vocabulary(self):
+        """If we silently accept arbitrary distribution strings the
+        ontology drifts (operators write 'Standard', 'ENT', 'biz', etc.).
+        Pinning the set so a regression test catches typos at code-
+        review time -- the loader itself is intentionally lenient (won't
+        reject misspelled entries) because catalogs are shared across
+        operators with different conventions, but downstream consumers
+        should compare against this set.
+        """
+        assert ic.DISTRIBUTION_KINDS == {'standard', 'enterprise'}
+
+    def test_add_msi_entry_defaults_distribution_to_standard(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': []})
+        entry = ic.add_msi_entry({
+            'product_name': 'New App',
+            'product_code': '{NEW}',
+            'manufacturer': 'Vendor',
+        }, install_command_template='msiexec /i {installer_filename} /qn')
+        assert entry.distribution == 'standard'
+
+    def test_add_msi_entry_accepts_enterprise_distribution(self, temp_catalog_paths):
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {'version': 1, 'entries': []})
+        entry = ic.add_msi_entry(
+            {'product_name': 'Enterprise App', 'product_code': '{E}', 'manufacturer': 'V'},
+            install_command_template='msiexec /i {installer_filename} /qn ENTERPRISE=1',
+            distribution='enterprise',
+        )
+        assert entry.distribution == 'enterprise'
+
+    def test_baseline_marks_every_entry_with_distribution(self):
+        """Belt-and-suspenders contract: the committed baseline must mark
+        every entry's distribution. Catalogs landing in main without this
+        marker leak un-audited entries into every downstream operator's
+        merged view.
+        """
+        from autopackager.utils.installer_catalog import (
+            BASELINE_PATH, _load_yaml_file, _entry_from_dict,
+        )
+        if not BASELINE_PATH.exists():
+            pytest.skip(f"Baseline missing at {BASELINE_PATH}")
+        raw = _load_yaml_file(BASELINE_PATH)
+        unmarked = []
+        for entry_raw in raw.get('entries') or []:
+            entry = _entry_from_dict(entry_raw)
+            if entry and entry.distribution is None:
+                unmarked.append(entry.id)
+        assert not unmarked, (
+            f"Baseline entries missing 'distribution': {unmarked}. "
+            "Mark explicitly as 'standard' or 'enterprise'."
+        )
 
     def test_round_trip_through_local_overlay_write(self, temp_catalog_paths):
         # Adding an EXE entry to the overlay must preserve the new fields

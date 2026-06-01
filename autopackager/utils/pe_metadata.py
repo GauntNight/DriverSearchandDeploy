@@ -232,7 +232,21 @@ def _parse_vs_versioninfo(blob: bytes) -> PEMetadata:
 
 
 def _parse_string_file_info(blob: bytes, start: int, end: int, out: Dict[str, str]) -> None:
-    """Walk StringFileInfo -> StringTable* -> String*, populating ``out``."""
+    """Walk StringFileInfo -> StringTable* -> String*, populating ``out``.
+
+    The String block's ``wValueLength`` is supposed to be the value's length
+    in WORDS (Unicode chars including the terminating null). In the wild
+    several installer toolchains set it wrong -- WiX Burn (PowerToys uses
+    this), older NSIS, custom Microsoft bootstrappers -- some write the
+    length in BYTES, some include the null terminator inconsistently, some
+    leave it zero. Trusting it produces values that bleed into the next
+    String entry's bytes ("Microsoft Corporation X0 FileDescription Po...").
+
+    Defensive read: ignore ``wValueLength`` and walk the value as a
+    null-terminated WCHAR string bounded by the block's wLength. This
+    matches what Windows' actual VerQueryValue does for the same blobs
+    and produces the strings the Intune portal / inspect-exe expect.
+    """
     st_pos = start
     while st_pos + 6 <= end:
         st_len = struct.unpack_from('<H', blob, st_pos)[0]
@@ -251,19 +265,21 @@ def _parse_string_file_info(blob: bytes, start: int, end: int, out: Dict[str, st
             s_len = struct.unpack_from('<H', blob, s_pos)[0]
             if s_len == 0:
                 break
-            s_val_len = struct.unpack_from('<H', blob, s_pos + 2)[0]
+            s_end = min(s_pos + s_len, st_end)
             sk_pos = s_pos + 6
             sk_start = sk_pos
-            while sk_pos + 2 <= len(blob) and blob[sk_pos:sk_pos + 2] != b'\x00\x00':
+            while sk_pos + 2 <= s_end and blob[sk_pos:sk_pos + 2] != b'\x00\x00':
                 sk_pos += 2
             key = blob[sk_start:sk_pos].decode('utf-16-le', errors='replace')
             sk_pos += 2
             sk_pos = _align4(sk_pos)
-            if s_val_len > 0:
-                val_bytes = blob[sk_pos: sk_pos + s_val_len * 2]
-                value = val_bytes.decode('utf-16-le', errors='replace').rstrip('\x00')
-            else:
-                value = ''
+            # Read value as a null-terminated WCHAR string bounded by the
+            # String block's own wLength (s_end). See docstring for why
+            # wValueLength isn't trusted here.
+            ve = sk_pos
+            while ve + 2 <= s_end and blob[ve:ve + 2] != b'\x00\x00':
+                ve += 2
+            value = blob[sk_pos:ve].decode('utf-16-le', errors='replace')
             out[key] = value
             s_pos = _align4(s_pos + s_len)
         st_pos = _align4(st_pos + st_len)
