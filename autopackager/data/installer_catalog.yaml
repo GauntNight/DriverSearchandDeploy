@@ -150,11 +150,11 @@ entries:
   - id: 7-zip
     type: msi
     upgrade_code: "{23170F69-40C1-2702-0000-000004000000}"
-    product_code: "{23170F69-40C1-2702-2408-000001000000}"
+    product_code: "{23170F69-40C1-2702-2601-000001000000}"
     product_name_pattern: "7-Zip"
     publisher: "Igor Pavlov"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
-    uninstall_command_template: "msiexec /x {23170F69-40C1-2702-2408-000001000000} /qn /norestart"
+    uninstall_command_template: "msiexec /x {23170F69-40C1-2702-2601-000001000000} /qn /norestart"
     installer_family: msi
     distribution: standard
     supersedence:
@@ -275,3 +275,114 @@ entries:
     categories: ["Productivity"]
     min_os_version: "1607"
     notes: "wrapped_zip -- IMPORTANT: pilot uncovered that Foxit's public ZIP (FoxitPDFReader20251_L10N_Setup.zip) ships only MST localization transforms, not the base MSI. Their distribution requires the base MSI to be sourced separately (commercial enterprise pack), so this entry can't be unwrapped end-to-end without that base. Kept as documented unverified shape; replace extracted_msi_pattern + URL with the operator's licensed enterprise ZIP when piloting."
+
+  # ---- Snagit 2023 MSI (TechSmith, licensed) ---------------------
+  # First entry in the manual-mode Snagit MSI supersedence chain.
+  # Snagit 2023 (v23.x) and Snagit (v26.x, no year suffix in product
+  # name) ship with DIFFERENT UpgradeCodes AND different ProductName
+  # patterns, so generic / specific supersedence modes cannot link
+  # them as a single line. Operators declare the chain explicitly via
+  # mode: manual + supersedes on the newer entry.
+  - id: snagit-2023
+    type: msi
+    upgrade_code: "{D09A33E8-C03D-461C-9DBD-3DBB7240D5B3}"
+    product_code: "{8740B15B-4F85-4184-B217-E25AD2BAAD75}"
+    product_name_pattern: "Snagit 2023"
+    publisher: "TechSmith Corporation"
+    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    uninstall_command_template: "msiexec /x {8740B15B-4F85-4184-B217-E25AD2BAAD75} /qn /norestart"
+    installer_family: msi
+    distribution: enterprise
+    supersedence:
+      line: snagit
+      mode: manual
+    information_url: "https://www.techsmith.com/screen-capture.html"
+    description: "TechSmith Snagit 2023 -- screen capture and screen recording."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "Licensed commercial software. Snagit ships unactivated; operator activates post-install on the target device (license key, not silent-install switch). Chain root for the snagit manual-supersedence line."
+
+  # ---- Snagit (current major) MSI (TechSmith, licensed) ----------
+  # Snagit dropped the year suffix from the ProductName at v26
+  # (Snagit 2023 -> Snagit). UpgradeCode also changes between
+  # majors. mode: manual makes the supersedence relationship
+  # explicit. Add new majors as additional entries with
+  # supersedes: [<previous-major-id>].
+  - id: snagit
+    type: msi
+    upgrade_code: "{3C12DDAF-5C49-495C-BDD9-5298E10BF718}"
+    product_code: "{4FE14B9F-0810-4E92-B6F5-0921D0936119}"
+    product_name_pattern: "Snagit"
+    publisher: "TechSmith Corporation"
+    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    uninstall_command_template: "msiexec /x {4FE14B9F-0810-4E92-B6F5-0921D0936119} /qn /norestart"
+    installer_family: msi
+    distribution: enterprise
+    supersedence:
+      line: snagit
+      mode: manual
+      supersedes: [snagit-2023]
+    information_url: "https://www.techsmith.com/screen-capture.html"
+    description: "TechSmith Snagit -- screen capture and screen recording."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "Licensed commercial software. ProductName matching uses the bare 'Snagit' substring; this pattern would also match 'Snagit 2023' so MSI lookup must prefer UpgradeCode (3C12DDAF...) over ProductName when both are present. The pipeline does (UpgradeCode is tried first)."
+
+  # ---- Snagit 2023 EXE bootstrapper (TechSmith, licensed) --------
+  # First entry in the manual-mode Snagit EXE supersedence chain.
+  # Older Snagit 2023 bootstrapper PE InternalName is 'setup' (not
+  # Burn), but accepts the standard /quiet /norestart switch pair.
+  # Catalog ships the EXE as msft_bootstrapper rather than
+  # wrapped_msi because the bootstrapper's attached container is
+  # not extractable without WiX dark.exe / wix burn extract, and
+  # we don't ship that dependency.
+  - id: snagit-2023-bootstrapper
+    type: exe
+    installer_family: msft_bootstrapper
+    distribution: enterprise
+    supersedence:
+      line: snagit-bootstrapper
+      mode: manual
+    pe_company_name: "TechSmith Corporation"
+    pe_product_name: "Snagit 2023"
+    install_command_template: "{installer_filename} /quiet /norestart"
+    uninstall_command_template: "msiexec /x {8740B15B-4F85-4184-B217-E25AD2BAAD75} /qn /norestart"
+    detection_rules:
+      - kind: registry_version
+        key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\{8740B15B-4F85-4184-B217-E25AD2BAAD75}'
+        value_name: DisplayVersion
+        operator: greaterThanOrEqual
+        value: "23.0.0"
+    information_url: "https://www.techsmith.com/screen-capture.html"
+    description: "TechSmith Snagit 2023 -- screen capture and screen recording. EXE bootstrapper."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "Licensed commercial software. Older Snagit 2023 bootstrapper engine is not Microsoft Burn (InternalName='setup'); /quiet /norestart is the documented silent switch but operator should verify install behavior on first Phase 2.5 N-1 run."
+
+  # ---- Snagit (current major) EXE bootstrapper -------------------
+  # Current Snagit EXE is a Microsoft Burn bundle (PE InternalName
+  # 'burn'); catalog ships it as msft_bootstrapper for the reasons
+  # noted on snagit-2023-bootstrapper.
+  - id: snagit-bootstrapper
+    type: exe
+    installer_family: msft_bootstrapper
+    distribution: enterprise
+    supersedence:
+      line: snagit-bootstrapper
+      mode: manual
+      supersedes: [snagit-2023-bootstrapper]
+    pe_company_name: "TechSmith Corporation"
+    pe_product_name: "Snagit"
+    install_command_template: "{installer_filename} /quiet /norestart"
+    uninstall_command_template: "msiexec /x {4FE14B9F-0810-4E92-B6F5-0921D0936119} /qn /norestart"
+    detection_rules:
+      - kind: registry_version
+        key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\{4FE14B9F-0810-4E92-B6F5-0921D0936119}'
+        value_name: DisplayVersion
+        operator: greaterThanOrEqual
+        value: "26.0.0"
+    information_url: "https://www.techsmith.com/screen-capture.html"
+    description: "TechSmith Snagit -- screen capture and screen recording. EXE bootstrapper (Microsoft Burn)."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "Licensed commercial software. Burn bundle; /quiet /norestart are standard Burn switches. pe_product_name 'Snagit' also matches 'Snagit 2023' as a substring, so catalog lookup must prefer SHA-256 hash match (when seen) or pe_product_version over name. The pipeline does."
