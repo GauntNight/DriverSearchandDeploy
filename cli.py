@@ -100,8 +100,9 @@ def _try_unwrap_installer(installer_path: Optional[str]) -> Optional[str]:
     """If the installer matches a wrapped catalog entry, extract the inner
     MSI and return its path. Otherwise return None.
 
-    Handles both wrapped_msi (EXE that bundles an MSI -- Adobe Reader DC,
-    PowerToys) and wrapped_zip (ZIP containing an MSI -- Foxit Reader).
+    Handles both wrapped_msi (EXE that bundles an MSI -- Adobe Reader DC)
+    and wrapped_zip (ZIP containing an MSI -- Foxit Reader). (PowerToys is
+    a Burn bundle shipped as msft_bootstrapper, not unwrapped here.)
     Runs as a pre-stage before extension dispatch so the rest of
     create-software-job sees a regular MSI.
 

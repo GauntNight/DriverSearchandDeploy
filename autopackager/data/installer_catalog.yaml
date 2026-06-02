@@ -197,33 +197,36 @@ entries:
     notes: "NSIS installer. /S is the silent flag. Detection via the Uninstall registry key DisplayVersion."
 
   # ---- wrapped_msi example (PowerToys) ----------------------------
-  # PowerToys ships its installer as a bootstrapper EXE that bundles
-  # the MSI internally. The --extract_msi switch drops the MSI into
-  # the current working directory; the extractor invokes the command
-  # with cwd=extract_dir so the file lands where downstream expects it.
+  # PowerToys ships its installer as a Microsoft Burn bundle that wraps
+  # an inner MSI. The bundle ignores unknown switches and falls back to
+  # its interactive installer UI, so there is no usable extract switch
+  # (--extract_msi / -extract_msi / /extract_msi all just launch setup).
+  # Like Snagit's current EXE, we therefore ship the bootstrapper EXE as
+  # the .intunewin payload (msft_bootstrapper) and detect via the inner
+  # MSI's ProductCode in the Uninstall hive. /quiet /norestart are the
+  # standard Burn silent switches.
   - id: powertoys
     type: exe
-    installer_family: wrapped_msi
+    installer_family: msft_bootstrapper
     distribution: standard
     supersedence:
       line: powertoys
       mode: generic
     pe_company_name: "Microsoft"
     pe_product_name: "PowerToys"
-    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
-    extract_command_template: '"{installer_path}" --extract_msi'
-    extracted_msi_pattern: "PowerToys*.msi"
+    install_command_template: "{installer_filename} /quiet /norestart"
+    uninstall_command_template: "msiexec /x {23F8E1BE-FE45-4FAD-B98C-1932DCDD0B70} /qn /norestart"
     detection_rules:
       - kind: registry_version
-        key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\{74B61B4E-A55E-4B6A-A02E-CB7B739D9F8B}'
+        key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\{23F8E1BE-FE45-4FAD-B98C-1932DCDD0B70}'
         value_name: DisplayVersion
         operator: greaterThanOrEqual
-        value: "0.0.0"
+        value: "0.99.0"
     information_url: "https://learn.microsoft.com/windows/powertoys/"
     description: "Microsoft PowerToys: utilities to tune and streamline Windows."
     categories: ["Productivity"]
     min_os_version: "1607"
-    notes: "wrapped_msi -- IMPORTANT: PowerToys 0.94+ removed the in-bootstrapper --extract_msi shortcut; piloting 0.99.1 confirmed the switch hangs. Per upstream guidance the supported extraction path is now `wix burn extract <exe> -out <dir> -oba <dir>` via the .NET WiX 4 CLI, which we don't ship. Entry is here as a documented unverified placeholder; either install the WiX CLI and update extract_command_template, or use a 0.93-or-earlier build. Detection key (74B61B4E-...) is also a guess -- verify against an actual install."
+    notes: "Microsoft Burn bundle, shipped as msft_bootstrapper (not wrapped_msi -- the --extract_msi/-extract_msi//extract_msi switches were probed live on 0.99.1 and all just launch the interactive installer, dropping no MSI). Inner MSI ProductCode {23F8E1BE-FE45-4FAD-B98C-1932DCDD0B70} and Burn bundle GUID {39FF9837-4722-49F9-92B9-051A50B1E36F} both register in the Uninstall hive (DisplayName 'PowerToys (Preview)'); verified by controlled install of 0.99.1 on 2026-06-02. Detection + uninstall key on the inner MSI ProductCode. /quiet /norestart confirmed exit 0 for both install and bundle /uninstall /quiet."
 
   # ---- wrapped_msi example (Adobe Reader DC) ----------------------
   # Adobe's self-extracting installer takes -sfx_o to specify the
