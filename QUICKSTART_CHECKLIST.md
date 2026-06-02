@@ -33,7 +33,7 @@ The items marked **[AUTO]** require no manual action.
 - [ ] **[AUTO]** Git installed
 - [ ] **[AUTO]** Python virtual environment created (`.\venv`)
 - [ ] **[AUTO]** All Python dependencies installed
-- [ ] **[AUTO]** Redis downloaded to `.\tools\redis\`
+- [ ] **[AUTO]** Redis installed (Memurai via winget, or archived port downloaded to `.\tools\redis\`)
 - [ ] **[AUTO]** IntuneWinAppUtil.exe downloaded to `.\tools\`
 - [ ] **[AUTO]** SQLite database configured and initialised
 - [ ] **[AUTO]** Data directories created
@@ -184,12 +184,14 @@ Complete these if you are not using the automated installer.
 ## Optional Enhancements
 
 - [ ] Configured automated catalog refresh (Task Scheduler / cron)
-- [ ] Set up log monitoring for `data/logs/autopackager.log`
+- [ ] Set up log monitoring + rotation for `data/logs/autopackager.log`
 - [ ] Created driver jobs for additional hardware models
 - [ ] Documented hardware inventory
 - [ ] Customised deployment ring deferral periods in `config.yaml`
 - [ ] Set up database backups (if using PostgreSQL)
 - [ ] Switched to PostgreSQL for production use
+- [ ] Tested rollback procedures (poller auto-rolls back past the failure threshold)
+- [ ] Created operational runbooks
 
 ---
 
@@ -198,6 +200,8 @@ Complete these if you are not using the automated installer.
 ```cmd
 # Windows helper scripts (created by installer)
 .\launch-all.bat                                     Launch Redis + worker
+.\start-redis.bat                                    Start Redis only
+.\start-worker.bat                                   Start Celery worker only
 .\create-job.bat --vendor dell --model "MODEL"       Create a driver job
 .\list-jobs.bat                                      List all jobs
 .\list-jobs.bat --state completed                    Filter by state
@@ -208,9 +212,15 @@ Complete these if you are not using the automated installer.
 python cli.py init                                   Initialise database
 python cli.py worker start                           Start Celery worker
 python cli.py create-driver-job --vendor dell --model "MODEL"
-python cli.py jobs list
+python cli.py create-software-job --installer-path foo.msi   # consults catalog
+python cli.py inspect-msi <path> --install-command "..."     # dry-run metadata
+python cli.py jobs list                              # add --state to filter
 python cli.py jobs status <id>
-python cli.py jobs list --state failed
+python cli.py jobs cancel <id>                       # or --all-stuck
+python cli.py jobs purge --yes                       # delete job rows
+python cli.py worker purge --yes                     # drain queued tasks
+python cli.py version
+python -m uvicorn autopackager.web.api:app --port 8000       # web dashboard
 ```
 
 ---
@@ -254,4 +264,5 @@ You've successfully implemented AutoPackager when:
 
 **Implementation Time (automated path)**: ~10–15 minutes
 **Implementation Time (manual path)**: ~90 minutes
-**Support**: See `IMPLEMENTATION_GUIDE.md` for detailed instructions
+**Support**: See [`AUTOMATED_SETUP.md`](AUTOMATED_SETUP.md) for installer flags and
+[`SETUP.md`](SETUP.md) for the full manual / Linux walkthrough.

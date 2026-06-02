@@ -108,7 +108,7 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | Web dashboard (FastAPI + REST) | ✅ Working | Job, deployment, discovery, and stats endpoints |
 | LLM-driven discovery / install-param research | ❌ Planned (Phase 2) | No LLM is used in the current code |
 | COTS / general software discovery | ⚠️ Partial | MSI applications are packaged from a supplied install command + MSI metadata (see [Packaging MSI Software](#packaging-msi-software)). Automatic *version* discovery for software (checking vendors for updates) is still Phase 2 |
-| Automated test suite | ✅ Working | 597+ tests passing — unit, integration, CLI, API |
+| Automated test suite | ✅ Working | 621 tests passing — unit, integration, CLI, API |
 
 ## Quick Start
 
@@ -197,7 +197,7 @@ python cli.py init
 python cli.py worker start
 ```
 
-See [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) for full manual setup instructions.
+See [SETUP.md](SETUP.md) for full manual setup instructions and [QUICKSTART_CHECKLIST.md](QUICKSTART_CHECKLIST.md) to track your progress.
 
 </details>
 
@@ -538,23 +538,22 @@ Be aware of the following before relying on AutoPackager in production:
 
 ## Documentation
 
+Not sure where to start? Use this map.
+
 ### Getting Started
-- **🚀 One-Click Installer**: `Install-AutoPackager.ps1` — run this first
+- **🚀 One-Click Installer**: `Install-AutoPackager.ps1` (or double-click `Install-AutoPackager.bat`) — run this first
 - **☁️ Azure Setup Script**: `azure-setup.ps1` — automates all Azure configuration
-- **📋 Implementation Guide**: [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) — step-by-step walkthrough
-- **✅ Quick Start Checklist**: [QUICKSTART_CHECKLIST.md](QUICKSTART_CHECKLIST.md) — track your progress
+- **✅ Quick Start Checklist**: [QUICKSTART_CHECKLIST.md](QUICKSTART_CHECKLIST.md) — the main first-run guide; track every step, includes troubleshooting and common commands
+- **⚙️ Installer Flags**: [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) — what the installer does and every switch
+- **🐧 Manual / Linux Setup**: [SETUP.md](SETUP.md) — step-by-step manual installation for advanced or non-Windows environments
 
 ### Reference Documentation
-- **Automated Setup Guide**: [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) — script options and flags
-- **Manual Setup Guide**: [SETUP.md](SETUP.md) — detailed manual installation reference
 - **Configuration Reference**: [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md) — every `config.yaml` field with valid values, defaults, and scenarios
 - **Pipeline Lifecycle**: [docs/PIPELINE_LIFECYCLE.md](docs/PIPELINE_LIFECYCLE.md) — job orchestration state machine and task flow
 - **Test Suite Guide**: [tests/README.md](tests/README.md) — pytest layout, fixtures, and coverage targets
 - **Changelog**: [CHANGELOG.md](CHANGELOG.md) — release history
-- **Technical Whitepaper**: [automated_software_packaging_whitepaper.md](automated_software_packaging_whitepaper.md)
-- **PR/FAQ**: [PRFAQ_ Project AutoPackager.md](PRFAQ_%20Project%20AutoPackager.md)
-- **Driver Updates Reference**: [ch04-driver-updates-reference.md](ch04-driver-updates-reference.md) — Intune driver update profiles and Graph API endpoints
-- **Windows App Packaging**: [ch11-windows-app-packaging-reference.md](ch11-windows-app-packaging-reference.md) — Win32 app packaging patterns and best practices
+- **Intune Packaging References**: [docs/claude-reference/](docs/claude-reference/) — authoritative driver (ch04) and Win32 app (ch11) packaging references for building catalog entries and installer families
+- **Design History**: [docs/design-history/](docs/design-history/) — the original whitepaper and PR/FAQ (pre-release vision; describe unbuilt Phase-2 features)
 
 ### Web Dashboard
 
@@ -584,7 +583,9 @@ This repository was sanitized for public release. Git history prior to the initi
 ## Credits
 
 Built with AI assistance.
-Version 1.3.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
+Version 1.6.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
 Intune publishing, deployment rings with automatic promotion and rollback, continuous
-catalog discovery, status polling, web dashboard, and CLI. Adds MSI software packaging:
-metadata-driven Intune apps built from an install command (the start of Phase 2).
+catalog discovery, status polling, web dashboard, and CLI. Software packaging covers both
+MSI and EXE installers (catalog-driven detection/silent-install) plus operator-opt-in MSI
+supersedence. LLM-driven discovery remains Phase 2. See [CHANGELOG.md](CHANGELOG.md) for the
+full release history.

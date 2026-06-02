@@ -268,7 +268,7 @@ Write-Host "5. Monitor jobs:" -ForegroundColor White
 Write-Host "   python cli.py jobs list" -ForegroundColor Cyan
 Write-Host ""
 
-Write-Host "For detailed instructions, see IMPLEMENTATION_GUIDE.md" -ForegroundColor Yellow
+Write-Host "For detailed instructions, see QUICKSTART_CHECKLIST.md or SETUP.md" -ForegroundColor Yellow
 Write-Host ""
 
 # Create helper batch files

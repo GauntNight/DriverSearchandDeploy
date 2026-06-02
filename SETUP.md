@@ -470,6 +470,7 @@ redis-cli ping
 ## Support
 
 For issues and questions, please refer to:
-- Technical Whitepaper: `automated_software_packaging_whitepaper.md`
-- PR/FAQ: `PRFAQ_ Project AutoPackager.md`
+- Quick Start + troubleshooting: `QUICKSTART_CHECKLIST.md`
+- Configuration reference: `CONFIG_REFERENCE.md`
+- Design history (whitepaper, PR/FAQ): `docs/design-history/`
 - GitHub Issues: (if applicable)
