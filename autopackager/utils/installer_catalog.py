@@ -705,7 +705,12 @@ class Catalog:
         Match priority (highest -> lowest):
           1. sha256 exact (catches a specific known build, e.g. a tested
              version we've pinned in the baseline)
-          2. pe_company_name + pe_product_name (case-insensitive substring
+          2. pe_product_name exact (case-insensitive) -- disambiguates lines
+             where one entry's pe_product_name is a substring of another's
+             (e.g. "Snagit" vs "Snagit 2023"; without this pass the shorter
+             pattern matches the longer installer name and the wrong entry
+             wins by catalog order)
+          3. pe_company_name + pe_product_name (case-insensitive substring
              match -- vendors often suffix builds with extra text, e.g.
              "Notepad++" vs "Notepad++ (32-bit)")
 
@@ -725,6 +730,14 @@ class Catalog:
         product = (pe_metadata.get("product_name") or "").lower()
         if not (company or product):
             return None
+        for e in exe_entries:
+            cat_company = (e.pe_company_name or "").lower()
+            cat_product = (e.pe_product_name or "").lower()
+            if not cat_product or cat_product != product:
+                continue
+            if cat_company and company and cat_company not in company and company not in cat_company:
+                continue
+            return e
         for e in exe_entries:
             cat_company = (e.pe_company_name or "").lower()
             cat_product = (e.pe_product_name or "").lower()

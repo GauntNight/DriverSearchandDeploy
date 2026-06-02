@@ -1,5 +1,6 @@
 """Deployment Agent - Deploy to Microsoft Intune"""
 
+import re
 import shutil
 import tempfile
 import time
@@ -7,7 +8,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 from autopackager.models.job import Job
 from autopackager.models.package import Package
@@ -46,6 +47,26 @@ _WIN_RELEASE_TO_FLAG = {
     '1909': 'v10_1909', '2004': 'v10_2004', '20H2': 'v10_2H20',
     '21H1': 'v10_21H1', '21H2': 'v10_21H2', '22H2': 'v10_22H2',
 }
+
+# Trailer we stamp into the Intune app's notes field so the upsert lookup
+# can tell which catalog entry produced the app. Without this, two catalog
+# entries that legitimately share a displayName (e.g. an MSI distribution
+# and an EXE bootstrapper for the same product line, both showing up as
+# "Snagit" in Intune) collide -- the second publish PATCHes the first and
+# corrupts its detection/uninstall metadata. The marker lives on its own
+# trailing line so it stays visually separable from operator-facing notes.
+_CATALOG_MARKER_RE = re.compile(r'\[autopackager:catalog=([^\]\s]+)\]')
+
+
+def _build_catalog_marker(entry_id: str) -> str:
+    return f'[autopackager:catalog={entry_id}]'
+
+
+def _extract_catalog_marker(notes: Optional[str]) -> Optional[str]:
+    if not notes:
+        return None
+    m = _CATALOG_MARKER_RE.search(notes)
+    return m.group(1) if m else None
 
 
 class DeploymentAgent:
@@ -178,11 +199,8 @@ class DeploymentAgent:
 
         existing_app = None
         if not supersedence_requested:
-            existing_apps = graph_client.get_win32_apps()
-            for app in existing_apps.get('value', []):
-                if app.get('displayName') == package.name:
-                    existing_app = app
-                    break
+            existing_apps = graph_client.get_win32_apps().get('value', [])
+            existing_app = self._find_existing_app_for_upsert(package, existing_apps)
 
         app_data = self._prepare_app_data(package, job)
 
@@ -413,6 +431,45 @@ class DeploymentAgent:
                     category=name, app_id=app_id, error=str(exc),
                 )
 
+    def _find_existing_app_for_upsert(
+        self,
+        package: Package,
+        existing_apps: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Return the Intune app this publish should PATCH, or None to create fresh.
+
+        When a catalog entry produced this package, require its id to match
+        the marker stamped into the candidate app's notes field. Two catalog
+        entries can legitimately share a displayName (an MSI distribution and
+        an EXE bootstrapper for the same product line both surface as e.g.
+        "Snagit" in Intune) -- without the marker check the second publish
+        PATCHes the first, leaving an app whose installer/displayVersion belong
+        to one entry but whose detection rule and uninstall command belong to
+        the other. Refuse to match in the absence of a marker rather than
+        silently fall back to displayName-only, which is the original bug.
+
+        For driver jobs (no catalog entry) and operator overrides that opt out
+        of the catalog, keep the prior displayName-only behavior so legitimate
+        re-publishes of the same product update the existing app in place.
+        """
+        name_matches = [
+            app for app in existing_apps
+            if app.get('displayName') == package.name
+        ]
+        if not name_matches:
+            return None
+
+        catalog_entry = self._lookup_catalog_entry(package)
+        target_id = catalog_entry.id if catalog_entry else None
+
+        if target_id:
+            for app in name_matches:
+                if _extract_catalog_marker(app.get('notes')) == target_id:
+                    return app
+            return None
+
+        return name_matches[0]
+
     def _lookup_catalog_entry(self, package: Package) -> 'CatalogEntry | None':
         """Find the catalog entry that matches this package.
 
@@ -517,6 +574,11 @@ class DeploymentAgent:
             notes_parts.append(release_notes)
         if job.job_type and job.job_type.value == 'driver_update' and hardware_model:
             notes_parts.append(f"Hardware model: {hardware_model}")
+        # Catalog marker trailer (see _CATALOG_MARKER_RE). Only stamped when
+        # the source job resolved to a catalog entry so the upsert lookup can
+        # disambiguate MSI vs EXE distributions sharing a displayName.
+        if catalog_entry and catalog_entry.id:
+            notes_parts.append(_build_catalog_marker(catalog_entry.id))
         notes = '\n'.join(notes_parts) if notes_parts else ''
 
         # minimumSupportedOperatingSystem: Graph accepts the flag-dict form on

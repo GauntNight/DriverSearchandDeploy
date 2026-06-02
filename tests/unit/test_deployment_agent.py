@@ -427,6 +427,120 @@ class TestDeploymentAgentCore(unittest.TestCase):
         assert result is fake
 
     @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
+    def test_prepare_app_data_stamps_catalog_marker_when_entry_resolves(self, mock_load):
+        """Catalog-derived publishes stamp [autopackager:catalog=<id>] into the
+        Intune app's notes field. The deployment upsert reads this back to
+        distinguish MSI vs EXE distributions sharing a displayName (e.g. an
+        MSI "Snagit" and an EXE bootstrapper "Snagit" each get their own
+        Intune app, not one corrupting the other). Surfaced live on
+        2026-06-01 when SnagitSetup-26.2.2.11088.exe published into the same
+        Intune app id as the Snagit MSI from 30 seconds earlier.
+        """
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+
+        self.package.package_metadata = {
+            'catalog_entry_id': 'snagit-bootstrapper',
+            'exe_product_name': 'Snagit',
+        }
+        fake = CatalogEntry(
+            id='snagit-bootstrapper', type='exe',
+            installer_family='msft_bootstrapper',
+            install_command_template='{installer_filename} /quiet /norestart',
+        )
+        mock_load.return_value = Catalog(entries=[fake])
+
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertIn('notes', app_data)
+        self.assertIn('[autopackager:catalog=snagit-bootstrapper]', app_data['notes'])
+
+    def test_prepare_app_data_omits_catalog_marker_for_driver_jobs(self):
+        """Driver jobs never resolve to a catalog entry. The notes field
+        therefore must NOT carry a marker -- writing one with no real catalog
+        backing would cause the upsert lookup to look for a phantom entry id
+        on the next re-publish and create a duplicate instead of updating.
+        """
+        # self.package has no package_metadata attribute -> _lookup_catalog_entry
+        # returns None -> no marker.
+        app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertNotIn('[autopackager:catalog=', app_data.get('notes', ''))
+
+    @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
+    def test_find_existing_app_requires_marker_match_when_catalog_id_present(self, mock_load):
+        """Two existing Intune apps share displayName 'Snagit' but carry
+        markers for different catalog entries (one MSI, one EXE bootstrapper).
+        A publish whose source job resolves to the EXE entry must match the
+        EXE-marked app -- NOT the MSI-marked app. This is the upsert side of
+        the displayName-collision protection (the marker write is on the
+        prepare-app-data side).
+        """
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+
+        self.package.name = 'Snagit'
+        self.package.package_metadata = {
+            'catalog_entry_id': 'snagit-bootstrapper',
+        }
+        fake = CatalogEntry(
+            id='snagit-bootstrapper', type='exe',
+            installer_family='msft_bootstrapper',
+            install_command_template='{installer_filename} /quiet /norestart',
+        )
+        mock_load.return_value = Catalog(entries=[fake])
+
+        existing = [
+            {'id': 'msi-app-id', 'displayName': 'Snagit',
+             'notes': 'TechSmith Snagit -- MSI distribution.\n[autopackager:catalog=snagit]'},
+            {'id': 'exe-app-id', 'displayName': 'Snagit',
+             'notes': 'TechSmith Snagit -- EXE bootstrapper.\n[autopackager:catalog=snagit-bootstrapper]'},
+            {'id': 'unrelated', 'displayName': 'PuTTY 0.84',
+             'notes': '[autopackager:catalog=putty]'},
+        ]
+        result = self.agent._find_existing_app_for_upsert(self.package, existing)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['id'], 'exe-app-id')
+
+    @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
+    def test_find_existing_app_refuses_unmarked_match_when_catalog_id_present(self, mock_load):
+        """If the candidate app's displayName matches but it has no catalog
+        marker (legacy app from before this fix), refuse to PATCH it. Falling
+        back to the unmarked app is exactly the collision pathology -- the
+        operator gets a fresh app and can manually retire the legacy one.
+        """
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+
+        self.package.name = 'Snagit'
+        self.package.package_metadata = {
+            'catalog_entry_id': 'snagit-bootstrapper',
+        }
+        fake = CatalogEntry(
+            id='snagit-bootstrapper', type='exe',
+            installer_family='msft_bootstrapper',
+            install_command_template='{installer_filename} /quiet /norestart',
+        )
+        mock_load.return_value = Catalog(entries=[fake])
+
+        existing = [
+            {'id': 'legacy-msi', 'displayName': 'Snagit',
+             'notes': 'TechSmith Snagit -- MSI distribution.'},  # no marker
+        ]
+        result = self.agent._find_existing_app_for_upsert(self.package, existing)
+        self.assertIsNone(result)
+
+    def test_find_existing_app_displayname_only_fallback_when_no_catalog(self):
+        """Driver jobs (no catalog entry) keep displayName-only matching so
+        re-publishing the same Dell driver pack updates the existing Intune
+        app instead of proliferating duplicates. The collision risk doesn't
+        apply: driver pack displayNames are vendor+model+component scoped and
+        don't share names with software apps.
+        """
+        existing = [
+            {'id': 'dell-driver-app', 'displayName': self.package.name,
+             'notes': 'Updated chipset drivers'},  # no marker
+        ]
+        result = self.agent._find_existing_app_for_upsert(self.package, existing)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['id'], 'dell-driver-app')
+
+    @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
     def test_lookup_catalog_entry_prefers_msi_product_code_over_catalog_id(self, mock_load):
         """When a package somehow has both (shouldn't happen in practice
         but defend against it), MSI ProductCode wins -- it's the more
