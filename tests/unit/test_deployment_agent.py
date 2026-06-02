@@ -541,6 +541,45 @@ class TestDeploymentAgentCore(unittest.TestCase):
         self.assertEqual(result['id'], 'dell-driver-app')
 
     @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
+    def test_lookup_catalog_entry_exe_does_not_fall_through_to_msi_name_match(self, mock_load):
+        """EXE packages carry catalog_entry_id but no msi_product_code /
+        msi_upgrade_code. Without gating the MSI cascade on those fields,
+        match_msi falls back to package.name / package.vendor and silently
+        lands on an MSI catalog entry whose product_name_pattern overlaps
+        the EXE's name -- e.g. a Snagit 2023 EXE publish (package.name
+        "Snagit 2023") matched the snagit-2023 MSI entry instead of
+        snagit-2023-bootstrapper. The wrong entry then cascades into a
+        wrong catalog marker stamp and Bug B's marker discrimination
+        collapses (both publishes carry the same marker). Surfaced live
+        on 2026-06-02 mid-Snagit re-test (job 29).
+        """
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+
+        self.package.name = 'Snagit 2023'
+        self.package.vendor = 'TechSmith Corporation'
+        self.package.package_metadata = {
+            'catalog_entry_id': 'snagit-2023-bootstrapper',
+            # NO msi_product_code or msi_upgrade_code -- EXE shape
+        }
+        msi_entry = CatalogEntry(
+            id='snagit-2023', type='msi',
+            install_command_template='msiexec /i {installer_filename} /qn',
+            product_name_pattern='Snagit 2023',
+            publisher='TechSmith Corporation',
+        )
+        exe_entry = CatalogEntry(
+            id='snagit-2023-bootstrapper', type='exe',
+            install_command_template='{installer_filename} /quiet /norestart',
+            pe_product_name='Snagit 2023',
+            pe_company_name='TechSmith Corporation',
+        )
+        mock_load.return_value = Catalog(entries=[msi_entry, exe_entry])
+
+        result = self.agent._lookup_catalog_entry(self.package)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.id, 'snagit-2023-bootstrapper')
+
+    @patch('autopackager.agents.deployment.deployment_agent.load_catalog')
     def test_lookup_catalog_entry_prefers_msi_product_code_over_catalog_id(self, mock_load):
         """When a package somehow has both (shouldn't happen in practice
         but defend against it), MSI ProductCode wins -- it's the more

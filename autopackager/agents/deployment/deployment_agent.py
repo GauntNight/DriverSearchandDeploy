@@ -501,13 +501,25 @@ class DeploymentAgent:
         # 7.6.1's GUID. UpgradeCode is the stable per-product identifier
         # MSI guarantees across versions, which is exactly what supersedence
         # needs to find the catalog row that owns this product line.
-        msi_meta_for_match = {
-            'product_code': pkg_meta.get('msi_product_code'),
-            'upgrade_code': pkg_meta.get('msi_upgrade_code'),
-            'product_name': pkg_meta.get('msi_product_name') or package.name,
-            'manufacturer': pkg_meta.get('msi_manufacturer') or package.vendor,
-        }
-        if any(msi_meta_for_match.values()):
+        #
+        # IMPORTANT: only run the MSI cascade when the package actually
+        # carries an MSI-specific identifier (ProductCode or UpgradeCode).
+        # Without this gate, an EXE package whose package_metadata has only
+        # a catalog_entry_id would fall through to match_msi's name fallback
+        # via package.name / package.vendor and silently land on an MSI
+        # catalog entry whose product_name_pattern overlaps -- e.g. a
+        # SnagitSetup-2023 EXE publish (package.name "Snagit 2023") matched
+        # the snagit-2023 MSI entry instead of snagit-2023-bootstrapper,
+        # which then made the deployment marker mis-stamp and clobber the
+        # MSI app (caught live 2026-06-02).
+        has_msi_id = bool(pkg_meta.get('msi_product_code') or pkg_meta.get('msi_upgrade_code'))
+        if has_msi_id:
+            msi_meta_for_match = {
+                'product_code': pkg_meta.get('msi_product_code'),
+                'upgrade_code': pkg_meta.get('msi_upgrade_code'),
+                'product_name': pkg_meta.get('msi_product_name') or package.name,
+                'manufacturer': pkg_meta.get('msi_manufacturer') or package.vendor,
+            }
             entry = catalog.match_msi(msi_meta_for_match)
             if entry:
                 return entry
