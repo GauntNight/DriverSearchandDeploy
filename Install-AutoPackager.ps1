@@ -10,7 +10,7 @@
       - Python 3.12  (installs via winget or silent MSI if not present)
       - Git           (installs via winget if not present)
       - Python virtual environment + all pip dependencies
-      - Redis for Windows  (downloads and configures)
+      - Redis  (Memurai via winget, or downloads the archived Windows port)
       - IntuneWinAppUtil.exe  (downloads from Microsoft GitHub)
       - SQLite database  (zero-config, built into Python)
       - All data directories and runtime folders
@@ -423,19 +423,39 @@ Write-Banner "Step $step/$totalSteps  Redis (message broker)"
 $redisDir = ".\tools\redis"
 $redisExe = "$redisDir\redis-server.exe"
 
+# Redis is a runtime dependency, not repo content -- the binaries are no longer
+# committed. Resolve it in preference order: a Redis-compatible server already
+# on PATH (winget Memurai) -> a local copy under tools\redis (Chocolatey or the
+# archived Windows port). The launchers (start-redis.bat / launch-all.bat) check
+# PATH first, then fall back to tools\redis, so either outcome works.
+function Test-RedisOnPath {
+    return (Test-CommandExists memurai) -or (Test-CommandExists redis-server)
+}
+
 if (Test-Path $redisExe) {
     Write-OK "Redis already installed at $redisDir"
+} elseif (Test-RedisOnPath) {
+    Write-OK "Redis-compatible server already on PATH"
 } else {
     New-Item -ItemType Directory -Force -Path $redisDir | Out-Null
 
-    # Try Chocolatey first
-    if (Test-CommandExists choco) {
+    # Preferred: Memurai (maintained, Redis-compatible Windows server) via winget
+    if (Test-CommandExists winget) {
+        Write-Info "Installing Memurai (Redis-compatible) via winget..."
+        try {
+            winget install --silent --accept-source-agreements --accept-package-agreements --id Memurai.MemuraiDeveloper
+        } catch {
+            Write-Warn "winget Memurai install failed: $_"
+        }
+    }
+
+    # Fallback: Chocolatey redis-64, copied into tools\redis so scripts find it
+    if (-not (Test-RedisOnPath) -and (Test-CommandExists choco)) {
         Write-Info "Installing Redis via Chocolatey..."
         try {
             choco install redis-64 --yes --no-progress
             $chocoRedis = "C:\tools\redis\redis-server.exe"
             if (Test-Path $chocoRedis) {
-                # Copy to our tools dir so scripts can find it
                 Copy-Item "C:\tools\redis\*" $redisDir -Recurse -Force
                 Write-OK "Redis installed via Chocolatey"
             }
@@ -444,9 +464,9 @@ if (Test-Path $redisExe) {
         }
     }
 
-    # Fallback: download archived Windows port
-    if (-not (Test-Path $redisExe)) {
-        Write-Info "Downloading Redis for Windows..."
+    # Last resort: download the archived Windows port into tools\redis
+    if (-not (Test-RedisOnPath) -and -not (Test-Path $redisExe)) {
+        Write-Info "Downloading archived Redis for Windows..."
         $redisZip = ".\tools\redis.zip"
         $redisUrl = "https://github.com/microsoftarchive/redis/releases/download/win-3.0.504/Redis-x64-3.0.504.zip"
         Invoke-WithRetry -Name "Redis download" -ScriptBlock {
@@ -457,16 +477,16 @@ if (Test-Path $redisExe) {
         Remove-Item $redisZip -Force
     }
 
-    if (Test-Path $redisExe) {
+    if ((Test-Path $redisExe) -or (Test-RedisOnPath)) {
         Write-OK "Redis installed successfully"
     } else {
-        Write-Warn "Redis not found after download. You may need to install it manually."
-        Write-Info "https://github.com/microsoftarchive/redis/releases"
+        Write-Warn "Redis not found after install. You may need to install it manually."
+        Write-Info "winget install Memurai.MemuraiDeveloper  (or)  https://github.com/microsoftarchive/redis/releases"
     }
 }
 
-if (Test-Path $redisExe) {
-    $diagnostics["Redis"] = @{ Status = "Pass"; Detail = "redis-server.exe found at $redisDir" }
+if ((Test-Path $redisExe) -or (Test-RedisOnPath)) {
+    $diagnostics["Redis"] = @{ Status = "Pass"; Detail = "Redis available (PATH or $redisDir)" }
 } else {
     $diagnostics["Redis"] = @{ Status = "Warn"; Detail = "Redis not found; install manually" }
 }
@@ -743,8 +763,27 @@ Write-Banner "Step $step/$totalSteps  Creating helper scripts"
 @"
 @echo off
 echo Starting Redis Server...
+netstat -ano | findstr ":6379" | findstr LISTENING >nul 2>nul
+if not errorlevel 1 (
+    echo Redis/Memurai is already listening on port 6379 - nothing to start.
+    goto :eof
+)
 echo Press Ctrl+C to stop.
-tools\redis\redis-server.exe redis.conf
+if exist "tools\redis\redis-server.exe" (
+    tools\redis\redis-server.exe redis.conf
+) else (
+    where memurai >nul 2>nul
+    if not errorlevel 1 (
+        memurai redis.conf
+    ) else (
+        where redis-server >nul 2>nul
+        if not errorlevel 1 (
+            redis-server redis.conf
+        ) else (
+            echo ERROR: Redis not found. Install with: winget install Memurai.MemuraiDeveloper
+        )
+    )
+)
 "@ | Out-File -FilePath "start-redis.bat" -Encoding ASCII
 
 # start-worker.bat
@@ -776,7 +815,7 @@ python cli.py jobs list %*
 echo AutoPackager Launcher
 echo =====================
 echo Starting Redis in a new window...
-start "Redis Server" cmd /k "tools\redis\redis-server.exe redis.conf"
+start "Redis Server" cmd /k start-redis.bat
 timeout /t 2 /nobreak >nul
 echo Starting Celery Worker in a new window...
 start "Celery Worker" cmd /k "call .venv\Scripts\activate.bat && python cli.py worker start"
@@ -823,7 +862,7 @@ if ($hasFailures) {
             switch ($key) {
                 "Python"           { Write-Host "    - Python: Install Python 3.9+ from https://www.python.org/downloads/" -ForegroundColor Yellow }
                 "VenvAndDeps"      { Write-Host "    - VenvAndDeps: Run '.\.venv\Scripts\pip.exe install -r requirements.txt' manually" -ForegroundColor Yellow }
-                "Redis"            { Write-Host "    - Redis: Download from https://github.com/microsoftarchive/redis/releases" -ForegroundColor Yellow }
+                "Redis"            { Write-Host "    - Redis: Install with 'winget install Memurai.MemuraiDeveloper' or download from https://github.com/microsoftarchive/redis/releases" -ForegroundColor Yellow }
                 "IntuneWinAppUtil" { Write-Host "    - IntuneWinAppUtil: Download from https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool" -ForegroundColor Yellow }
                 "DirectoriesAndDB" { Write-Host "    - DirectoriesAndDB: Run '.\.venv\Scripts\python.exe cli.py init' after configuring .env" -ForegroundColor Yellow }
                 "AzureSetup"      { Write-Host "    - AzureSetup: Run '.\azure-setup.ps1 -OutputEnvFile' separately" -ForegroundColor Yellow }
@@ -847,7 +886,7 @@ Write-Host "+----------------------------------------------------------+" -Foreg
 Write-Host ""
 Write-Host " What was installed:" -ForegroundColor White
 Write-Host "   Python virtual environment  ->.\.venv" -ForegroundColor Gray
-Write-Host "   Redis for Windows           ->.\tools\redis\" -ForegroundColor Gray
+Write-Host "   Redis                       -> Memurai (PATH) or .\tools\redis\" -ForegroundColor Gray
 Write-Host "   IntuneWinAppUtil.exe        ->.\tools\" -ForegroundColor Gray
 Write-Host "   SQLite database             ->.\data\autopackager.db" -ForegroundColor Gray
 Write-Host "   Configuration               ->.\.env  and  autopackager\config\config.yaml" -ForegroundColor Gray

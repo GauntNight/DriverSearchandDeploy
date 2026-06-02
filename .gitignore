@@ -65,6 +65,9 @@ data/catalogs/
 
 # Tools
 tools/IntuneWinAppUtil.exe
+# Redis-for-Windows binaries are fetched by Install-AutoPackager.ps1 (winget
+# Memurai -> Chocolatey -> archived zip). Not distributed via this repo.
+tools/redis/
 
 # Celery
 celerybeat-schedule
