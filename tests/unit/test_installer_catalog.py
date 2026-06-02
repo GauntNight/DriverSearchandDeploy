@@ -639,6 +639,52 @@ class TestCatalogEntryExeFields:
         assert entry is not None
         assert entry.id == 'notepad-plus-plus'
 
+    def test_match_exe_prefers_exact_product_name_over_substring_overlap(self, temp_catalog_paths):
+        """When one entry's pe_product_name is a substring of another's
+        (e.g. 'Snagit' vs 'Snagit 2023'), an installer with the shorter
+        name must match the shorter entry -- not the longer one whose
+        pattern happens to contain the installer name. Without an exact
+        pass, catalog iteration order picks the wrong entry; surfaced live
+        during the Snagit 2026-06-01 pressure test.
+        """
+        baseline, _ = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [
+                {
+                    'id': 'snagit-2023-bootstrapper',
+                    'type': 'exe',
+                    'install_command_template': '{installer_filename} /quiet',
+                    'pe_company_name': 'TechSmith Corporation',
+                    'pe_product_name': 'Snagit 2023',
+                },
+                {
+                    'id': 'snagit-bootstrapper',
+                    'type': 'exe',
+                    'install_command_template': '{installer_filename} /quiet',
+                    'pe_company_name': 'TechSmith Corporation',
+                    'pe_product_name': 'Snagit',
+                },
+            ],
+        })
+        catalog = ic.load_catalog()
+        # Installer is the NEW Snagit (no year suffix). Must hit snagit-bootstrapper.
+        entry = catalog.match_exe(pe_metadata={
+            'company_name': 'TechSmith Corporation',
+            'product_name': 'Snagit',
+        })
+        assert entry is not None
+        assert entry.id == 'snagit-bootstrapper'
+
+        # Installer is the OLD Snagit 2023. Must still hit snagit-2023-bootstrapper
+        # (exact match wins; substring fallback is not needed here).
+        entry = catalog.match_exe(pe_metadata={
+            'company_name': 'TechSmith Corporation',
+            'product_name': 'Snagit 2023',
+        })
+        assert entry is not None
+        assert entry.id == 'snagit-2023-bootstrapper'
+
     def test_match_exe_returns_none_when_unmatched(self, temp_catalog_paths):
         baseline, _ = temp_catalog_paths
         _write_yaml(baseline, {
