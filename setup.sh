@@ -304,7 +304,7 @@ echo -e "${WHITE}6. Monitor jobs:${NC}"
 echo -e "   ${CYAN}python cli.py jobs list${NC}"
 echo ""
 
-echo -e "${YELLOW}For detailed instructions, see IMPLEMENTATION_GUIDE.md${NC}"
+echo -e "${YELLOW}For detailed instructions, see QUICKSTART_CHECKLIST.md or SETUP.md${NC}"
 echo ""
 
 # Create helper scripts

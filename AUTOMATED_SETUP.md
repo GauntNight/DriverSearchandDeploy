@@ -28,7 +28,7 @@ The primary installer. Run it once and AutoPackager is fully ready.
 | Python 3.12 | `winget` → python.org MSI fallback |
 | Git | `winget` |
 | Python venv + all pip packages | `pip install -r requirements.txt` |
-| Redis for Windows | Chocolatey → GitHub archive fallback |
+| Redis | winget (Memurai) → Chocolatey → GitHub archive fallback |
 | IntuneWinAppUtil.exe | Downloaded from Microsoft GitHub |
 | SQLite database | Configured + schema initialised |
 | Data directories | `data/downloads`, `data/packages`, `data/logs`, `data/catalogs/*` |
@@ -286,7 +286,7 @@ The Azure App Registration and Entra ID groups are not removed by uninstalling l
 
 ## Need Help?
 
-1. Check `IMPLEMENTATION_GUIDE.md` for detailed troubleshooting
+1. Check `QUICKSTART_CHECKLIST.md` (Troubleshooting Quick Fixes) or `SETUP.md`
 2. Review script output for specific error messages
 3. Check logs in `data/logs/autopackager.log`
 4. Verify Azure credentials in `.env`

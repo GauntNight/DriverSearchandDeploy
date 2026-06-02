@@ -1,3 +1,18 @@
+## [Unreleased]
+
+Repository cleanup and documentation refresh. No runtime/behaviour changes to the pipeline.
+
+### Removed
+
+- **9 dead diagnostic harnesses** from the repo root — one-off `verify_*`/`test_*` scripts with no references, superseded by the `tests/{unit,integration,cli,api}/` suite: `verify_celery_beat_schedule.py`, `verify_dashboard_e2e.py`, `verify_deployment_status_polling.py`, `verify_e2e_continuous_discovery.py`, `verify_subtask_2_4.py`, `test_dashboard.py`, `test_discovery_mock.py`, `test_discovery_task.py`, `run-verification.sh`.
+- **Committed Redis binaries** (`tools/redis/`, ~25 MB of third-party `.exe`/`.pdb`/`.dll`/`.docx`). Now gitignored and fetched at install time.
+- **`IMPLEMENTATION_GUIDE.md`** — ~70% duplicate of `AUTOMATED_SETUP.md`/`SETUP.md`/`QUICKSTART_CHECKLIST.md`; unique content (full command reference, production-checklist items) folded into `QUICKSTART_CHECKLIST.md`.
+
+### Changed
+
+- **Redis bootstrap** — `Install-AutoPackager.ps1` now prefers Memurai (maintained, Redis-compatible) via winget, then falls back to the existing Chocolatey → archived-zip path. `start-redis.bat`/`launch-all.bat` skip if port 6379 is already served and resolve a server from `tools\redis` or PATH.
+- **Documentation restructure** — external/aspirational docs moved out of the product-doc root: whitepaper + PR/FAQ → `docs/design-history/`; Intune Cookbook chapter references (ch04/ch11) → `docs/claude-reference/`. Each new folder has a README explaining its role. README version (1.3.0 → 1.6.0) and test count (597+ → 621 passing) corrected; added a documentation map.
+
 ## [1.6.0] - 2026-06-01
 
 End-to-end MSI supersedence: the operator opts in per publish, AutoPackager creates a new Intune Win32 app for the new version, links it to the prior version via Intune's `mobileAppSupersedence` relationship, and updates the catalog overlay's `verified_versions` state machine to reflect the new chain. Pilot-verified live against the ngbg tenant with PowerShell 7.6.1 → 7.6.2 and PuTTY 0.83 → 0.84.

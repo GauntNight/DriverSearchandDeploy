@@ -1385,14 +1385,14 @@ It does **not** validate semantics like `database.type: "mysql"` — invalid fie
 
 ## 19. Further Reading
 
+- **QUICKSTART_CHECKLIST.md** — Main first-run guide (automated + manual paths, troubleshooting)
+- **AUTOMATED_SETUP.md** — Installer flags and what `Install-AutoPackager.ps1` does
 - **SETUP.md** — Manual installation steps (database setup, Redis, Azure App Registration)
-- **IMPLEMENTATION_GUIDE.md** — Automated setup via `Install-AutoPackager.ps1`
-- **automated_software_packaging_whitepaper.md** — Architecture deep-dive, LLM agent design
-- **PRFAQ_ Project AutoPackager.md** — Product vision, use cases, FAQ
+- **docs/design-history/** — Original whitepaper and PR/FAQ (pre-release vision)
 
 For Graph API reference (Intune endpoints, JSON schemas):
-- **ch04-driver-updates-reference.md** — Driver update profiles, update rings
-- **ch11-windows-app-packaging-reference.md** — Win32 app deployment, detection methods
+- **docs/claude-reference/ch04-driver-updates-reference.md** — Driver update profiles, update rings
+- **docs/claude-reference/ch11-windows-app-packaging-reference.md** — Win32 app deployment, detection methods
 
 ---
 
