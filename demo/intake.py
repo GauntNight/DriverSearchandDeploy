@@ -472,15 +472,18 @@ def _build_supersedence_action(analysis: "Analysis", old_app_id: str,
     catalog = installer_catalog.load_catalog()
     pub_entry = catalog.by_id(analysis.catalog_entry_id) if analysis.catalog_entry_id else None
     if pub_entry and analysis.version:
+        # Generic resolution only — it demotes STRICTLY-OLDER verified versions
+        # in the line. We deliberately do NOT fall back to an explicit
+        # (manual_cli) resolve: that path honours the named id even at an
+        # equal/newer version, which — when a same-version sibling already
+        # exists in the overlay (e.g. a duplicate/concurrent publish) — links
+        # the new app to that sibling and produces a spurious self-relationship.
+        # Always linking the known ``old_app_id`` (below) already covers the
+        # "must supersede the prior version" intent.
         try:
             resolution = installer_catalog.resolve_supersedence(
                 catalog, pub_entry, analysis.version, operator_opted_in=True,
             )
-            if not resolution.enabled and old_entry_id:
-                resolution = installer_catalog.resolve_supersedence(
-                    catalog, pub_entry, analysis.version, operator_opted_in=True,
-                    explicit_supersedes=[old_entry_id],
-                )
             mode_used = resolution.mode_used or mode_used
             notes = list(resolution.notes) + notes
             for aid in resolution.superseded_intune_app_ids or []:

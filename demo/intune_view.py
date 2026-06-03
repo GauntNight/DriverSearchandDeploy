@@ -99,54 +99,47 @@ def find_entry_for_app_id(catalog, app_id: Optional[str]):
 
 
 def _version_state_for(entry, matched_row) -> str:
-    """Derive the badge state for a matched verified_versions row.
+    """Derive the badge state for a matched verified_versions row by VERSION RANK.
 
-    ``newest`` → ``current``; ``pending`` → ``pending``; ``superseded`` rows are
-    ranked newest-first within the entry so the most recent superseded version
-    is ``N-1``, the next ``N-2``, and so on. Unknown statuses fall back to
-    ``current`` (a managed app with no chain info reads as current).
+    The badge reflects position in the version chain, not the row's ``status``
+    field: all of the entry's verified versions are ranked newest-first, so the
+    highest version is ``current`` (the demo's "Current" — even while its first
+    device install is still pending), the next is ``N-1``, then ``N-2`` …. This
+    is what the spec means by "the app a Current supersedes is N-1" and it is
+    robust to a freshly-published version still sitting at status ``pending``.
     """
-    status = (matched_row or {}).get("status")
-    if status == "pending":
-        return "pending"
-    if status in (None, "newest", "manual"):
-        return "current"
-    if status == "historical":
+    if not matched_row:
         return ""
-    if status == "superseded":
-        from autopackager.utils.version_comparison import compare_catalog_versions
-        import functools
+    import functools
+    from autopackager.utils.version_comparison import compare_catalog_versions
 
-        superseded = [
-            vv for vv in (entry.verified_versions or [])
-            if vv.get("status") == "superseded" and vv.get("product_version")
-        ]
-        try:
-            superseded.sort(
-                key=functools.cmp_to_key(
-                    lambda a, b: compare_catalog_versions(
-                        a.get("product_version", ""), b.get("product_version", ""))
-                ),
-                reverse=True,
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        for idx, vv in enumerate(superseded):
-            if vv is matched_row or (
-                vv.get("verified_intune_app_id")
-                and vv.get("verified_intune_app_id") == matched_row.get("verified_intune_app_id")
-            ):
-                return f"N-{idx + 1}"
-        return "N-1"
+    rows = [vv for vv in (entry.verified_versions or []) if vv.get("product_version")]
+    if not rows:
+        return "current"
+    try:
+        rows.sort(
+            key=functools.cmp_to_key(
+                lambda a, b: compare_catalog_versions(
+                    a.get("product_version", ""), b.get("product_version", ""))
+            ),
+            reverse=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    target_aid = matched_row.get("verified_intune_app_id")
+    for idx, vv in enumerate(rows):
+        if vv is matched_row or (target_aid and vv.get("verified_intune_app_id") == target_aid):
+            return "current" if idx == 0 else f"N-{idx}"
     return "current"
 
 
 def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
     """Augment each app row in place with supersedence-demo fields.
 
-    Best-effort: a row with no catalog match still gets sensible defaults
-    (``version_state='current'``, ``source_url_known=False``) so the refresh
-    gesture works in fixture mode too.
+    A row that maps to a catalog entry gets its chain position
+    (``version_state`` = ``current`` / ``N-1`` / …). A row we CANNOT place in a
+    chain (no catalog overlay record — e.g. an app installed out-of-band) gets
+    ``version_state=""`` so it shows NO badge — it must not claim "Current".
     """
     if not apps:
         return
@@ -166,7 +159,7 @@ def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
             row.setdefault("catalog_entry_id", None)
             row.setdefault("current_version", row.get("version") or None)
             row.setdefault("source_url_known", False)
-            row.setdefault("version_state", "current")
+            row.setdefault("version_state", "")  # unplaceable → no badge, never "Current"
 
 
 def _live_view(include_counts: bool = False) -> Dict[str, Any]:

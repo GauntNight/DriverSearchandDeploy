@@ -1,5 +1,5 @@
 {"text": "Reading the known source for 7-Zip…", "level": "info", "delay_ms": 450}
 {"text": "Vendor page lists the current stable build under Download.", "level": "info", "delay_ms": 500}
-{"text": "Parsing version taxonomy (7-Zip uses YY.MM, e.g. 23.01, 24.08).", "level": "info", "delay_ms": 450}
-{"text": "Latest published stable: 24.08 — newer than the deployed build.", "level": "info", "delay_ms": 450}
-{"version_result": {"latest_version": "24.08", "download_url": "https://www.7-zip.org/a/7z2408-x64.msi", "is_newer": true}}
+{"text": "Parsing version taxonomy (7-Zip uses YY.MM, e.g. 26.00, 26.01).", "level": "info", "delay_ms": 450}
+{"text": "Latest published stable: 26.01 — newer than the deployed build.", "level": "info", "delay_ms": 450}
+{"version_result": {"latest_version": "26.01", "download_url": "https://www.7-zip.org/a/7z2601-x64.msi", "is_newer": true}}

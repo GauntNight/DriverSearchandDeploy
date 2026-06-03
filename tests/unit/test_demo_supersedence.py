@@ -62,7 +62,7 @@ class TestCheckVersion(unittest.TestCase):
                 "7-Zip", "23.01", None, mode="replay", slug="7-zip",
             )
         self.assertTrue(out["is_newer"])
-        self.assertEqual(out["latest_version"], "24.08")
+        self.assertEqual(out["latest_version"], "26.01")
 
     def test_decide_is_newer_prefers_version_compare(self):
         from demo import claude_bridge
@@ -116,6 +116,26 @@ class TestIntuneViewEnrichment(unittest.TestCase):
         self.assertEqual(intune_view._version_state_for(entry, most_recent_superseded), "N-1")
         self.assertEqual(intune_view._version_state_for(entry, older_superseded), "N-2")
 
+    def test_newest_is_current_even_when_pending(self):
+        # Regression: a freshly-published newest version (status 'pending', not
+        # yet device-confirmed) must still rank as "current", not "pending".
+        from demo import intune_view
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+
+        entry = CatalogEntry(
+            id="7-zip", type="msi", install_command_template="x",
+            verified_versions=[
+                {"product_version": "26.01.00.0", "status": "pending",
+                 "verified_intune_app_id": "app-new"},
+                {"product_version": "26.00.00.0", "status": "superseded",
+                 "verified_intune_app_id": "app-old"},
+            ],
+        )
+        newest = entry.verified_versions[0]
+        older = entry.verified_versions[1]
+        self.assertEqual(intune_view._version_state_for(entry, newest), "current")
+        self.assertEqual(intune_view._version_state_for(entry, older), "N-1")
+
     def test_enrich_apps_matches_and_defaults(self):
         from demo import intune_view
 
@@ -129,9 +149,9 @@ class TestIntuneViewEnrichment(unittest.TestCase):
         self.assertEqual(apps[0]["catalog_entry_id"], "7-zip")
         self.assertEqual(apps[0]["version_state"], "N-1")
         self.assertTrue(apps[0]["source_url_known"])
-        # Unmatched app gets safe defaults so the refresh gesture still works.
+        # Unmatched app must NOT claim "Current" — it gets no badge.
         self.assertIsNone(apps[1]["catalog_entry_id"])
-        self.assertEqual(apps[1]["version_state"], "current")
+        self.assertEqual(apps[1]["version_state"], "")
         self.assertFalse(apps[1]["source_url_known"])
 
 
@@ -158,6 +178,29 @@ class TestUpgradeMetadata(unittest.TestCase):
         self.assertIn("demoted_records", action)
         # The known old app id is always linked (forces a fresh app + the link).
         self.assertIn("app-old", action["superseded_intune_app_ids"])
+
+    def test_supersedence_action_skips_same_version_sibling(self):
+        # Regression: when a same-version sibling already exists in the overlay
+        # (e.g. a concurrent/duplicate publish), the new app must link ONLY to
+        # the strictly-older app, never to the same-version sibling.
+        from demo import intake
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+
+        entry = CatalogEntry(
+            id="7-zip", type="msi", install_command_template="x",
+            supersedence={"mode": "generic", "line": "7-zip"},
+            verified_versions=[
+                {"product_version": "26.00.00.0", "status": "superseded",
+                 "verified_intune_app_id": "app-old"},
+                {"product_version": "26.01.00.0", "status": "pending",
+                 "verified_intune_app_id": "app-sibling"},
+            ],
+        )
+        catalog = Catalog(entries=[entry])
+        with patch("autopackager.utils.installer_catalog.load_catalog", return_value=catalog):
+            action = intake._build_supersedence_action(self._analysis(), "app-old", "7-zip")
+        self.assertIn("app-old", action["superseded_intune_app_ids"])
+        self.assertNotIn("app-sibling", action["superseded_intune_app_ids"])
 
     def test_resolve_upgrade_assignment_test_scope(self):
         from demo import intake
