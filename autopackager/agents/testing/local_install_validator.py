@@ -23,6 +23,7 @@ the catalog entry (so the next run is right from the start).
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -518,37 +519,113 @@ class LocalInstallValidator:
             return us if ("/qn" in low or "/quiet" in low) else us + " /qn /norestart"
         return us + " /S"
 
+    # Max distinct uninstall strategies to try before giving up (operator asked
+    # for a capped ladder, not a single shot).
+    _MAX_UNINSTALL_ATTEMPTS = 5
+
+    def _uninstall_candidates(self, package, discovered: Optional[dict]) -> List[str]:
+        """Ordered, de-duplicated uninstall commands to try, best-first.
+
+        A first-shot uninstall often fails for boring reasons (wrong/stale
+        ProductCode in the catalog, an installer that needs a different silent
+        switch, an .exe uninstaller that wants /VERYSILENT not /S). Rather than
+        give up, we line up several plausible strategies derived from what we
+        actually observed on the box after install, plus the command we shipped:
+
+          1. The discovered ARP ``QuietUninstallString`` (vendor-authored silent).
+          2. The discovered ``UninstallString`` + the right silent switch.
+          3. ``msiexec /x {ProductCode}`` from the real ARP key (the authoritative
+             per-version GUID — fixes a stale/version-specific catalog ProductCode).
+          4. For .exe uninstallers, alternate silent switches (/S, Inno's
+             /VERYSILENT /SUPPRESSMSGBOXES, bare).
+          5. The command we shipped on the package (catalog/derived) as a backstop.
+        """
+        cands: List[str] = []
+
+        def add(c: Optional[str]) -> None:
+            if c and c.strip() and c.strip() not in cands:
+                cands.append(c.strip())
+
+        if discovered:
+            add(discovered.get("quiet_uninstall"))
+            us = (discovered.get("uninstall_string") or "").strip()
+            if us:
+                low = us.lower()
+                if "msiexec" in low:
+                    add(us if ("/qn" in low or "/quiet" in low) else us + " /qn /norestart")
+                else:
+                    # Unknown .exe uninstaller — try common silent switch sets.
+                    add(us + " /VERYSILENT /NORESTART /SUPPRESSMSGBOXES")
+                    add(us + " /S")
+                    add(us)
+            # MSI ProductCode straight from the real ARP key (7-Zip-style: the
+            # key leaf IS the {GUID}), or from a GUID inside the uninstall string.
+            guid = None
+            leaf = (discovered.get("key_leaf") or "").strip()
+            if re.fullmatch(r"\{[0-9A-Fa-f-]{36}\}", leaf):
+                guid = leaf
+            elif us:
+                m = re.search(r"\{[0-9A-Fa-f-]{36}\}", us)
+                if m:
+                    guid = m.group(0)
+            if guid:
+                add(f"msiexec /x {guid} /qn /norestart")
+
+        add(getattr(package, "uninstall_command", None))
+        return cands[: self._MAX_UNINSTALL_ATTEMPTS]
+
+    def _confirm_removed(self, discovered: Optional[dict], quick: bool = False) -> bool:
+        """True once the app's ARP key is gone. Polls (~30s) for async removers
+        (NSIS/Burn copy themselves to temp and return before removal finishes);
+        ``quick`` does a single check (used after a command that already failed).
+        """
+        if not discovered:
+            return True  # nothing to verify against — assume (prior behavior)
+        attempts = 1 if quick else 10
+        for i in range(attempts):
+            still, _ = self._eval_registry({
+                "kind": "registry_exists", "key": discovered["key_path"],
+                "check_32bit_on_64bit": discovered.get("view32"),
+            })
+            if not still:
+                return True
+            if i < attempts - 1:
+                time.sleep(3)
+        return False
+
     def _attempt_uninstall(self, package, discovered: Optional[dict], result: dict) -> None:
-        cmd = self._silent_uninstall_command(discovered)
-        if not cmd and getattr(package, "uninstall_command", None):
-            cmd = package.uninstall_command
-        if not cmd:
+        candidates = self._uninstall_candidates(package, discovered)
+        if not candidates:
             result["log"].append("no uninstall command available; left installed")
             self.emit("No uninstall command available — app left installed on the box.", "warn")
             return
-        self.emit("Install validation: uninstalling (cleanup)…")
-        rc, out = self._run(cmd, cwd=None, timeout=self.uninstall_timeout)
-        result["log"].append(f"uninstall rc={rc}")
-        # Confirm removal by POLLING — NSIS/Burn uninstallers (Firefox's
-        # helper.exe, Snagit's Burn) copy themselves to temp and return
-        # immediately while the real removal runs asynchronously, so an instant
-        # re-check sees the app still present.
-        gone = True
-        if discovered:
-            for _ in range(10):  # up to ~30s
-                still, _ = self._eval_registry({
-                    "kind": "registry_exists", "key": discovered["key_path"],
-                    "check_32bit_on_64bit": discovered.get("view32"),
-                })
-                gone = not still
-                if gone:
-                    break
-                time.sleep(3)
-        result["uninstalled"] = bool(gone)
-        if gone:
-            self.emit("Uninstalled cleanly — build machine left as it was found.")
-        else:
-            self.emit("Uninstall did not fully remove the app — manual cleanup may be needed.", "warn")
+
+        shipped = (getattr(package, "uninstall_command", "") or "").strip()
+        total = len(candidates)
+        for idx, cmd in enumerate(candidates, 1):
+            self.emit(f"Install validation: uninstall attempt {idx}/{total} — {cmd[:70]}…")
+            rc, out = self._run(cmd, cwd=None, timeout=self.uninstall_timeout)
+            result["log"].append(f"uninstall attempt {idx} rc={rc}: {cmd[:90]}")
+            # Only wait the full ~30s poll when the command plausibly succeeded;
+            # a hard failure (unknown product, bad switch) won't remove anything,
+            # so move on quickly to the next strategy.
+            ok_rc = rc in (0, 1605, 3010)  # 1605 = product already absent
+            gone = self._confirm_removed(discovered, quick=not ok_rc)
+            if gone:
+                result["uninstalled"] = True
+                self.emit(f"Uninstalled cleanly (attempt {idx}/{total}) — build machine left clean.")
+                # If a LATER strategy than the shipped one worked, surface it so
+                # the catalog/package can record the command that actually works.
+                if cmd != shipped:
+                    result["corrected_uninstall_command"] = cmd
+                    result["log"].append(f"working uninstall differs from shipped: {cmd[:90]}")
+                    self.emit("Recorded the working uninstall command for the catalog.")
+                return
+            self.emit(f"Uninstall attempt {idx}/{total} didn't remove the app — trying the next approach…", "warn")
+
+        result["uninstalled"] = False
+        result["log"].append(f"all {total} uninstall attempts failed")
+        self.emit(f"All {total} uninstall strategies failed — manual cleanup may be needed.", "warn")
 
     # -- subprocess --------------------------------------------------------
 

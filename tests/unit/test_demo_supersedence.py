@@ -180,10 +180,11 @@ class TestUpgradeMetadata(unittest.TestCase):
         self.assertIn("app-old", action["superseded_intune_app_ids"])
 
     def test_supersedence_action_skips_same_version_sibling(self):
-        # Regression: when a same-version sibling already exists in the overlay
-        # (e.g. a concurrent/duplicate publish), the new app must link ONLY to
-        # the strictly-older app, never to the same-version sibling.
+        # Regression: re-publishing 26.01 when a 26.01 sibling already exists
+        # must link ONLY to the strictly-older 26.00, never the same-version
+        # sibling (which would create a spurious self-relationship).
         from demo import intake
+        from demo.intake import Analysis
         from autopackager.utils.installer_catalog import Catalog, CatalogEntry
 
         entry = CatalogEntry(
@@ -196,9 +197,14 @@ class TestUpgradeMetadata(unittest.TestCase):
                  "verified_intune_app_id": "app-sibling"},
             ],
         )
+        analysis = Analysis(
+            kind="msi", path="/tmp/7z2601-x64.msi", filename="7z2601-x64.msi",
+            branch="hit", catalog_entry_id="7-zip", version="26.01.00.0",
+            product_name="7-Zip", publisher="Igor Pavlov",
+        )
         catalog = Catalog(entries=[entry])
         with patch("autopackager.utils.installer_catalog.load_catalog", return_value=catalog):
-            action = intake._build_supersedence_action(self._analysis(), "app-old", "7-zip")
+            action = intake._build_supersedence_action(analysis, "app-sibling", "7-zip")
         self.assertIn("app-old", action["superseded_intune_app_ids"])
         self.assertNotIn("app-sibling", action["superseded_intune_app_ids"])
 
@@ -270,6 +276,93 @@ class TestAssignDemoScope(unittest.TestCase):
             )
         _, kwargs = graph.assign_app_to_group.call_args
         self.assertIsNone(kwargs["settings"])
+
+
+# --- Duplicate display-name suffixing --------------------------------------
+
+class TestDedupeDisplayName(unittest.TestCase):
+    def setUp(self):
+        from autopackager.agents.deployment.deployment_agent import DeploymentAgent
+
+        cfg = {"deployment_rings": []}
+        with patch("autopackager.agents.deployment.deployment_agent.get_config", return_value=cfg):
+            self.agent = DeploymentAgent()
+
+    def test_appends_suffix_on_exact_name_collision(self):
+        graph = Mock()
+        graph.get_win32_apps.return_value = {
+            "value": [{"displayName": "7-Zip 26.01 (x64 edition)"}]
+        }
+        out = self.agent._dedupe_display_name(graph, "7-Zip 26.01 (x64 edition)")
+        self.assertEqual(out, "7-Zip 26.01 (x64 edition)_01")
+
+    def test_next_free_suffix(self):
+        graph = Mock()
+        graph.get_win32_apps.return_value = {"value": [
+            {"displayName": "Foo 1.0"}, {"displayName": "Foo 1.0_01"},
+        ]}
+        self.assertEqual(self.agent._dedupe_display_name(graph, "Foo 1.0"), "Foo 1.0_02")
+
+    def test_no_suffix_when_unique(self):
+        graph = Mock()
+        graph.get_win32_apps.return_value = {"value": [{"displayName": "Other"}]}
+        self.assertEqual(
+            self.agent._dedupe_display_name(graph, "7-Zip 26.01 (x64 edition)"),
+            "7-Zip 26.01 (x64 edition)",
+        )
+
+
+# --- Uninstall retry ladder -------------------------------------------------
+
+class TestUninstallLadder(unittest.TestCase):
+    def _validator(self):
+        from autopackager.agents.testing.local_install_validator import LocalInstallValidator
+        return LocalInstallValidator(config={})
+
+    def test_candidates_include_productcode_and_shipped(self):
+        v = self._validator()
+        pkg = Mock()
+        pkg.uninstall_command = "msiexec /x {SHIPPEDGUID} /qn"
+        discovered = {
+            "quiet_uninstall": None,
+            "uninstall_string": "MsiExec.exe /X{23170F69-40C1-2702-2600-000001000000}",
+            "key_leaf": "{23170F69-40C1-2702-2600-000001000000}",
+        }
+        cands = v._uninstall_candidates(pkg, discovered)
+        # Discovered msiexec string gets /qn appended and is tried first.
+        self.assertIn("/qn", cands[0].lower())
+        # A ProductCode-derived uninstall from the real ARP key is present.
+        self.assertTrue(any("2600-000001000000" in c for c in cands))
+        # The shipped command is kept as a backstop, capped at 5.
+        self.assertTrue(any("{SHIPPEDGUID}" in c for c in cands))
+        self.assertLessEqual(len(cands), 5)
+
+    def test_ladder_records_working_non_shipped_command(self):
+        v = self._validator()
+        pkg = Mock()
+        pkg.uninstall_command = "shipped /x"          # last in the ladder
+        discovered = {"quiet_uninstall": "winner /qn", "uninstall_string": None,
+                      "key_leaf": "", "key_path": "HKLM\\X", "view32": False}
+        result = {"log": [], "uninstalled": False, "corrected_uninstall_command": None}
+        with patch.object(v, "_run", return_value=(0, "")), \
+             patch.object(v, "_confirm_removed", return_value=True):
+            v._attempt_uninstall(pkg, discovered, result)
+        self.assertTrue(result["uninstalled"])
+        self.assertEqual(result["corrected_uninstall_command"], "winner /qn")
+
+    def test_ladder_retries_past_a_failure(self):
+        v = self._validator()
+        pkg = Mock()
+        pkg.uninstall_command = "shipped /x"
+        discovered = {"quiet_uninstall": "winner /qn", "uninstall_string": None,
+                      "key_leaf": "", "key_path": "HKLM\\X", "view32": False}
+        result = {"log": [], "uninstalled": False, "corrected_uninstall_command": None}
+        # First candidate doesn't remove it; second does → it must keep trying.
+        with patch.object(v, "_run", return_value=(0, "")), \
+             patch.object(v, "_confirm_removed", side_effect=[False, True]) as conf:
+            v._attempt_uninstall(pkg, discovered, result)
+        self.assertTrue(result["uninstalled"])
+        self.assertEqual(conf.call_count, 2)
 
 
 if __name__ == "__main__":

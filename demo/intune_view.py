@@ -98,6 +98,34 @@ def find_entry_for_app_id(catalog, app_id: Optional[str]):
     return None, None
 
 
+def newest_verified_version(entry):
+    """Return ``(version, intune_app_id)`` of the HIGHEST-version verified row
+    for ``entry`` (the newest version we've deployed), or ``(None, None)``.
+
+    Used as the baseline for "is there something newer upstream?" — so refreshing
+    ANY row (even an N-1) compares against the chain's newest, never re-offering a
+    version that's already deployed.
+    """
+    import functools
+    from autopackager.utils.version_comparison import compare_catalog_versions
+
+    rows = [vv for vv in (entry.verified_versions or []) if vv.get("product_version")]
+    if not rows:
+        return None, None
+    try:
+        rows.sort(
+            key=functools.cmp_to_key(
+                lambda a, b: compare_catalog_versions(
+                    a.get("product_version", ""), b.get("product_version", ""))
+            ),
+            reverse=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    top = rows[0]
+    return top.get("product_version"), top.get("verified_intune_app_id")
+
+
 def _version_state_for(entry, matched_row) -> str:
     """Derive the badge state for a matched verified_versions row by VERSION RANK.
 

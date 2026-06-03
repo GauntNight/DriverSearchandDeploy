@@ -75,7 +75,15 @@ def _check_version_sync(body: dict, app_id: Optional[str]) -> dict:
     catalog = installer_catalog.load_catalog()
     entry, row = intune_view.find_entry_for_app_id(catalog, app_id)
     if entry:
-        current_version = (row or {}).get("product_version") or body.get("current_version")
+        # Compare against the NEWEST deployed version of this product, not the
+        # clicked row's version. Refreshing an N-1 row (or the newest itself)
+        # then correctly reports "up to date" when the latest is already
+        # present, and only flags an upgrade for something newer than the newest
+        # we've shipped — never re-offering a version already deployed.
+        newest_version, _newest_app = intune_view.newest_verified_version(entry)
+        current_version = (
+            newest_version or (row or {}).get("product_version") or body.get("current_version")
+        )
         source_url = entry.canonical_download_url
         slug = entry.id
         label = body.get("app_label") or entry.id

@@ -267,12 +267,16 @@ def _build_software_job_metadata(analysis: Analysis) -> Dict[str, Any]:
     }
     if analysis.version:
         md["target_version"] = analysis.version
+    # Record the resolved catalog id for BOTH installer kinds so the testing
+    # agent can write validation corrections (detection rule / uninstall command)
+    # back to the right catalog entry — previously only EXE jobs carried it, so
+    # MSI corrections (e.g. a 7-Zip uninstall fix) never reached the catalog.
+    if analysis.catalog_entry_id:
+        md["catalog_entry_id"] = analysis.catalog_entry_id
     if analysis.kind == "msi":
         if analysis.metadata:
             md["msi_metadata"] = analysis.metadata
     else:  # exe
-        if analysis.catalog_entry_id:
-            md["catalog_entry_id"] = analysis.catalog_entry_id
         if analysis.metadata:
             md["exe_metadata"] = analysis.metadata
         if analysis.sha256:
@@ -450,28 +454,70 @@ def _resolve_upgrade_assignment(old_app_id: str, scope: str) -> Dict[str, Any]:
     }
 
 
+def _supersede_target_app_id(entry, publishing_version: str) -> Optional[str]:
+    """Intune app id of the newest deployed version that is STRICTLY OLDER than
+    ``publishing_version`` — i.e. the version this publish should supersede.
+
+    Strictly-older is the key guard: it links the upgrade to the current newest
+    older build (even if its overlay status is already 'superseded', so the chain
+    isn't broken) while never linking to a SAME-version sibling (a duplicate /
+    concurrent publish), which would create a spurious self-relationship.
+    """
+    from autopackager.utils.version_comparison import compare_catalog_versions
+    import functools
+
+    older = [
+        vv for vv in (entry.verified_versions or [])
+        if vv.get("product_version") and vv.get("verified_intune_app_id")
+        and compare_catalog_versions(vv["product_version"], publishing_version) < 0
+    ]
+    if not older:
+        return None
+    try:
+        older.sort(
+            key=functools.cmp_to_key(
+                lambda a, b: compare_catalog_versions(
+                    a.get("product_version", ""), b.get("product_version", ""))
+            ),
+            reverse=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return older[0].get("verified_intune_app_id")
+
+
 def _build_supersedence_action(analysis: "Analysis", old_app_id: str,
                                old_entry_id: Optional[str]) -> Dict[str, Any]:
     """Resolve the ``supersedence_action`` for an upgrade publish.
 
     Serialized to the exact dict shape the deployment agent consumes
     (``_apply_supersedence`` reads ``superseded_intune_app_ids`` +
-    ``demoted_records``; see ``cli.py``). We ALWAYS include the known
-    ``old_app_id`` in ``superseded_intune_app_ids`` so (a) the new app reliably
-    links to the prior version and (b) ``_create_or_update_intune_app`` lands a
-    fresh app instead of PATCHing the existing one. ``resolve_supersedence``
-    additionally supplies the catalog-overlay row demotions.
+    ``demoted_records``; see ``cli.py``). The link target is the newest
+    STRICTLY-OLDER deployed app for this product (computed from the catalog
+    chain), plus any further older versions ``resolve_supersedence`` demotes.
+    When there is no catalog context at all we fall back to the clicked
+    ``old_app_id``. The presence of this action (even with an empty id list)
+    forces ``_create_or_update_intune_app`` to land a fresh app rather than
+    PATCH an existing one.
     """
     from autopackager.utils import installer_catalog
 
-    app_ids = [old_app_id]
+    app_ids: list = []
     demoted: list = []
     mode_used = "demo-direct"
-    notes = [f"demo upgrade: link new app -> old app {old_app_id}"]
+    notes: list = []
 
     catalog = installer_catalog.load_catalog()
     pub_entry = catalog.by_id(analysis.catalog_entry_id) if analysis.catalog_entry_id else None
+    # Supersede the newest STRICTLY-OLDER deployed version of this product — not
+    # necessarily the row the operator clicked (could be an N-1), and never a
+    # same-version sibling. This links the upgrade to the right prior build and
+    # keeps the chain intact.
     if pub_entry and analysis.version:
+        target = _supersede_target_app_id(pub_entry, analysis.version)
+        if target:
+            app_ids = [target]
+            notes = [f"demo upgrade: supersede newest-older deployed app {target}"]
         # Generic resolution only — it demotes STRICTLY-OLDER verified versions
         # in the line. We deliberately do NOT fall back to an explicit
         # (manual_cli) resolve: that path honours the named id even at an
@@ -495,10 +541,16 @@ def _build_supersedence_action(analysis: "Analysis", old_app_id: str,
                 for eid, vv in (resolution.demoted_records or [])
             ]
         except installer_catalog.SupersedenceError as exc:
-            # mode=none apex: still link directly to the old app id.
+            # mode=none apex: still link directly to the clicked old app id.
             notes.append(f"resolve_supersedence refused: {exc}")
         except Exception as exc:  # noqa: BLE001
             notes.append(f"resolve_supersedence error: {exc}")
+
+    # No catalog context (or a mode=none apex) yielded no chain target — fall
+    # back to the clicked app so the upgrade still links to *something*.
+    if not app_ids and old_app_id and not pub_entry:
+        app_ids = [old_app_id]
+        notes.append(f"fallback: link to clicked app {old_app_id} (no catalog chain)")
 
     return {
         "mode_used": mode_used,

@@ -299,7 +299,16 @@ class DeploymentAgent:
                 app_id = new_app['id']
                 logger.info("Recreated app", new_app_id=app_id)
         else:
-            logger.info("Creating new app", name=package.name)
+            # Brand-new app. If an app with the SAME displayName (same product
+            # AND version) already exists in the tenant, append a numeric suffix
+            # (_01, _02, …) so the duplicate is administratively distinguishable
+            # rather than silently colliding. A genuine version bump carries a
+            # different displayName (the version is in the name), so this only
+            # triggers on a true same-name/same-version duplicate.
+            app_data['displayName'] = self._dedupe_display_name(
+                graph_client, app_data['displayName']
+            )
+            logger.info("Creating new app", name=app_data['displayName'])
             new_app = graph_client.create_win32_app(app_data)
             app_id = new_app['id']
 
@@ -498,6 +507,34 @@ class DeploymentAgent:
                     "Category attach skipped (already present or error)",
                     category=name, app_id=app_id, error=str(exc),
                 )
+
+    def _dedupe_display_name(self, graph_client, base_name: str) -> str:
+        """Return ``base_name`` unless an app with that exact displayName already
+        exists in the tenant, in which case append the next free ``_NN`` suffix.
+
+        Same displayName means same product AND version (the version is part of
+        the name), so a collision is a genuine duplicate publish — we keep both
+        and make the new one distinguishable (``Foo 1.2_01``) rather than letting
+        two identically-named apps sit in the portal. Best-effort: any Graph
+        error returns the base name unchanged.
+        """
+        try:
+            existing = graph_client.get_win32_apps().get('value', []) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Dedupe name check failed; using base name", error=str(exc))
+            return base_name
+        names = {a.get('displayName') for a in existing}
+        if base_name not in names:
+            return base_name
+        for i in range(1, 100):
+            candidate = f"{base_name}_{i:02d}"
+            if candidate not in names:
+                logger.warning(
+                    "Duplicate app displayName; appending suffix for distinguishability",
+                    base=base_name, deduped=candidate,
+                )
+                return candidate
+        return base_name
 
     def _find_existing_app_for_upsert(
         self,
