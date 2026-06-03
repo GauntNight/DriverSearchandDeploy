@@ -187,7 +187,7 @@ def analyze(path: Path) -> Analysis:
         except PEParseError:
             pe_meta = {}
         sha = sha256_file(path)
-        entry = catalog.match_exe(pe_metadata=pe_meta, sha256=sha)
+        entry = catalog.match_exe(pe_metadata=pe_meta, sha256=sha, filename=path.name)
         analysis = Analysis(
             kind="exe",
             path=str(path.resolve()),

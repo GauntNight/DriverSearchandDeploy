@@ -623,6 +623,16 @@ class CatalogEntry:
     #   (version-agnostic where possible, e.g. a vendor "latest" link). Used as
     #   the substitution source when this entry is the target of prefer_entry_id.
     canonical_download_url: Optional[str] = None
+    # filename_pattern -- disambiguator for product lines whose builds share
+    #   IDENTICAL PE metadata and differ only by installer filename (e.g. VS Code
+    #   ships a per-user 'VSCodeUserSetup-*.exe' and a per-machine 'VSCodeSetup-*.exe'
+    #   that both report Company 'Microsoft Corporation' / Product 'Visual Studio
+    #   Code'). When set, this entry is matched ONLY when the (case-insensitive)
+    #   pattern is a substring of the installer filename -- it is excluded from the
+    #   generic PE company/product passes. Lets a consumer entry (filename_pattern
+    #   'vscodeusersetup', prefer_entry_id -> system) intercept the user installer
+    #   while the system entry (no pattern) catches everything else.
+    filename_pattern: Optional[str] = None
     # Lifecycle / usage
     notes: str = ""
     first_seen: str = ""
@@ -729,18 +739,25 @@ class Catalog:
         return None
 
     def match_exe(self, pe_metadata: Optional[dict] = None,
-                  sha256: Optional[str] = None) -> Optional[CatalogEntry]:
-        """Find an EXE catalog entry by PE metadata or sha256 fingerprint.
+                  sha256: Optional[str] = None,
+                  filename: Optional[str] = None) -> Optional[CatalogEntry]:
+        """Find an EXE catalog entry by PE metadata, sha256, or filename.
 
         Match priority (highest -> lowest):
           1. sha256 exact (catches a specific known build, e.g. a tested
              version we've pinned in the baseline)
-          2. pe_product_name exact (case-insensitive) -- disambiguates lines
+          2. filename_pattern + pe_product_name exact -- disambiguates product
+             lines whose builds share IDENTICAL PE metadata and differ only by
+             installer filename (e.g. VS Code user 'VSCodeUserSetup-*.exe' vs
+             system 'VSCodeSetup-*.exe', both Product 'Visual Studio Code').
+             An entry WITH a filename_pattern is matched ONLY here -- it is
+             excluded from passes 3-4 so it can't grab a non-matching filename.
+          3. pe_product_name exact (case-insensitive) -- disambiguates lines
              where one entry's pe_product_name is a substring of another's
              (e.g. "Snagit" vs "Snagit 2023"; without this pass the shorter
              pattern matches the longer installer name and the wrong entry
              wins by catalog order)
-          3. pe_company_name + pe_product_name (case-insensitive substring
+          4. pe_company_name + pe_product_name (case-insensitive substring
              match -- vendors often suffix builds with extra text, e.g.
              "Notepad++" vs "Notepad++ (32-bit)")
 
@@ -756,11 +773,28 @@ class Catalog:
 
         if not pe_metadata:
             return None
-        company = (pe_metadata.get("company_name") or "").lower()
-        product = (pe_metadata.get("product_name") or "").lower()
+        # PE VS_VERSIONINFO strings are often fixed-width padded with trailing
+        # spaces (e.g. 'Visual Studio Code          '); strip before comparing
+        # or the exact-match passes (and filename_pattern gate) silently fail.
+        company = (pe_metadata.get("company_name") or "").strip().lower()
+        product = (pe_metadata.get("product_name") or "").strip().lower()
         if not (company or product):
             return None
-        for e in exe_entries:
+        fname = (filename or "").strip().lower()
+
+        # Pass 2: filename_pattern-gated exact-product match (most specific).
+        if fname:
+            for e in exe_entries:
+                fp = (e.filename_pattern or "").lower()
+                cat_product = (e.pe_product_name or "").lower()
+                if fp and fp in fname and cat_product and cat_product == product:
+                    return e
+
+        # Entries WITH a filename_pattern are matched only by the gated pass
+        # above; exclude them from the generic passes so they never grab a
+        # filename they weren't meant for.
+        generic = [e for e in exe_entries if not (e.filename_pattern or "")]
+        for e in generic:
             cat_company = (e.pe_company_name or "").lower()
             cat_product = (e.pe_product_name or "").lower()
             if not cat_product or cat_product != product:
@@ -768,7 +802,7 @@ class Catalog:
             if cat_company and company and cat_company not in company and company not in cat_company:
                 continue
             return e
-        for e in exe_entries:
+        for e in generic:
             cat_company = (e.pe_company_name or "").lower()
             cat_product = (e.pe_product_name or "").lower()
             if cat_company and company and cat_company not in company and company not in cat_company:

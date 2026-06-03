@@ -1254,3 +1254,56 @@ class TestCatalogEntryExeFields:
         assert reloaded.detection_rules == [
             {'kind': 'file_exists', 'path': r'C:\App', 'folder': 'App'}
         ]
+
+
+class TestFilenamePatternDisambiguation:
+    """match_exe filename_pattern: distinguish builds with identical PE metadata
+    that differ only by installer filename (e.g. VS Code user vs system)."""
+
+    def _catalog(self, temp_catalog_paths):
+        baseline, _local = temp_catalog_paths
+        _write_yaml(baseline, {
+            'version': 1,
+            'entries': [
+                {  # gated consumer entry -> redirects
+                    'id': 'code-user', 'type': 'exe', 'installer_family': 'inno_setup',
+                    'distribution': 'standard',
+                    'pe_company_name': 'Microsoft Corporation',
+                    'pe_product_name': 'Visual Studio Code',
+                    'filename_pattern': 'vscodeusersetup',
+                    'prefer_entry_id': 'code-system',
+                    'install_command_template': '{installer_filename} /VERYSILENT',
+                },
+                {  # ungated enterprise target
+                    'id': 'code-system', 'type': 'exe', 'installer_family': 'inno_setup',
+                    'distribution': 'enterprise',
+                    'pe_company_name': 'Microsoft Corporation',
+                    'pe_product_name': 'Visual Studio Code',
+                    'install_command_template': '{installer_filename} /VERYSILENT',
+                    'detection_rules': [{'kind': 'registry_version', 'key': r'HKLM\X',
+                                         'value_name': 'DisplayVersion', 'operator': 'greaterThanOrEqual',
+                                         'value': '0.0.0'}],
+                },
+            ],
+        })
+        return ic.load_catalog()
+
+    def test_user_filename_matches_gated_consumer_entry(self, temp_catalog_paths):
+        c = self._catalog(temp_catalog_paths)
+        pe = {'company_name': 'Microsoft Corporation', 'product_name': 'Visual Studio Code'}
+        m = c.match_exe(pe_metadata=pe, filename='VSCodeUserSetup-x64-1.2.3.exe')
+        assert m is not None and m.id == 'code-user' and m.prefer_entry_id == 'code-system'
+
+    def test_system_filename_falls_through_to_ungated_entry(self, temp_catalog_paths):
+        c = self._catalog(temp_catalog_paths)
+        pe = {'company_name': 'Microsoft Corporation', 'product_name': 'Visual Studio Code'}
+        # system installer filename does not contain 'vscodeusersetup'
+        m = c.match_exe(pe_metadata=pe, filename='VSCodeSetup-x64-1.2.3.exe')
+        assert m is not None and m.id == 'code-system'
+
+    def test_no_filename_skips_gated_entry(self, temp_catalog_paths):
+        c = self._catalog(temp_catalog_paths)
+        pe = {'company_name': 'Microsoft Corporation', 'product_name': 'Visual Studio Code'}
+        # without a filename the gated consumer entry can't be confirmed -> ungated wins
+        m = c.match_exe(pe_metadata=pe, filename=None)
+        assert m is not None and m.id == 'code-system'
