@@ -1,6 +1,7 @@
 """Testing Agent - Validate Package Installation"""
 
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Dict, Any
@@ -221,9 +222,11 @@ class TestingAgent:
         validator = LocalInstallValidator(self.local_validation_config, emit=emit)
         result = validator.validate(package, job)
 
-        # Apply corrected detection facts, if any.
+        # Apply corrected detection facts and/or a corrected uninstall command
+        # (the uninstall retry ladder may find a working command even when the
+        # detection rule was already fine — persist it either way).
         corrected = result.get('corrected_detection_rules')
-        if corrected:
+        if corrected or result.get('corrected_uninstall_command'):
             self._apply_detection_corrections(package, job, result)
 
         logger.info(
@@ -243,35 +246,55 @@ class TestingAgent:
         catalog_rules = result.get('corrected_detection_rules') or []
         uninstall_cmd = result.get('corrected_uninstall_command')
 
-        # 1) Package gets Graph-format rules (what deployment publishes).
+        # 1) Package gets Graph-format rules + the working uninstall command
+        #    (what THIS publish ships). Each is applied independently.
         graph_rules = []
         for r in catalog_rules:
             try:
                 graph_rules.append(detection_rule_to_graph(r))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Could not convert corrected rule to Graph", error=str(exc))
-        if graph_rules:
+        if graph_rules or uninstall_cmd:
             with db_session_scope() as session:
                 pkg = session.query(Package).filter(Package.id == package.id).first()
                 if pkg:
-                    pkg.detection_rules = graph_rules
+                    if graph_rules:
+                        pkg.detection_rules = graph_rules
                     if uninstall_cmd:
                         pkg.uninstall_command = uninstall_cmd
-            logger.info("Package detection rules corrected by validation", package_id=package.id)
+            logger.info(
+                "Package corrected by validation",
+                package_id=package.id,
+                detection=bool(graph_rules), uninstall=bool(uninstall_cmd),
+            )
 
         # 2) Catalog overlay gets catalog-format rules (so the next run is right).
         catalog_entry_id = (job.job_metadata or {}).get('catalog_entry_id')
         if catalog_entry_id:
             from autopackager.utils import installer_catalog
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            updates = {'detection_rules': catalog_rules}
-            if uninstall_cmd and '{installer_filename}' not in uninstall_cmd:
-                updates['uninstall_command_template'] = uninstall_cmd
-            installer_catalog.update_overlay_entry(
-                catalog_entry_id, updates,
-                validation_note=f"validated locally {today}; detection corrected to real Uninstall key",
+            updates: Dict[str, Any] = {}
+            if catalog_rules:
+                updates['detection_rules'] = catalog_rules
+            # Persist a corrected uninstall command to the catalog ONLY when it's
+            # environment-agnostic. A version-specific MSI ProductCode
+            # (``msiexec /x {GUID}``) must NOT be baked into the template — the
+            # ProductCode changes every version and the pipeline re-derives it
+            # from each MSI at packaging time. Writing it would make the catalog
+            # stale on the next version (the root cause of the 7-Zip uninstall
+            # mismatch). EXE uninstaller commands (no per-version GUID) are fine.
+            msi_productcode_uninstall = bool(
+                uninstall_cmd and re.search(r'/[xi]\s*\{[0-9A-Fa-f-]{36}\}', uninstall_cmd, re.I)
             )
-            logger.info("Catalog entry corrected by validation", entry_id=catalog_entry_id)
+            if (uninstall_cmd and '{installer_filename}' not in uninstall_cmd
+                    and not msi_productcode_uninstall):
+                updates['uninstall_command_template'] = uninstall_cmd
+            if updates:
+                installer_catalog.update_overlay_entry(
+                    catalog_entry_id, updates,
+                    validation_note=f"validated locally {today}; corrected by install validation",
+                )
+                logger.info("Catalog entry corrected by validation", entry_id=catalog_entry_id)
 
     def _update_package_test_status(self, package_id: int, test_result: Dict[str, Any]):
         """Update package test status in database"""

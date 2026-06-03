@@ -267,12 +267,16 @@ def _build_software_job_metadata(analysis: Analysis) -> Dict[str, Any]:
     }
     if analysis.version:
         md["target_version"] = analysis.version
+    # Record the resolved catalog id for BOTH installer kinds so the testing
+    # agent can write validation corrections (detection rule / uninstall command)
+    # back to the right catalog entry — previously only EXE jobs carried it, so
+    # MSI corrections (e.g. a 7-Zip uninstall fix) never reached the catalog.
+    if analysis.catalog_entry_id:
+        md["catalog_entry_id"] = analysis.catalog_entry_id
     if analysis.kind == "msi":
         if analysis.metadata:
             md["msi_metadata"] = analysis.metadata
     else:  # exe
-        if analysis.catalog_entry_id:
-            md["catalog_entry_id"] = analysis.catalog_entry_id
         if analysis.metadata:
             md["exe_metadata"] = analysis.metadata
         if analysis.sha256:
@@ -391,6 +395,244 @@ def create_software_job_row(analysis: Analysis, *, gate: bool = False) -> int:
         job_metadata=_build_software_job_metadata(analysis),
         gate=gate,
     )
+
+
+def _ring0_group_id() -> Optional[str]:
+    """The Ring 0 (test) Entra group id from config — the 'test ring only' target."""
+    from autopackager.utils.config import get_config
+
+    rings = get_config().get("deployment_rings", []) or []
+    for r in rings:
+        if str(r.get("ring_id", "")).lower() in ("ring0", "0"):
+            return r.get("entra_group_id")
+    return rings[0].get("entra_group_id") if rings else None
+
+
+def _old_app_group_ids(old_app_id: str) -> list:
+    """Read the group ids the OLD app is assigned to (for 'all existing users').
+
+    Mirrors the superseded app's real audience so the upgrade reaches exactly
+    whoever already had it. Returns [] on any Graph failure (caller falls back).
+    """
+    try:
+        from autopackager.utils.graph_client import GraphAPIClient
+
+        client = GraphAPIClient()
+        resp = client.get(f"deviceAppManagement/mobileApps/{old_app_id}/assignments")
+        gids = []
+        for a in resp.get("value", []) or []:
+            gid = (a.get("target", {}) or {}).get("groupId")
+            if gid and gid not in gids:
+                gids.append(gid)
+        return gids
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not read old app assignments", app_id=old_app_id, error=str(exc))
+        return []
+
+
+def _resolve_upgrade_assignment(old_app_id: str, scope: str) -> Dict[str, Any]:
+    """Build the ``demo_assignment`` block for an upgrade publish.
+
+    ``scope='all'`` → mirror the old app's groups, autoUpdateSupersededApps on.
+    ``scope='test'`` → Ring 0 only, no auto-update needed.
+    """
+    if scope == "all":
+        gids = _old_app_group_ids(old_app_id)
+        if not gids:
+            r0 = _ring0_group_id()
+            gids = [r0] if r0 else []
+        return {
+            "group_ids": gids,
+            "auto_update_superseded": True,
+            "scope_label": "All existing users",
+        }
+    r0 = _ring0_group_id()
+    return {
+        "group_ids": [r0] if r0 else [],
+        "auto_update_superseded": False,
+        "scope_label": "Test ring only",
+    }
+
+
+def _supersede_target_app_id(entry, publishing_version: str) -> Optional[str]:
+    """Intune app id of the newest deployed version that is STRICTLY OLDER than
+    ``publishing_version`` — i.e. the version this publish should supersede.
+
+    Strictly-older is the key guard: it links the upgrade to the current newest
+    older build (even if its overlay status is already 'superseded', so the chain
+    isn't broken) while never linking to a SAME-version sibling (a duplicate /
+    concurrent publish), which would create a spurious self-relationship.
+    """
+    from autopackager.utils.version_comparison import compare_catalog_versions
+    import functools
+
+    older = [
+        vv for vv in (entry.verified_versions or [])
+        if vv.get("product_version") and vv.get("verified_intune_app_id")
+        and compare_catalog_versions(vv["product_version"], publishing_version) < 0
+    ]
+    if not older:
+        return None
+    try:
+        older.sort(
+            key=functools.cmp_to_key(
+                lambda a, b: compare_catalog_versions(
+                    a.get("product_version", ""), b.get("product_version", ""))
+            ),
+            reverse=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return older[0].get("verified_intune_app_id")
+
+
+def _build_supersedence_action(analysis: "Analysis", old_app_id: str,
+                               old_entry_id: Optional[str]) -> Dict[str, Any]:
+    """Resolve the ``supersedence_action`` for an upgrade publish.
+
+    Serialized to the exact dict shape the deployment agent consumes
+    (``_apply_supersedence`` reads ``superseded_intune_app_ids`` +
+    ``demoted_records``; see ``cli.py``). The link target is the newest
+    STRICTLY-OLDER deployed app for this product (computed from the catalog
+    chain), plus any further older versions ``resolve_supersedence`` demotes.
+    When there is no catalog context at all we fall back to the clicked
+    ``old_app_id``. The presence of this action (even with an empty id list)
+    forces ``_create_or_update_intune_app`` to land a fresh app rather than
+    PATCH an existing one.
+    """
+    from autopackager.utils import installer_catalog
+
+    app_ids: list = []
+    demoted: list = []
+    mode_used = "demo-direct"
+    notes: list = []
+
+    catalog = installer_catalog.load_catalog()
+    pub_entry = catalog.by_id(analysis.catalog_entry_id) if analysis.catalog_entry_id else None
+    # Supersede the newest STRICTLY-OLDER deployed version of this product — not
+    # necessarily the row the operator clicked (could be an N-1), and never a
+    # same-version sibling. This links the upgrade to the right prior build and
+    # keeps the chain intact.
+    if pub_entry and analysis.version:
+        target = _supersede_target_app_id(pub_entry, analysis.version)
+        if target:
+            app_ids = [target]
+            notes = [f"demo upgrade: supersede newest-older deployed app {target}"]
+        # Generic resolution only — it demotes STRICTLY-OLDER verified versions
+        # in the line. We deliberately do NOT fall back to an explicit
+        # (manual_cli) resolve: that path honours the named id even at an
+        # equal/newer version, which — when a same-version sibling already
+        # exists in the overlay (e.g. a duplicate/concurrent publish) — links
+        # the new app to that sibling and produces a spurious self-relationship.
+        # Always linking the known ``old_app_id`` (below) already covers the
+        # "must supersede the prior version" intent.
+        try:
+            resolution = installer_catalog.resolve_supersedence(
+                catalog, pub_entry, analysis.version, operator_opted_in=True,
+            )
+            mode_used = resolution.mode_used or mode_used
+            notes = list(resolution.notes) + notes
+            for aid in resolution.superseded_intune_app_ids or []:
+                if aid not in app_ids:
+                    app_ids.append(aid)
+            demoted = [
+                {"entry_id": eid, "product_version": vv.get("product_version"),
+                 "verified_intune_app_id": vv.get("verified_intune_app_id")}
+                for eid, vv in (resolution.demoted_records or [])
+            ]
+        except installer_catalog.SupersedenceError as exc:
+            # mode=none apex: still link directly to the clicked old app id.
+            notes.append(f"resolve_supersedence refused: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"resolve_supersedence error: {exc}")
+
+    # No catalog context (or a mode=none apex) yielded no chain target — fall
+    # back to the clicked app so the upgrade still links to *something*.
+    if not app_ids and old_app_id and not pub_entry:
+        app_ids = [old_app_id]
+        notes.append(f"fallback: link to clicked app {old_app_id} (no catalog chain)")
+
+    return {
+        "mode_used": mode_used,
+        "superseded_intune_app_ids": app_ids,
+        "demoted_records": demoted,
+        "notes": notes,
+    }
+
+
+def begin_upgrade_job(old_app_id: str, scope: str, *, gate: bool = False) -> int:
+    """Create the placeholder job row for an upgrade BEFORE the new installer is
+    in hand (the URL-download path). Stashes the resolved ``demo_assignment``
+    (which only needs ``old_app_id`` + ``scope``) so the SSE channel is open
+    while the download runs. ``finalize_upgrade_job`` fills in the rest.
+    """
+    return create_job_row(
+        job_type=JobType.NEW_SOFTWARE,
+        software_title="Upgrade (resolving…)",
+        vendor="Unknown",
+        current_version=None,
+        job_metadata={
+            "demo_assignment": _resolve_upgrade_assignment(old_app_id, scope),
+            "_upgrade": {"old_app_id": old_app_id, "scope": scope},
+        },
+        gate=gate,
+    )
+
+
+def _apply_upgrade_metadata(
+    job_id: int, analysis: "Analysis", old_app_id: str, scope: str,
+    old_entry_id: Optional[str],
+) -> None:
+    """Merge the upgrade's identity + supersedence + assignment metadata onto an
+    existing job row (engine merges, so the demo_assignment from begin survives).
+    """
+    from autopackager.models.job import JobState
+
+    md = _build_software_job_metadata(analysis)
+    md["supersedence_action"] = _build_supersedence_action(analysis, old_app_id, old_entry_id)
+    md["demo_assignment"] = _resolve_upgrade_assignment(old_app_id, scope)
+    engine = OrchestrationEngine()
+    engine.update_job_state(
+        job_id, JobState.PENDING,
+        metadata_update=md,
+        software_title=(analysis.product_name or Path(analysis.filename).stem),
+        vendor=(analysis.publisher or None),
+    )
+
+
+def finalize_upgrade_job(
+    job_id: int, old_app_id: str, new_installer_path: str, scope: str, *,
+    gate: bool = False, old_entry_id: Optional[str] = None,
+) -> None:
+    """Resolve the downloaded/dropped installer, attach upgrade metadata, and
+    dispatch the pipeline for an already-created upgrade job row."""
+    analysis = analyze(Path(new_installer_path))
+    if analysis.prefer_entry_id:  # consumer build → enterprise substitute
+        sub = substitute_with_enterprise(analysis)
+        if sub:
+            analysis = sub
+    _apply_upgrade_metadata(job_id, analysis, old_app_id, scope, old_entry_id)
+    dispatch_pipeline(job_id, gate=gate)
+
+
+def enqueue_upgrade_job(
+    old_app_id: str,
+    new_installer_path: str,
+    scope: str,
+    *,
+    gate: bool = False,
+    old_entry_id: Optional[str] = None,
+) -> int:
+    """Create + dispatch a supersedence UPGRADE job from a newer installer
+    already on disk (the manual-drop fallback path). One-shot; for the
+    URL-download path use ``begin_upgrade_job`` + ``finalize_upgrade_job`` so
+    the download narrates over SSE. Returns the job id.
+    """
+    job_id = begin_upgrade_job(old_app_id, scope, gate=gate)
+    finalize_upgrade_job(
+        job_id, old_app_id, new_installer_path, scope, gate=gate, old_entry_id=old_entry_id,
+    )
+    return job_id
 
 
 def enqueue_driver_job(

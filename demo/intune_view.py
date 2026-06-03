@@ -62,15 +62,132 @@ def get_apps_view(include_counts: bool = False) -> Dict[str, Any]:
     """Return ``{"mode": "live"|"fixture", "apps": [...], "error": ...}``.
 
     Each app row: ``{id, name, version, publisher, created, assignments:
-    [{ring, intent, group_id}], installed, pending}``.
+    [{ring, intent, group_id}], installed, pending}`` plus supersedence-demo
+    fields added by ``_enrich_apps``: ``catalog_entry_id``, ``current_version``,
+    ``source_url_known``, ``version_state`` (``current`` | ``pending`` |
+    ``N-1`` | ``N-2`` | ``""``).
     """
     try:
-        return _live_view(include_counts=include_counts)
+        view = _live_view(include_counts=include_counts)
     except Exception as exc:  # noqa: BLE001 — any failure ⇒ fixture mode
         logger.warning("Intune live view failed; using fixture", error=str(exc))
         view = _fixture_view()
         view["error"] = str(exc)
-        return view
+    try:
+        _enrich_apps(view.get("apps") or [])
+    except Exception as exc:  # noqa: BLE001 — enrichment is best-effort
+        logger.warning("Intune view enrichment failed", error=str(exc))
+    return view
+
+
+# --- Supersedence-demo enrichment ------------------------------------------
+
+def find_entry_for_app_id(catalog, app_id: Optional[str]):
+    """Locate the catalog entry + verified_versions row for an Intune app id.
+
+    Scans ``entry.verified_versions[].verified_intune_app_id`` (the tenant-bound
+    GUID recorded by the publish / polling hooks). Returns ``(entry, row)`` or
+    ``(None, None)``. No Graph call — pure overlay lookup.
+    """
+    if not app_id:
+        return None, None
+    for entry in catalog.entries:
+        for vv in entry.verified_versions or []:
+            if vv.get("verified_intune_app_id") == app_id:
+                return entry, vv
+    return None, None
+
+
+def newest_verified_version(entry):
+    """Return ``(version, intune_app_id)`` of the HIGHEST-version verified row
+    for ``entry`` (the newest version we've deployed), or ``(None, None)``.
+
+    Used as the baseline for "is there something newer upstream?" — so refreshing
+    ANY row (even an N-1) compares against the chain's newest, never re-offering a
+    version that's already deployed.
+    """
+    import functools
+    from autopackager.utils.version_comparison import compare_catalog_versions
+
+    rows = [vv for vv in (entry.verified_versions or []) if vv.get("product_version")]
+    if not rows:
+        return None, None
+    try:
+        rows.sort(
+            key=functools.cmp_to_key(
+                lambda a, b: compare_catalog_versions(
+                    a.get("product_version", ""), b.get("product_version", ""))
+            ),
+            reverse=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    top = rows[0]
+    return top.get("product_version"), top.get("verified_intune_app_id")
+
+
+def _version_state_for(entry, matched_row) -> str:
+    """Derive the badge state for a matched verified_versions row by VERSION RANK.
+
+    The badge reflects position in the version chain, not the row's ``status``
+    field: all of the entry's verified versions are ranked newest-first, so the
+    highest version is ``current`` (the demo's "Current" — even while its first
+    device install is still pending), the next is ``N-1``, then ``N-2`` …. This
+    is what the spec means by "the app a Current supersedes is N-1" and it is
+    robust to a freshly-published version still sitting at status ``pending``.
+    """
+    if not matched_row:
+        return ""
+    import functools
+    from autopackager.utils.version_comparison import compare_catalog_versions
+
+    rows = [vv for vv in (entry.verified_versions or []) if vv.get("product_version")]
+    if not rows:
+        return "current"
+    try:
+        rows.sort(
+            key=functools.cmp_to_key(
+                lambda a, b: compare_catalog_versions(
+                    a.get("product_version", ""), b.get("product_version", ""))
+            ),
+            reverse=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    target_aid = matched_row.get("verified_intune_app_id")
+    for idx, vv in enumerate(rows):
+        if vv is matched_row or (target_aid and vv.get("verified_intune_app_id") == target_aid):
+            return "current" if idx == 0 else f"N-{idx}"
+    return "current"
+
+
+def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
+    """Augment each app row in place with supersedence-demo fields.
+
+    A row that maps to a catalog entry gets its chain position
+    (``version_state`` = ``current`` / ``N-1`` / …). A row we CANNOT place in a
+    chain (no catalog overlay record — e.g. an app installed out-of-band) gets
+    ``version_state=""`` so it shows NO badge — it must not claim "Current".
+    """
+    if not apps:
+        return
+    from autopackager.utils import installer_catalog
+
+    catalog = installer_catalog.load_catalog()
+    for row in apps:
+        entry, matched = find_entry_for_app_id(catalog, row.get("id"))
+        if entry:
+            row["catalog_entry_id"] = entry.id
+            row["current_version"] = (
+                (matched or {}).get("product_version") or row.get("version") or None
+            )
+            row["source_url_known"] = bool(entry.canonical_download_url)
+            row["version_state"] = _version_state_for(entry, matched)
+        else:
+            row.setdefault("catalog_entry_id", None)
+            row.setdefault("current_version", row.get("version") or None)
+            row.setdefault("source_url_known", False)
+            row.setdefault("version_state", "")  # unplaceable → no badge, never "Current"
 
 
 def _live_view(include_counts: bool = False) -> Dict[str, Any]:

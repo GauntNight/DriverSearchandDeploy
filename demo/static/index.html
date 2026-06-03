@@ -93,10 +93,10 @@
       <div class="table-wrap">
         <table class="intune-table" id="intune-table">
           <thead>
-            <tr><th>Name</th><th>Version</th><th>Publisher</th><th>Assignment</th><th>Created</th></tr>
+            <tr><th>Name</th><th>Version</th><th>Publisher</th><th>Assignment</th><th>Created</th><th>State</th></tr>
           </thead>
           <tbody id="intune-body">
-            <tr class="empty"><td colspan="5">Loading tenant apps…</td></tr>
+            <tr class="empty"><td colspan="6">Loading tenant apps…</td></tr>
           </tbody>
         </table>
       </div>
@@ -116,6 +116,19 @@
       <div class="console" id="console"></div>
     </section>
   </main>
+
+  <!-- Upgrade scope dialog (spec §4) — exactly two choices -->
+  <div class="modal-overlay hidden" id="scope-overlay">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="scope-title">
+      <h3 id="scope-title">Package and deploy</h3>
+      <p id="scope-msg">Deploy the new version to which audience?</p>
+      <div class="modal-actions">
+        <button class="btn primary" id="scope-all">All existing users</button>
+        <button class="btn" id="scope-test">Test ring only</button>
+      </div>
+      <button class="modal-x" id="scope-cancel" title="Cancel">✕</button>
+    </div>
+  </div>
 
   <script src="/demo/static/demo.js"></script>
 </body>
