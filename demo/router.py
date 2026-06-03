@@ -54,6 +54,151 @@ async def api_verify_url(app_id: Optional[str] = None):
     return {"url": intune_view.verify_in_intune_url(app_id)}
 
 
+@demo_router.post("/api/demo/intune/check-version")
+async def api_check_version(request: Request):
+    """The 'refresh' brain (spec §2): is there a newer version upstream?
+
+    Body ``{app_id, app_label?, current_version?, mode?}``. Resolves the app to
+    its catalog entry (authoritative source URL + deployed version), runs the
+    focused version-check bridge, and returns
+    ``{is_newer, latest_version, download_url, current_version, entry_id, mode}``.
+    The lamp is driven client-side for this synchronous call; no SSE channel.
+    """
+    body = await request.json()
+    app_id = body.get("app_id")
+    return await asyncio.to_thread(_check_version_sync, body, app_id)
+
+
+def _check_version_sync(body: dict, app_id: Optional[str]) -> dict:
+    from autopackager.utils import installer_catalog
+
+    catalog = installer_catalog.load_catalog()
+    entry, row = intune_view.find_entry_for_app_id(catalog, app_id)
+    if entry:
+        current_version = (row or {}).get("product_version") or body.get("current_version")
+        source_url = entry.canonical_download_url
+        slug = entry.id
+        label = body.get("app_label") or entry.id
+        entry_id = entry.id
+    else:
+        current_version = body.get("current_version")
+        source_url = None
+        slug = body.get("app_label") or app_id
+        label = body.get("app_label") or (app_id or "app")
+        entry_id = None
+
+    result = claude_bridge.check_version(
+        label, current_version, source_url,
+        mode=body.get("mode") or None, slug=slug,
+    )
+    result["entry_id"] = entry_id
+    return result
+
+
+@demo_router.post("/api/demo/intune/upgrade")
+async def api_upgrade(request: Request, background: BackgroundTasks):
+    """Package + supersede + deploy a newer version (spec §3/§4).
+
+    Two intake shapes:
+      * JSON ``{app_id, scope, download_url?, mode?, gate?, old_entry_id?}`` —
+        if ``download_url`` is reachable, the new build is fetched in the
+        background (narrated over SSE) and the pipeline dispatched. If it's
+        absent/unreachable, returns ``{awaiting_upload: true}`` so the operator
+        drops the installer.
+      * multipart ``file`` + ``app_id`` + ``scope`` (+gate) — the manual-upload
+        fallback; the dropped installer is packaged directly.
+
+    Returns ``{job_id, branch: "upgrade"}`` (or ``{awaiting_upload: true}``).
+    """
+    content_type = request.headers.get("content-type", "")
+    try:
+        if content_type.startswith("multipart/form-data"):
+            form = await request.form()
+            app_id = form.get("app_id")
+            scope = (form.get("scope") or "test").lower()
+            gate = _as_bool(form.get("gate"))
+            old_entry_id = form.get("old_entry_id") or None
+            upload = form.get("file")
+            if not app_id or upload is None or not hasattr(upload, "filename"):
+                return JSONResponse({"error": "app_id and file required"}, status_code=400)
+            if not intake.is_known_installer(upload.filename):
+                return JSONResponse(
+                    {"error": f"Unsupported file type (got '{upload.filename}')."},
+                    status_code=400,
+                )
+            data = await upload.read()
+            saved = await asyncio.to_thread(intake.save_upload, upload.filename, data)
+            job_id = await asyncio.to_thread(
+                intake.enqueue_upgrade_job, app_id, str(saved), scope,
+            )
+            return {"job_id": job_id, "branch": "upgrade"}
+
+        body = await request.json()
+        app_id = body.get("app_id")
+        scope = (body.get("scope") or "test").lower()
+        gate = _as_bool(body.get("gate"))
+        mode = body.get("mode") or None
+        download_url = body.get("download_url")
+        old_entry_id = body.get("old_entry_id") or None
+        if not app_id:
+            return JSONResponse({"error": "app_id required"}, status_code=400)
+        if scope not in ("test", "all"):
+            return JSONResponse({"error": "scope must be 'test' or 'all'"}, status_code=400)
+        if not download_url or not intake.is_known_installer(download_url):
+            # No fetchable source — fall back to a manual drop.
+            return {
+                "awaiting_upload": True,
+                "app_id": app_id,
+                "scope": scope,
+                "message": "Source unavailable — awaiting manual upload.",
+            }
+        job_id = await asyncio.to_thread(intake.begin_upgrade_job, app_id, scope, gate=gate)
+        background.add_task(
+            _run_upgrade_pipeline, job_id, app_id, scope, download_url, gate, old_entry_id,
+        )
+        return {"job_id": job_id, "branch": "upgrade"}
+    except Exception as exc:  # noqa: BLE001
+        try:
+            logger.error("Demo upgrade failed", error=str(exc), exc_info=True)
+        except Exception:
+            pass
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+def _run_upgrade_pipeline(
+    job_id: int, old_app_id: str, scope: str, download_url: str,
+    gate: bool, old_entry_id: Optional[str],
+):
+    """Background: fetch the newer installer, attach upgrade metadata, dispatch.
+
+    Mirrors ``_run_miss_pipeline`` — runs in the threadpool and narrates to the
+    job's SSE channel throughout.
+    """
+    time.sleep(1.2)  # let the browser's SSE subscription come up first
+    events.publish_pipeline_event(
+        job_id, "pending", f"Fetching the newer version… ({download_url})",
+    )
+    try:
+        saved = intake.download_to_sandbox(download_url)
+    except Exception as exc:  # noqa: BLE001
+        events.publish_pipeline_event(
+            job_id, "failed", f"Could not fetch the newer installer: {exc}", level="error")
+        try:
+            from autopackager.orchestration.engine import OrchestrationEngine
+            from autopackager.models.job import JobState
+            OrchestrationEngine().update_job_state(
+                job_id, JobState.FAILED, error_message=f"upgrade download failed: {exc}")
+        except Exception:
+            pass
+        return
+    events.publish_pipeline_event(
+        job_id, "pending", f"Got the installer ({saved.name}) — packaging the upgrade now.",
+    )
+    intake.finalize_upgrade_job(
+        job_id, old_app_id, str(saved), scope, gate=gate, old_entry_id=old_entry_id,
+    )
+
+
 @demo_router.post("/api/demo/jobs")
 async def api_create_job(request: Request, background: BackgroundTasks):
     """Intake: drag-drop file (multipart), vendor URL or driver form (JSON).

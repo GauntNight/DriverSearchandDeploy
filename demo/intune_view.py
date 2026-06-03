@@ -62,15 +62,111 @@ def get_apps_view(include_counts: bool = False) -> Dict[str, Any]:
     """Return ``{"mode": "live"|"fixture", "apps": [...], "error": ...}``.
 
     Each app row: ``{id, name, version, publisher, created, assignments:
-    [{ring, intent, group_id}], installed, pending}``.
+    [{ring, intent, group_id}], installed, pending}`` plus supersedence-demo
+    fields added by ``_enrich_apps``: ``catalog_entry_id``, ``current_version``,
+    ``source_url_known``, ``version_state`` (``current`` | ``pending`` |
+    ``N-1`` | ``N-2`` | ``""``).
     """
     try:
-        return _live_view(include_counts=include_counts)
+        view = _live_view(include_counts=include_counts)
     except Exception as exc:  # noqa: BLE001 — any failure ⇒ fixture mode
         logger.warning("Intune live view failed; using fixture", error=str(exc))
         view = _fixture_view()
         view["error"] = str(exc)
-        return view
+    try:
+        _enrich_apps(view.get("apps") or [])
+    except Exception as exc:  # noqa: BLE001 — enrichment is best-effort
+        logger.warning("Intune view enrichment failed", error=str(exc))
+    return view
+
+
+# --- Supersedence-demo enrichment ------------------------------------------
+
+def find_entry_for_app_id(catalog, app_id: Optional[str]):
+    """Locate the catalog entry + verified_versions row for an Intune app id.
+
+    Scans ``entry.verified_versions[].verified_intune_app_id`` (the tenant-bound
+    GUID recorded by the publish / polling hooks). Returns ``(entry, row)`` or
+    ``(None, None)``. No Graph call — pure overlay lookup.
+    """
+    if not app_id:
+        return None, None
+    for entry in catalog.entries:
+        for vv in entry.verified_versions or []:
+            if vv.get("verified_intune_app_id") == app_id:
+                return entry, vv
+    return None, None
+
+
+def _version_state_for(entry, matched_row) -> str:
+    """Derive the badge state for a matched verified_versions row.
+
+    ``newest`` → ``current``; ``pending`` → ``pending``; ``superseded`` rows are
+    ranked newest-first within the entry so the most recent superseded version
+    is ``N-1``, the next ``N-2``, and so on. Unknown statuses fall back to
+    ``current`` (a managed app with no chain info reads as current).
+    """
+    status = (matched_row or {}).get("status")
+    if status == "pending":
+        return "pending"
+    if status in (None, "newest", "manual"):
+        return "current"
+    if status == "historical":
+        return ""
+    if status == "superseded":
+        from autopackager.utils.version_comparison import compare_catalog_versions
+        import functools
+
+        superseded = [
+            vv for vv in (entry.verified_versions or [])
+            if vv.get("status") == "superseded" and vv.get("product_version")
+        ]
+        try:
+            superseded.sort(
+                key=functools.cmp_to_key(
+                    lambda a, b: compare_catalog_versions(
+                        a.get("product_version", ""), b.get("product_version", ""))
+                ),
+                reverse=True,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        for idx, vv in enumerate(superseded):
+            if vv is matched_row or (
+                vv.get("verified_intune_app_id")
+                and vv.get("verified_intune_app_id") == matched_row.get("verified_intune_app_id")
+            ):
+                return f"N-{idx + 1}"
+        return "N-1"
+    return "current"
+
+
+def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
+    """Augment each app row in place with supersedence-demo fields.
+
+    Best-effort: a row with no catalog match still gets sensible defaults
+    (``version_state='current'``, ``source_url_known=False``) so the refresh
+    gesture works in fixture mode too.
+    """
+    if not apps:
+        return
+    from autopackager.utils import installer_catalog
+
+    catalog = installer_catalog.load_catalog()
+    for row in apps:
+        entry, matched = find_entry_for_app_id(catalog, row.get("id"))
+        if entry:
+            row["catalog_entry_id"] = entry.id
+            row["current_version"] = (
+                (matched or {}).get("product_version") or row.get("version") or None
+            )
+            row["source_url_known"] = bool(entry.canonical_download_url)
+            row["version_state"] = _version_state_for(entry, matched)
+        else:
+            row.setdefault("catalog_entry_id", None)
+            row.setdefault("current_version", row.get("version") or None)
+            row.setdefault("source_url_known", False)
+            row.setdefault("version_state", "current")
 
 
 def _live_view(include_counts: bool = False) -> Dict[str, Any]:

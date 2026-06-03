@@ -28,6 +28,13 @@
   const seenAppIds = new Set();
   let firstIntuneLoad = true;
 
+  // Supersedence demo state.
+  let lastView = null;                 // cache the last Intune view for re-renders
+  const appMeta = new Map();           // app_id -> { entry_id, latest_version, download_url, current_version }
+  const badgeOverride = new Map();     // app_id -> { state, label } (client-driven, e.g. after a check)
+  let pendingUpgrade = null;           // { app_id, scope } awaiting a manual installer drop
+  let scopeApp = null;                 // app the open scope dialog targets
+
   // ---- Preflight -----------------------------------------------------------
   async function preflight() {
     try {
@@ -188,6 +195,19 @@
       $("filepick").value = "";  // allow re-picking after a bad selection
       return;
     }
+    // A dropped file completing a URL-unavailable upgrade routes to the upgrade
+    // endpoint (keeps the supersedence + scope), not normal intake.
+    if (pendingUpgrade) {
+      const pu = pendingUpgrade;
+      pendingUpgrade = null;
+      $("dropzone").classList.remove("drag");
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("app_id", pu.app_id);
+      fd.append("scope", pu.scope);
+      await postUpgradeFile(fd, `upgrade ← ${file.name}`);
+      return;
+    }
     gateMode = $("gate").checked;
     const fd = new FormData();
     fd.append("file", file);
@@ -297,6 +317,14 @@
       const d = await r.json();
       window.open(d.url, "_blank", "noopener");
     });
+
+    // Upgrade scope dialog — exactly two choices (spec §4).
+    $("scope-all").addEventListener("click", () => chooseScope("all"));
+    $("scope-test").addEventListener("click", () => chooseScope("test"));
+    $("scope-cancel").addEventListener("click", closeScopeDialog);
+    $("scope-overlay").addEventListener("click", (e) => {
+      if (e.target === $("scope-overlay")) closeScopeDialog();
+    });
   }
 
   // ---- Intune center panel -------------------------------------------------
@@ -311,13 +339,14 @@
   }
 
   function renderIntune(view) {
+    lastView = view;
     const badge = $("intune-mode");
     badge.textContent = view.mode === "live" ? "live tenant" : "fixture mode";
     badge.dataset.mode = view.mode;
     const body = $("intune-body");
     const apps = view.apps || [];
     if (!apps.length) {
-      body.innerHTML = `<tr class="empty"><td colspan="5">No Win32 apps ${view.mode === "fixture" ? "in fixtures" : "in tenant"} yet</td></tr>`;
+      body.innerHTML = `<tr class="empty"><td colspan="6">No Win32 apps ${view.mode === "fixture" ? "in fixtures" : "in tenant"} yet</td></tr>`;
       return;
     }
     body.innerHTML = "";
@@ -334,11 +363,154 @@
         `<td>${esc(app.version || "")}</td>` +
         `<td>${esc(app.publisher || "")}</td>` +
         `<td>${assign}</td>` +
-        `<td>${esc(app.created || "")}</td>`;
+        `<td>${esc(app.created || "")}</td>` +
+        `<td class="ver-cell"></td>`;
       tr.querySelector(".app-name").textContent = app.name || "(unnamed)";
+      buildVersionCell(tr.querySelector(".ver-cell"), app);
       body.appendChild(tr);
     }
     firstIntuneLoad = false;
+  }
+
+  // ---- Version state: refresh + supersedence badge (spec §4) ---------------
+  function badgeFromServerState(app) {
+    switch (app.version_state) {
+      case "pending":  return { state: "pending", label: "Pending" };
+      case "":         return null;
+      case "current":  return { state: "current", label: "Current" };
+      default:
+        // "N-1", "N-2", … come through verbatim as superseded labels.
+        if (/^N-\d+$/.test(app.version_state || "")) {
+          return { state: "superseded", label: app.version_state };
+        }
+        return { state: "current", label: "Current" };
+    }
+  }
+
+  function buildVersionCell(cell, app) {
+    cell.innerHTML = "";
+    if (!app.id) return;
+    const btn = document.createElement("button");
+    btn.className = "ver-refresh";
+    btn.title = "Check the vendor source for a newer version";
+    btn.textContent = "↻";
+    btn.addEventListener("click", () => refreshVersion(app, btn));
+    cell.appendChild(btn);
+
+    const state = badgeOverride.get(app.id) || badgeFromServerState(app);
+    if (!state) return;
+    const b = document.createElement("span");
+    b.className = "ver-badge";
+    b.dataset.state = state.state;
+    b.textContent = state.label;
+    if (state.state === "available") {
+      b.title = "Click to package & deploy this upgrade";
+      b.addEventListener("click", () => openScopeDialog(app));
+    }
+    cell.appendChild(b);
+  }
+
+  function rerender() { if (lastView) renderIntune(lastView); }
+
+  async function refreshVersion(app, btn) {
+    if (!app.id) return;
+    if (btn) { btn.disabled = true; btn.classList.add("spin"); }
+    badgeOverride.set(app.id, { state: "checking", label: "Checking…" });
+    rerender();
+    setLamp("thinking", "checking vendor source…");
+    try {
+      const r = await fetch("/api/demo/intune/check-version", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          app_id: app.id, app_label: app.name,
+          current_version: app.current_version || app.version || null,
+          mode: $("mode").value || undefined,
+        }),
+      });
+      const res = await r.json();
+      setLamp("ready", "authenticated · standing by");
+      if (res.is_newer && res.latest_version) {
+        appMeta.set(app.id, {
+          entry_id: res.entry_id, latest_version: res.latest_version,
+          download_url: res.download_url, current_version: res.current_version,
+        });
+        badgeOverride.set(app.id, {
+          state: "available", label: `New version available (${res.latest_version})`,
+        });
+        appendLine({ source: "system", text:
+          `${app.name}: new version ${res.latest_version} available (deployed ${res.current_version || "?"}).` });
+      } else {
+        badgeOverride.delete(app.id);
+        appendLine({ source: "system", text:
+          `${app.name}: up to date (${res.current_version || app.version || "unknown"}).` });
+      }
+    } catch (e) {
+      badgeOverride.delete(app.id);
+      setLamp("ready", "authenticated · standing by");
+      appendLine({ source: "system", level: "error", text: `Version check failed: ${e}` });
+    } finally {
+      if (btn) { btn.disabled = false; btn.classList.remove("spin"); }
+      rerender();
+    }
+  }
+
+  // ---- Upgrade scope dialog ------------------------------------------------
+  function openScopeDialog(app) {
+    scopeApp = app;
+    const meta = appMeta.get(app.id) || {};
+    $("scope-title").textContent = "Package and deploy";
+    $("scope-msg").textContent =
+      `Package and deploy ${app.name}${meta.latest_version ? " " + meta.latest_version : ""}?`;
+    $("scope-overlay").classList.remove("hidden");
+  }
+  function closeScopeDialog() {
+    scopeApp = null;
+    $("scope-overlay").classList.add("hidden");
+  }
+
+  async function chooseScope(scope) {
+    const app = scopeApp;
+    closeScopeDialog();
+    if (!app) return;
+    const meta = appMeta.get(app.id) || {};
+    gateMode = $("gate").checked;
+    // Hand off to the pipeline + server-derived state from here.
+    badgeOverride.delete(app.id);
+    try {
+      const r = await fetch("/api/demo/intune/upgrade", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          app_id: app.id, scope,
+          download_url: meta.download_url || null,
+          old_entry_id: meta.entry_id || null,
+          mode: $("mode").value || undefined,
+          gate: gateMode,
+        }),
+      });
+      const data = await r.json();
+      if (data.error) { flashConsoleError(data.error); return; }
+      if (data.awaiting_upload) {
+        pendingUpgrade = { app_id: app.id, scope };
+        appendLine({ source: "system", level: "warn", text:
+          "Source unavailable — drop the newer installer onto the strip to continue the upgrade." });
+        $("dropzone").classList.add("drag");
+        return;
+      }
+      openStream(data.job_id, `${app.name} → ${meta.latest_version || "newer version"}`);
+    } catch (e) {
+      flashConsoleError(String(e));
+    }
+  }
+
+  async function postUpgradeFile(fd, label) {
+    try {
+      const r = await fetch("/api/demo/intune/upgrade", { method: "POST", body: fd });
+      const data = await r.json();
+      if (data.error) { flashConsoleError(data.error); return; }
+      openStream(data.job_id, label);
+    } catch (e) {
+      flashConsoleError(String(e));
+    }
   }
 
   function esc(s) {

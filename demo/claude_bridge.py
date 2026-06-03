@@ -61,6 +61,14 @@ _RESULT_KEYS = (
     "publisher",
 )
 
+# The version-check ("refresh brain") contract — the small structured result the
+# model emits as its final fenced ```json block (spec §2).
+_VERSION_KEYS = (
+    "latest_version",
+    "download_url",
+    "is_newer",
+)
+
 
 def get_mode(explicit: Optional[str] = None) -> str:
     mode = (explicit or os.environ.get("DEMO_CLAUDE_MODE") or "replay").lower()
@@ -383,3 +391,239 @@ def research_and_learn(
         # Deterministic fallback so the demo can still proceed.
         entry_id = _apply_catalog_result(analysis, {})
         return {"entry_id": entry_id, "mode": "error-fallback"}
+
+
+# === Version-check brain (the "refresh" — spec §2) ==========================
+#
+# Given an app's known source URL and currently-deployed version, ask the model
+# what the latest available version is. Returns a small structured result; the
+# caller (the refresh endpoint or the daily Beat task) decides what to do with
+# ``is_newer``. This is MORE deterministic than full packaging research (one
+# focused lookup, no file authoring), so ``live`` is lower-risk here — but the
+# same three modes apply.
+
+
+def _version_check_prompt(app_label: str, current_version: str, source_url: str) -> str:
+    """Focused version-check prompt (NOT a full packaging research run)."""
+    return (
+        "You are tracking new releases of a Windows application we manage in "
+        "Microsoft Intune. Check the vendor source and report the latest "
+        "available version and its direct download URL.\n\n"
+        f"Application: {app_label}\n"
+        f"Currently deployed version: {current_version or '(unknown)'}\n"
+        f"Known source URL: {source_url or '(none on file)'}\n\n"
+        "Account for the vendor's version taxonomy (e.g. '2024 R2' vs "
+        "'2024.2', build suffixes, release channels) when deciding what the "
+        "latest version is and whether it is newer than the deployed one.\n\n"
+        "When done, emit EXACTLY ONE fenced json block as your final message "
+        "(no prose after it):\n"
+        "```json\n"
+        "{\n"
+        '  "latest_version": "...",\n'
+        '  "download_url": "...",\n'
+        '  "is_newer": true\n'
+        "}\n"
+        "```\n"
+    )
+
+
+def _parse_version_result(text: str) -> Optional[Dict[str, Any]]:
+    """Extract the last fenced ```json block and keep only version-check keys."""
+    if not text:
+        return None
+    blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    candidate = blocks[-1] if blocks else None
+    if candidate is None:
+        m = re.findall(r"(\{(?:[^{}]|\{[^{}]*\})*\})", text, re.DOTALL)
+        candidate = m[-1] if m else None
+    if not candidate:
+        return None
+    try:
+        obj = json.loads(candidate)
+    except (ValueError, TypeError):
+        return None
+    return {k: obj.get(k) for k in _VERSION_KEYS if k in obj}
+
+
+def _decide_is_newer(latest_version: Optional[str], current_version: Optional[str],
+                     model_claim: Any) -> bool:
+    """Authoritative is-newer decision.
+
+    Prefer a real version comparison over the model's self-reported flag: if we
+    can parse both versions, ``compare_catalog_versions`` wins; only when we
+    can't (missing/garbage version) do we trust the model's ``is_newer`` claim.
+    """
+    from autopackager.utils.version_comparison import compare_catalog_versions
+
+    if latest_version and current_version:
+        try:
+            return compare_catalog_versions(latest_version, current_version) > 0
+        except Exception:  # noqa: BLE001 -- never let comparison crash a check
+            pass
+    return bool(model_claim)
+
+
+def _version_fixture_for(slug: str) -> Optional[Path]:
+    """Pick a replay fixture for a version check, generic fallback last."""
+    candidates = []
+    clean = re.sub(r"[^a-z0-9]+", "-", (slug or "").lower()).strip("-")
+    if clean:
+        candidates.append(_FIXTURES / f"version_check_{clean}.ndjson")
+    candidates.append(_FIXTURES / "version_check_generic.ndjson")
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def _run_version_replay(job_id: Any, slug: str) -> Dict[str, Any]:
+    """Stream a captured version-check run; final line carries version_result."""
+    fixture = _version_fixture_for(slug)
+    result: Dict[str, Any] = {}
+    if fixture is None:
+        if job_id is not None:
+            events.publish_claude_event(
+                job_id, "No version-check replay fixture found.", level="warn")
+        return result
+    if job_id is not None:
+        events.publish_claude_event(
+            job_id, f"[replay] streaming version check: {fixture.name}")
+    for line in fixture.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if "version_result" in obj:
+            result = obj["version_result"] or {}
+            continue
+        delay = obj.get("delay_ms", 300)
+        time.sleep(min(max(delay, 0), 4000) / 1000.0)
+        if job_id is not None:
+            events.publish_claude_event(
+                job_id, obj.get("text", ""), level=obj.get("level", "info"))
+    return {k: result.get(k) for k in _VERSION_KEYS if k in result}
+
+
+def _run_version_live(job_id: Any, app_label: str, current_version: str,
+                      source_url: str) -> Dict[str, Any]:
+    """Live version check. Prefers the Agent SDK, falls back to the CLI.
+
+    Read-only by intent: the model only needs to read the vendor page, so we
+    don't grant Write. Tolerant of a missing engine (returns ``{}``).
+    """
+    prompt = _version_check_prompt(app_label, current_version, source_url)
+    collected: list[str] = []
+
+    # SDK path
+    try:
+        from claude_agent_sdk import query, ClaudeAgentOptions  # type: ignore
+        import asyncio
+
+        if job_id is not None:
+            events.publish_claude_event(job_id, "[live] checking vendor source…")
+        options = ClaudeAgentOptions(allowed_tools=["Read", "Bash"], cwd=str(SANDBOX_DIR))
+
+        async def _go():
+            async for message in query(prompt=prompt, options=options):
+                text = _stringify_sdk_message(message)
+                if text:
+                    collected.append(text)
+                    if job_id is not None:
+                        events.publish_claude_event(job_id, text)
+
+        asyncio.run(_go())
+        return _parse_version_result("\n".join(collected)) or {}
+    except ImportError:
+        pass  # SDK not installed — fall through to CLI
+
+    # CLI fallback
+    cmd = [
+        "claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
+        "--allowedTools", "Read,Bash",
+    ]
+    if job_id is not None:
+        events.publish_claude_event(job_id, "[live] launching version check…")
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=str(SANDBOX_DIR), stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1,
+        )
+    except FileNotFoundError:
+        if job_id is not None:
+            events.publish_claude_event(
+                job_id, "research engine not found on PATH.", level="error")
+        return {}
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        raw = raw.strip()
+        if not raw:
+            continue
+        line_text = _render_ndjson_line(raw)
+        if line_text:
+            collected.append(line_text)
+            if job_id is not None:
+                events.publish_claude_event(job_id, line_text)
+    proc.wait(timeout=10)
+    return _parse_version_result("\n".join(collected)) or {}
+
+
+def check_version(
+    app_label: str,
+    current_version: Optional[str],
+    source_url: Optional[str],
+    *,
+    mode: Optional[str] = None,
+    job_id: Any = None,
+    slug: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Check whether a newer version of ``app_label`` exists upstream.
+
+    Returns ``{"latest_version", "download_url", "is_newer", "current_version",
+    "mode"}``. Never raises — a bridge failure returns ``is_newer=False`` so the
+    caller treats it as "up to date / inconclusive" rather than crashing.
+
+    ``job_id`` is OPTIONAL: when provided, research lines + the AI lamp are
+    streamed to that job's SSE channel (used by the daily Beat task if it ever
+    streams). The interactive refresh endpoint drives the lamp client-side and
+    passes ``job_id=None``.
+    """
+    mode = get_mode(mode)
+    slug = slug or app_label
+    base = {
+        "latest_version": None, "download_url": None, "is_newer": False,
+        "current_version": current_version, "mode": mode,
+    }
+    if mode == "off":
+        return base
+
+    if job_id is not None:
+        events.publish_lamp(job_id, "thinking", "checking vendor source…")
+    try:
+        if mode == "replay":
+            result = _run_version_replay(job_id, slug)
+        else:  # live
+            result = _run_version_live(job_id, app_label, current_version or "", source_url or "")
+        latest = (result.get("latest_version") or "").strip() or None
+        is_newer = _decide_is_newer(latest, current_version, result.get("is_newer"))
+        out = {
+            "latest_version": latest,
+            "download_url": (result.get("download_url") or "").strip() or None,
+            "is_newer": is_newer,
+            "current_version": current_version,
+            "mode": mode,
+        }
+        if job_id is not None:
+            msg = (f"New version available: {latest} (deployed {current_version})"
+                   if is_newer else f"Up to date ({current_version or 'unknown'}).")
+            events.publish_claude_event(job_id, msg)
+            events.publish_lamp(job_id, "ready", "authenticated · standing by")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Version check failed", app=app_label, error=str(exc))
+        if job_id is not None:
+            events.publish_claude_event(job_id, f"Version check error: {exc}", level="error")
+            events.publish_lamp(job_id, "error", "version check failed")
+        return base

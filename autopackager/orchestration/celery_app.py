@@ -46,6 +46,10 @@ discovery_schedule_config = config.get('discovery_schedule', {})
 discovery_enabled = discovery_schedule_config.get('enabled', False)
 discovery_interval_hours = discovery_schedule_config.get('interval_hours', 24)
 
+version_check_config = config.get('version_check_schedule', {})
+version_check_enabled = version_check_config.get('enabled', False)
+version_check_interval_hours = version_check_config.get('interval_hours', 24)
+
 ring_promotion_config = config.get('ring_promotion', {})
 ring_promotion_enabled = (
     ring_promotion_config.get('enabled', False)
@@ -69,6 +73,15 @@ if discovery_enabled:
     celery_app.conf.beat_schedule['continuous-catalog-discovery'] = {
         'task': 'autopackager.continuous_catalog_discovery',
         'schedule': schedule(run_every=discovery_interval_hours * 3600.0),  # Convert hours to seconds
+        'options': {'queue': 'default'}
+    }
+
+# Add scheduled software version check if enabled (demo 'refresh' brain, §2).
+# Detection-only — flags newer versions; upgrades stay operator-gated.
+if version_check_enabled:
+    celery_app.conf.beat_schedule['version-check-monitored-apps'] = {
+        'task': 'autopackager.check_app_versions',
+        'schedule': schedule(run_every=version_check_interval_hours * 3600.0),
         'options': {'queue': 'default'}
     }
 

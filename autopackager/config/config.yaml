@@ -102,6 +102,15 @@ ring_promotion:
   # How often the Celery Beat scheduler runs the automatic promotion check.
   check_interval_hours: 6
 
+# Scheduled software version check (demo "refresh" brain — the daily half).
+# Detection-only: flags managed apps whose vendor source has a newer version.
+# It NEVER auto-packages or auto-deploys; upgrades stay operator-gated through
+# the demo console. The check honours DEMO_CLAUDE_MODE (replay | live | off).
+# Disabled by default — opt in for rehearsal/standing monitoring.
+version_check_schedule:
+  enabled: false
+  interval_hours: 24
+
 # Paths
 paths:
   downloads: "data/downloads"

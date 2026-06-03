@@ -345,23 +345,54 @@ class GraphAPIClient:
     # Group assignment
     # ---------------------------------------------------------------------------
 
-    def assign_app_to_group(self, app_id, group_id, intent="required"):
-        """Assign an app to an Entra ID group"""
-        logger.info("Assigning app to group", app_id=app_id, group_id=group_id, intent=intent)
+    def assign_app_to_group(self, app_id, group_id, intent="required", settings=None):
+        """Assign an app to an Entra ID group.
 
-        assignment_data = {
-            "mobileAppAssignments": [
-                {
-                    "target": {
-                        "@odata.type": "#microsoft.graph.groupAssignmentTarget",
-                        "groupId": group_id
-                    },
-                    "intent": intent
-                }
-            ]
+        Args:
+            app_id: Win32 app id.
+            group_id: target Entra group id.
+            intent: ``required`` | ``available`` | ``uninstall``.
+            settings: optional ``mobileAppAssignmentSettings`` dict attached to
+                the assignment. For Win32 apps this is a
+                ``#microsoft.graph.win32LobAppAssignmentSettings`` carrying e.g.
+                ``autoUpdateSettings.autoUpdateSupersededApps='enabled'`` — the
+                flag that makes a superseded install actually auto-upgrade on
+                already-targeted devices (see ``mobileAppSupersedence`` /
+                ``supersedenceType='update'``). Omitted callers are unchanged.
+        """
+        logger.info(
+            "Assigning app to group",
+            app_id=app_id, group_id=group_id, intent=intent,
+            with_settings=bool(settings),
+        )
+
+        assignment = {
+            "target": {
+                "@odata.type": "#microsoft.graph.groupAssignmentTarget",
+                "groupId": group_id
+            },
+            "intent": intent
         }
+        if settings:
+            assignment["settings"] = settings
+
+        assignment_data = {"mobileAppAssignments": [assignment]}
 
         return self.post(f"deviceAppManagement/mobileApps/{app_id}/assign", assignment_data)
+
+    @staticmethod
+    def win32_auto_update_settings(auto_update_superseded=True):
+        """Build a ``win32LobAppAssignmentSettings`` block that enables (or
+        disables) auto-update of superseded apps for a Win32 assignment.
+
+        Returns the dict to pass as ``assign_app_to_group(..., settings=...)``.
+        """
+        return {
+            "@odata.type": "#microsoft.graph.win32LobAppAssignmentSettings",
+            "autoUpdateSettings": {
+                "autoUpdateSupersededApps": "enabled" if auto_update_superseded else "notConfigured",
+            },
+        }
 
     def get_group(self, group_id):
         """Get Entra ID group information"""

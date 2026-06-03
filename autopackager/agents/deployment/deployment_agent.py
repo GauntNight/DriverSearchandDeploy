@@ -145,11 +145,21 @@ class DeploymentAgent:
         # Honour an opt-out for safe test publishes against production tenants:
         # callers can set metadata['no_assignment']=True to skip ring assignment.
         skip_assignment = bool(job.job_metadata.get('no_assignment'))
+        # The demo's refresh→upgrade flow resolves its own assignment scope
+        # (mirror the superseded app's groups for "all existing users", or just
+        # Ring 0 for "test ring only") and asks for autoUpdateSupersededApps so
+        # the supersedence upgrade actually flows to already-targeted devices.
+        demo_assignment = job.job_metadata.get('demo_assignment')
+        demo_assigned_label = None
         if skip_assignment:
             logger.info(
                 "Skipping ring assignment (no_assignment flag set)",
                 job_id=job.id,
                 intune_app_id=intune_app_id,
+            )
+        elif demo_assignment:
+            demo_assigned_label = self._assign_demo_scope(
+                intune_app_id, package, demo_assignment
             )
         else:
             self._assign_to_ring(intune_app_id, package, ring_index=0)
@@ -167,6 +177,8 @@ class DeploymentAgent:
 
         if skip_assignment:
             ring_label = 'unassigned'
+        elif demo_assigned_label:
+            ring_label = demo_assigned_label
         else:
             ring_label = self.deployment_rings[0]['name'] if self.deployment_rings else 'Unknown'
 
@@ -950,6 +962,60 @@ class DeploymentAgent:
         except Exception as e:
             logger.error("Failed to assign to ring", error=str(e))
             raise
+
+    def _assign_demo_scope(self, intune_app_id: str, package: Package, demo_assignment: Dict) -> str:
+        """Assign a (supersedence) upgrade to the demo-chosen audience.
+
+        ``demo_assignment`` shape (built by ``demo.intake.enqueue_upgrade_job``)::
+
+            {"group_ids": ["<guid>", ...], "auto_update_superseded": bool,
+             "scope_label": "All existing users" | "Test ring only"}
+
+        For each group we assign with ``intent='required'`` and, when
+        ``auto_update_superseded`` is set, the ``win32LobAppAssignmentSettings``
+        that enables ``autoUpdateSupersededApps`` — the flag that lets the new
+        version auto-replace the superseded one on devices that already have it.
+        A ``Deployment`` row is written per group (ring name resolved from
+        config where the group is a known ring, else the raw group id).
+
+        Returns a human-readable label for the deploy() result.
+        """
+        group_ids = [g for g in (demo_assignment.get('group_ids') or []) if g]
+        auto_update = bool(demo_assignment.get('auto_update_superseded'))
+        scope_label = demo_assignment.get('scope_label') or 'demo scope'
+
+        if not group_ids:
+            logger.warning("Demo assignment had no group ids; falling back to Ring 0")
+            self._assign_to_ring(intune_app_id, package, ring_index=0)
+            return self.deployment_rings[0]['name'] if self.deployment_rings else 'Ring 0'
+
+        graph_client = self._get_graph_client()
+        settings = graph_client.win32_auto_update_settings(True) if auto_update else None
+        # Map known ring group ids back to their config ring dict for nice
+        # Deployment records; unknown groups get a synthetic ring dict.
+        ring_by_group = {r.get('entra_group_id'): r for r in self.deployment_rings}
+
+        for gid in group_ids:
+            try:
+                graph_client.assign_app_to_group(
+                    intune_app_id, gid, intent='required', settings=settings,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error("Failed demo-scope assignment", group_id=gid, error=str(e))
+                raise
+            ring = ring_by_group.get(gid) or {
+                'ring_id': 'demo', 'name': scope_label, 'entra_group_id': gid,
+            }
+            self._create_deployment_record(package.id, intune_app_id, ring)
+
+        logger.info(
+            "Demo-scope assignment complete",
+            intune_app_id=intune_app_id,
+            groups=len(group_ids),
+            auto_update_superseded=auto_update,
+            scope=scope_label,
+        )
+        return f"{scope_label} ({len(group_ids)} group{'s' if len(group_ids) != 1 else ''})"
 
     def remove_app_assignment(self, intune_app_id: str, group_id: str):
         """Remove failed Intune app assignment from Entra group"""
