@@ -205,6 +205,7 @@
       fd.append("file", file);
       fd.append("app_id", pu.app_id);
       fd.append("scope", pu.scope);
+      fd.append("force", "true");  // same upgrade resuming after a manual drop
       await postUpgradeFile(fd, `upgrade ← ${file.name}`);
       return;
     }
@@ -472,10 +473,14 @@
     const app = scopeApp;
     closeScopeDialog();
     if (!app) return;
-    const meta = appMeta.get(app.id) || {};
     gateMode = $("gate").checked;
     // Hand off to the pipeline + server-derived state from here.
     badgeOverride.delete(app.id);
+    await postUpgrade(app, scope, false);
+  }
+
+  async function postUpgrade(app, scope, force) {
+    const meta = appMeta.get(app.id) || {};
     try {
       const r = await fetch("/api/demo/intune/upgrade", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -485,10 +490,23 @@
           old_entry_id: meta.entry_id || null,
           mode: $("mode").value || undefined,
           gate: gateMode,
+          force: !!force,
         }),
       });
       const data = await r.json();
       if (data.error) { flashConsoleError(data.error); return; }
+      // Soft concurrency guard: an upgrade for this product is already running.
+      // Warn and let the operator decide — they can proceed deliberately.
+      if (data.in_flight && !force) {
+        const ok = window.confirm(
+          data.warning || "An upgrade for this app is already in progress. Start another anyway?");
+        if (!ok) {
+          appendLine({ source: "system", level: "warn",
+            text: "Upgrade cancelled — one is already in progress for this app." });
+          return;
+        }
+        return postUpgrade(app, scope, true);
+      }
       if (data.awaiting_upload) {
         pendingUpgrade = { app_id: app.id, scope };
         appendLine({ source: "system", level: "warn", text:

@@ -365,5 +365,41 @@ class TestUninstallLadder(unittest.TestCase):
         self.assertEqual(conf.call_count, 2)
 
 
+# --- Soft concurrent-upgrade guard -----------------------------------------
+
+class TestInflightUpgradeGuard(unittest.TestCase):
+    def _catalog(self):
+        from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+        return Catalog(entries=[CatalogEntry(
+            id="7-zip", type="msi", install_command_template="x",
+            verified_versions=[{"product_version": "26.00.00.0", "status": "superseded",
+                                "verified_intune_app_id": "app-old"}],
+        )])
+
+    def _job(self, state_value):
+        j = Mock()
+        j.id = 42
+        j.state = Mock()
+        j.state.value = state_value
+        j.job_metadata = {"_upgrade": {"old_app_id": "app-old", "scope": "test"}}
+        return j
+
+    def test_detects_inflight_upgrade(self):
+        from demo import router
+        engine = Mock()
+        engine.get_all_jobs.return_value = [self._job("deploying")]
+        with patch("autopackager.utils.installer_catalog.load_catalog", return_value=self._catalog()), \
+             patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine):
+            self.assertEqual(router._inflight_upgrade_for_app("app-old"), 42)
+
+    def test_completed_upgrade_is_not_inflight(self):
+        from demo import router
+        engine = Mock()
+        engine.get_all_jobs.return_value = [self._job("completed")]
+        with patch("autopackager.utils.installer_catalog.load_catalog", return_value=self._catalog()), \
+             patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine):
+            self.assertIsNone(router._inflight_upgrade_for_app("app-old"))
+
+
 if __name__ == "__main__":
     unittest.main()

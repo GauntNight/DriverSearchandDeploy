@@ -103,6 +103,48 @@ def _check_version_sync(body: dict, app_id: Optional[str]) -> dict:
     return result
 
 
+_TERMINAL_JOB_STATES = {"completed", "failed", "cancelled"}
+
+
+def _inflight_upgrade_for_app(app_id: Optional[str]) -> Optional[int]:
+    """Return the job id of an IN-FLIGHT upgrade for the same product, or None.
+
+    Soft concurrency signal (not a lock): the demo lets the operator launch a
+    second upgrade of the same app on purpose if they really mean to, but we
+    warn first — a duplicate publish is almost always an accidental double-click
+    or two people driving the console at once. Matches by catalog entry (the
+    product line), falling back to the superseded app id.
+    """
+    if not app_id:
+        return None
+    try:
+        from autopackager.orchestration.engine import OrchestrationEngine
+        from autopackager.utils import installer_catalog
+
+        catalog = installer_catalog.load_catalog()
+        entry, _ = intune_view.find_entry_for_app_id(catalog, app_id)
+        target_entry = entry.id if entry else None
+
+        for j in OrchestrationEngine().get_all_jobs():
+            if (j.state.value if j.state else "") in _TERMINAL_JOB_STATES:
+                continue
+            md = j.job_metadata or {}
+            if "_upgrade" not in md and "supersedence_action" not in md:
+                continue
+            up = md.get("_upgrade") or {}
+            if up.get("old_app_id") == app_id:
+                return j.id
+            jeid = md.get("catalog_entry_id")
+            if not jeid and up.get("old_app_id"):
+                e2, _ = intune_view.find_entry_for_app_id(catalog, up["old_app_id"])
+                jeid = e2.id if e2 else None
+            if target_entry and jeid == target_entry:
+                return j.id
+    except Exception as exc:  # noqa: BLE001 — advisory only; never block the upgrade
+        logger.warning("In-flight upgrade check failed", error=str(exc))
+    return None
+
+
 @demo_router.post("/api/demo/intune/upgrade")
 async def api_upgrade(request: Request, background: BackgroundTasks):
     """Package + supersede + deploy a newer version (spec §3/§4).
@@ -134,6 +176,14 @@ async def api_upgrade(request: Request, background: BackgroundTasks):
                     {"error": f"Unsupported file type (got '{upload.filename}')."},
                     status_code=400,
                 )
+            if not _as_bool(form.get("force")):
+                existing = await asyncio.to_thread(_inflight_upgrade_for_app, app_id)
+                if existing:
+                    return {
+                        "in_flight": True, "existing_job_id": existing,
+                        "warning": (f"An upgrade for this app is already in progress "
+                                    f"(job #{existing}). Start another anyway?"),
+                    }
             data = await upload.read()
             saved = await asyncio.to_thread(intake.save_upload, upload.filename, data)
             job_id = await asyncio.to_thread(
@@ -152,6 +202,18 @@ async def api_upgrade(request: Request, background: BackgroundTasks):
             return JSONResponse({"error": "app_id required"}, status_code=400)
         if scope not in ("test", "all"):
             return JSONResponse({"error": "scope must be 'test' or 'all'"}, status_code=400)
+        # Soft concurrency guard (not a lock): warn if an upgrade for this
+        # product is already running; the client re-POSTs with force=true to
+        # proceed deliberately.
+        if not _as_bool(body.get("force")):
+            existing = await asyncio.to_thread(_inflight_upgrade_for_app, app_id)
+            if existing:
+                return {
+                    "in_flight": True,
+                    "existing_job_id": existing,
+                    "warning": (f"An upgrade for this app is already in progress "
+                                f"(job #{existing}). Start another anyway?"),
+                }
         if not download_url or not intake.is_known_installer(download_url):
             # No fetchable source — fall back to a manual drop.
             return {
