@@ -545,3 +545,80 @@ entries:
       line: temurin-jdk-21
       mode: generic
     notes: "Clean per-machine MSI; ProductName includes version ('Eclipse Temurin JDK with Hotspot 21.0.11+10 (x64)'), match on prefix. NOTE: the UpgradeCode differs per FEATURE line (21 vs 17 vs 8) -- this entry is the 21 line; add separate entries for other LTS lines. Set ADDLOCAL features (e.g. FeatureMain,FeatureEnvironment,FeatureJarFileRunWith) via --install-command if PATH/JAVA_HOME registration is wanted."
+
+  # ---- Developer tools: EXE installers (Inno/NSIS) ---------------
+  # Detection/uninstall values below are best-guess starting points;
+  # the local install validator installs each on the build machine,
+  # discovers the REAL Uninstall key from the ARP hive diff, and
+  # self-corrects the registry_version rule + QuietUninstallString back
+  # to the overlay on first publish. Promote the corrected agnostic
+  # rule into this baseline afterward.
+  - id: r-for-windows
+    type: exe
+    installer_family: inno_setup
+    distribution: standard
+    pe_company_name: "R Core Team"
+    pe_product_name: "R for Windows"
+    install_command_template: "{installer_filename} /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-"
+    uninstall_command_template: '"C:\Program Files\R\R-4.6.0\unins000.exe" /VERYSILENT /NORESTART'
+    detection_rules:
+    - kind: registry_version
+      key: HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\R for Windows 4.6.0_is1
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: true
+    information_url: "https://cran.r-project.org/bin/windows/base/"
+    description: "R statistical computing environment for Windows (Inno Setup, per-machine)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: r-for-windows
+      mode: generic
+    notes: "Inno Setup. PE product 'R for Windows <ver>' matched via substring 'R for Windows'. Uninstall/detection keys are version-specific (R installs to C:\\Program Files\\R\\R-<ver>); validator confirms/corrects on first publish."
+
+  - id: git-for-windows
+    type: exe
+    installer_family: inno_setup
+    distribution: standard
+    pe_company_name: "The Git Development Community"
+    pe_product_name: "Git"
+    install_command_template: "{installer_filename} /VERYSILENT /NORESTART /SP- /SUPPRESSMSGBOXES /NOCANCEL"
+    uninstall_command_template: '"C:\Program Files\Git\unins000.exe" /VERYSILENT /NORESTART'
+    detection_rules:
+    - kind: registry_version
+      key: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Git_is1
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+    information_url: "https://git-scm.com/download/win"
+    description: "Git for Windows -- Git distribution with Git Bash (Inno Setup, per-machine)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: git-for-windows
+      mode: generic
+    notes: "Inno Setup (it is NOT an MSI despite common assumption). Uninstall key 'Git_is1'; detection confirmed live (v2.54.0, Ring 0). HOST-INFRA HAZARD: on a build machine whose own tooling IS Git for Windows (e.g. the agent's git-bash at C:\\Program Files\\Git), the local install validator's install->verify->UNINSTALL cycle removes the live git the host depends on -- same class as never uninstalling the running PowerShell. The Intune publish is unaffected; only the build host's git breaks mid-validation (reinstall to recover). Consider gating local validation for host-infrastructure apps; until then, validate Git on a throwaway VM or expect to reinstall."
+
+  - id: rstudio-desktop
+    type: exe
+    installer_family: nsis
+    distribution: standard
+    pe_company_name: "Posit Software, PBC"
+    pe_product_name: "RStudio"
+    install_command_template: "{installer_filename} /S"
+    uninstall_command_template: '"C:\Program Files\RStudio\Uninstall RStudio.exe" /S'
+    detection_rules:
+    - kind: registry_version
+      key: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RStudio
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+    information_url: "https://posit.co/download/rstudio-desktop/"
+    description: "RStudio (Posit) Desktop IDE for R -- Electron build (NSIS, per-machine)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: rstudio-desktop
+      mode: generic
+    notes: "Electron/NSIS installer, silent /S. Pairs with r-for-windows. Detection/uninstall keys best-guess; validator confirms/corrects on first publish."
