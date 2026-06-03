@@ -40,6 +40,23 @@ IS_WINDOWS = sys.platform == "win32"
 # Registry roots we scan for an app's ARP (Add/Remove Programs) entry.
 _UNINSTALL_SUBPATH = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
 
+# Image names of vendor updater/stub processes that DETACH from the installer
+# process tree during a "silent" install — so killing the launched pid's tree
+# (``_kill_tree``) never sees them — and keep installing/relaunching in the
+# background. The canonical offender is Google's online stub (ChromeSetup.exe /
+# "Google Installer"), which exits immediately after spawning an elevated,
+# detached GoogleUpdater that downloads + installs the full browser, launches
+# it, and registers a self-relaunching task. After every install attempt the
+# validator reaps NEW instances of these. ``msiexec`` is deliberately absent —
+# it is the legitimate MSI engine and killing it mid-install corrupts state.
+_DETACHED_INSTALLER_NAMES = {
+    "googleupdate.exe",
+    "updater.exe",
+    "googleupdatesetup.exe",
+    "googleupdatecore.exe",
+    "googleupdatecomregistershell64.exe",
+}
+
 
 def _hive_consts():
     import winreg
@@ -114,12 +131,19 @@ class LocalInstallValidator:
 
         detection_rules = self._catalog_style_rules(package)
 
-        # 1) Snapshot ARP before install (for discovery via diff)
+        # 1) Snapshot ARP + running processes before install (ARP for
+        #    discovery-via-diff; processes so we can reap anything the installer
+        #    detaches from its own tree — see _reap_detached_installers).
         before = self._snapshot_uninstall_keys()
+        before_pids = self._running_by_name()
 
         # 2) Install
         self.emit(f"Install validation: installing {installer.name} silently…")
         rc, out = self._run(install_cmd, cwd=installer.parent, timeout=self.timeout)
+        # A consumer stub (e.g. ChromeSetup) exits fast after detaching an
+        # elevated updater that keeps installing in the background. Reap those
+        # now so a failed/forbidden installer can't quietly land on the box.
+        result["reaped_detached"] = self._reap_detached_installers(before_pids)
         result["install_rc"] = rc
         result["log"].append(f"install rc={rc}")
         # rc!=0 isn't always fatal (some installers return non-zero on success),
@@ -582,3 +606,61 @@ class LocalInstallValidator:
             )
         except Exception:  # noqa: BLE001
             pass
+
+    @staticmethod
+    def _running_by_name() -> Dict[str, List[int]]:
+        """Map lowercased image name -> [pid, ...] for running processes.
+
+        Pure ``tasklist`` (no psutil dependency); Windows-only, best-effort.
+        """
+        if os.name != "nt":
+            return {}
+        try:
+            out = subprocess.run(
+                ["tasklist", "/fo", "csv", "/nh"],
+                capture_output=True, text=True, timeout=20,
+            ).stdout or ""
+        except Exception:  # noqa: BLE001
+            return {}
+        procs: Dict[str, List[int]] = {}
+        for line in out.splitlines():
+            # CSV row: "ImageName","PID","SessionName","Session#","MemUsage"
+            cols = [c.strip().strip('"') for c in line.split('","')]
+            if len(cols) < 2:
+                continue
+            name = cols[0].strip('"').lower()
+            try:
+                pid = int(cols[1].strip('"').replace(",", ""))
+            except ValueError:
+                continue
+            procs.setdefault(name, []).append(pid)
+        return procs
+
+    def _reap_detached_installers(self, before: Dict[str, List[int]]) -> List[str]:
+        """Kill known detaching updater/stub processes spawned during install.
+
+        A consumer online stub (e.g. ChromeSetup.exe) exits immediately after
+        detaching an elevated updater, so it neither times out nor stays in the
+        launched process tree — ``_kill_tree`` can't see it. We snapshot
+        processes before the install and, after it, reap NEW instances of the
+        ``_DETACHED_INSTALLER_NAMES`` denylist (a pid present in ``before`` is
+        left alone — it was already running and isn't ours). Returns the list of
+        reaped ``name(pid)`` labels for logging/assertions.
+        """
+        if os.name != "nt":
+            return []
+        before_pids = {pid for pids in before.values() for pid in pids}
+        now = self._running_by_name()
+        reaped: List[str] = []
+        for name in _DETACHED_INSTALLER_NAMES:
+            for pid in now.get(name, []):
+                if pid in before_pids:
+                    continue  # already running pre-install — not from this attempt
+                self._kill_tree(pid)
+                reaped.append(f"{name}({pid})")
+        if reaped:
+            self.emit(
+                "Reaped detached installer/updater processes that escaped the "
+                f"install tree: {', '.join(reaped)}", "warn")
+            logger.warning("Reaped detached installers", procs=reaped)
+        return reaped

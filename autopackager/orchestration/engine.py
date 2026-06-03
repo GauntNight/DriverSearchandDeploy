@@ -117,9 +117,18 @@ class OrchestrationEngine:
         job_id: int,
         new_state: JobState,
         error_message: Optional[str] = None,
-        metadata_update: Optional[dict] = None
+        metadata_update: Optional[dict] = None,
+        software_title: Optional[str] = None,
+        vendor: Optional[str] = None,
     ) -> Job:
-        """Update job state"""
+        """Update job state.
+
+        ``software_title``/``vendor`` are optional column updates used when a
+        job's identity changes after creation — e.g. the demo's consumer→
+        enterprise substitution re-points a job at a different installer, so the
+        deployed Intune app's displayName (sourced from ``software_title`` via
+        ``package.name``) must follow the substitute, not the consumer stub.
+        """
         logger.info("Updating job state", job_id=job_id, new_state=new_state.value)
 
         with db_session_scope() as session:
@@ -133,6 +142,11 @@ class OrchestrationEngine:
 
             if error_message:
                 job.error_message = error_message
+
+            if software_title:
+                job.software_title = software_title
+            if vendor:
+                job.vendor = vendor
 
             if new_state == JobState.COMPLETED:
                 job.completed_at = datetime.utcnow()

@@ -435,3 +435,51 @@ entries:
     categories: ["Productivity"]
     min_os_version: "1607"
     notes: "Consumer/standard Firefox EXE (7-Zip SFX). Carried ONLY to detect the mistake and redirect to firefox-msi. Intentionally has no detection_rules -- it must never publish; the substitution intercepts first. supersedence.mode=none (never a supersedence target)."
+
+  # ---- Google Chrome: consumer-vs-enterprise taxonomy ------------
+  # Same shape as Firefox above. The CONSUMER download (ChromeSetup.exe)
+  # is the generic Google Updater online STUB: it ignores silent
+  # switches, detaches an elevated GoogleUpdater that downloads +
+  # installs the full browser, LAUNCHES it, and registers a
+  # self-relaunching updater task/services -- a poor, anti-managed
+  # packaging target. The ENTERPRISE MSI is the correct one.
+  # `chrome-consumer` carries the caveat + a `prefer_entry_id` redirect
+  # so intake fetches the MSI on the user's behalf. See
+  # packaging-knowledge/02 (taxonomy) and /05 (Chrome war story).
+  - id: chrome-enterprise
+    type: msi
+    upgrade_code: "{C1DFDF69-5945-32F2-A35E-EE94C99C7CF4}"
+    product_code: "{E916724D-4DCC-367B-A13C-A98DBE5B923D}"
+    product_name_pattern: "Google Chrome"
+    publisher: "Google LLC"
+    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    uninstall_command_template: "msiexec /x {E916724D-4DCC-367B-A13C-A98DBE5B923D} /qn /norestart"
+    installer_family: msi
+    distribution: enterprise
+    canonical_download_url: "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi"
+    supersedence:
+      line: chrome
+      mode: generic
+    information_url: "https://chromeenterprise.google/browser/download/"
+    description: "Google Chrome (Enterprise MSI) -- the supported managed-deployment build. Silent via msiexec /qn; UpgradeCode is stable across versions for supersedence."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "Enterprise MSI is the correct packaging target for Chrome. canonical_download_url is Google's version-agnostic enterprise MSI link; intake substitutes this for the consumer stub (chrome-consumer). ProductCode changes per version (recorded value is whatever shipped when this entry was authored, {E916724D-...}); the pipeline reads the real ProductCode from the MSI at packaging time. For managed fleets, suppress Chrome's built-in auto-update via policy."
+
+  - id: chrome-consumer
+    type: exe
+    installer_family: custom
+    distribution: standard
+    pe_company_name: "Google LLC"
+    pe_product_name: "Google Installer (x86)"
+    install_command_template: "{installer_filename} /silent /install"
+    prefer_entry_id: chrome-enterprise
+    consumer_caveats: "Consumer 'ChromeSetup.exe' is Google's online updater STUB (OriginalFilename UpdaterSetup.exe; PE product name 'Google Installer (x86)'). It ignores standard silent switches (/VERYSILENT, /S), detaches an elevated GoogleUpdater that downloads + installs the full Chrome browser and LAUNCHES it, and registers a self-relaunching updater scheduled task + services -- all of which fight managed deployment. Use the enterprise MSI (chrome-enterprise): it installs silently via msiexec /qn, exposes a stable UpgradeCode for supersedence, and respects enterprise policy."
+    canonical_download_url: "https://dl.google.com/chrome/install/ChromeSetup.exe"
+    supersedence:
+      mode: none
+    information_url: "https://www.google.com/chrome/"
+    description: "Google Chrome (consumer online stub). NOT a managed-deployment target -- see consumer_caveats; intake substitutes chrome-enterprise."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "ChromeSetup.exe is the GENERIC Google Updater bootstrapper (PE product name 'Google Installer (x86)', OriginalFilename UpdaterSetup.exe) -- the same stub Google ships for several products, so this PE match is Chrome-assuming (Chrome is by far the dominant case). Carried ONLY to detect the mistake and redirect to chrome-enterprise. Intentionally has no detection_rules -- it must never publish; the substitution intercepts first. supersedence.mode=none (never a supersedence target)."

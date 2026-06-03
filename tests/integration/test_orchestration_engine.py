@@ -446,6 +446,51 @@ class TestOrchestrationEngineJobStateManagement:
         assert updated_job.job_metadata['download_url'] == 'https://example.com/driver.exe'
 
     @patch('autopackager.orchestration.engine.get_config')
+    def test_update_job_state_updates_title_and_vendor(self, mock_get_config, db_session):
+        """software_title/vendor can be re-pointed (consumer→enterprise substitution).
+
+        The demo creates the job row from the consumer stub then substitutes the
+        enterprise installer; the deployed app's displayName (← software_title)
+        must follow the substitute, not the stub.
+        """
+        mock_get_config.return_value = {
+            'jobs': {'max_retries': 3, 'retry_delay_seconds': 60, 'concurrent_jobs': 5}
+        }
+        engine = OrchestrationEngine()
+        job = engine.create_job(
+            job_type=JobType.NEW_SOFTWARE,
+            software_title='Google Installer (x86)',  # consumer stub PE name
+            vendor='Google LLC',
+        )
+
+        updated = engine.update_job_state(
+            job.id, JobState.PENDING,
+            metadata_update={'target_version': '149.0.7827.54'},
+            software_title='Google Chrome',  # substituted enterprise MSI name
+            vendor='Google LLC',
+        )
+
+        assert updated.software_title == 'Google Chrome'
+        assert updated.vendor == 'Google LLC'
+        assert updated.job_metadata['target_version'] == '149.0.7827.54'
+
+    @patch('autopackager.orchestration.engine.get_config')
+    def test_update_job_state_leaves_title_when_not_given(self, mock_get_config, db_session):
+        """Omitting software_title/vendor must not clobber the existing values."""
+        mock_get_config.return_value = {
+            'jobs': {'max_retries': 3, 'retry_delay_seconds': 60, 'concurrent_jobs': 5}
+        }
+        engine = OrchestrationEngine()
+        job = engine.create_job(
+            job_type=JobType.NEW_SOFTWARE, software_title='Keep Me', vendor='Acme',
+        )
+
+        updated = engine.update_job_state(job.id, JobState.DISCOVERING)
+
+        assert updated.software_title == 'Keep Me'
+        assert updated.vendor == 'Acme'
+
+    @patch('autopackager.orchestration.engine.get_config')
     def test_update_job_state_to_completed_sets_timestamp(self, mock_get_config, db_session):
         """Test that updating to COMPLETED sets completed_at timestamp"""
         mock_get_config.return_value = {

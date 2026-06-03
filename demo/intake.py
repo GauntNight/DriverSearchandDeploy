@@ -352,6 +352,14 @@ def update_software_metadata(job_id: int, analysis: Analysis) -> None:
     engine.update_job_state(
         job_id, JobState.PENDING,
         metadata_update=_build_software_job_metadata(analysis),
+        # Re-point the job's identity at the (re-)resolved installer so the
+        # deployed app's displayName/vendor follow it — critical on the
+        # substitution path, where the row was created from the consumer stub
+        # (e.g. "Google Installer (x86)") but we deploy the enterprise MSI
+        # ("Google Chrome"). The displayVersion follows via target_version in
+        # the metadata above.
+        software_title=(analysis.product_name or Path(analysis.filename).stem),
+        vendor=(analysis.publisher or None),
     )
 
 
