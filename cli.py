@@ -129,7 +129,7 @@ def _try_unwrap_installer(installer_path: Optional[str]) -> Optional[str]:
         except PEParseError:
             pe_meta = None
 
-    entry = installer_catalog.load_catalog().match_exe(pe_metadata=pe_meta, sha256=sha)
+    entry = installer_catalog.load_catalog().match_exe(pe_metadata=pe_meta, sha256=sha, filename=path.name)
     if not entry or entry.installer_family not in ('wrapped_msi', 'wrapped_zip'):
         return None
 
@@ -426,7 +426,8 @@ def _create_exe_software_job(install_command, installer_path, download_url, name
             console.print(f"[yellow]⚠[/yellow] Could not read PE metadata: {e}")
 
     catalog = installer_catalog.load_catalog()
-    catalog_entry = catalog.match_exe(pe_metadata=pe_meta, sha256=pe_sha256)
+    catalog_entry = catalog.match_exe(pe_metadata=pe_meta, sha256=pe_sha256,
+                                      filename=Path(installer_path).name if installer_path else None)
 
     if not catalog_entry:
         console.print(
@@ -594,7 +595,7 @@ def inspect_exe_command(exe_path):
     console.print(table)
 
     catalog = installer_catalog.load_catalog()
-    entry = catalog.match_exe(pe_metadata=metadata.to_dict(), sha256=sha)
+    entry = catalog.match_exe(pe_metadata=metadata.to_dict(), sha256=sha, filename=Path(exe_path).name)
     if entry:
         console.print(
             f"\n[bold green]Catalog hit:[/bold green] {entry.id} "

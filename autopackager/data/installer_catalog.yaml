@@ -622,3 +622,55 @@ entries:
       line: rstudio-desktop
       mode: generic
     notes: "Electron/NSIS installer, silent /S. Pairs with r-for-windows. Detection/uninstall keys best-guess; validator confirms/corrects on first publish."
+
+  # ---- Visual Studio Code: consumer-vs-enterprise taxonomy -------
+  # VS Code ships a per-USER installer (VSCodeUserSetup-*.exe; installs to
+  # %LOCALAPPDATA%, auto-updates, the default download) and a per-MACHINE
+  # SYSTEM installer (VSCodeSetup-*.exe). BOTH report identical PE metadata
+  # (Microsoft Corporation / Visual Studio Code), so they're disambiguated by
+  # `filename_pattern` (see match_exe): code-user is gated to 'vscodeusersetup'
+  # and redirects to code-system; code-system (no pattern) is the managed
+  # target and catches the system installer + the substitution-fetched file.
+  - id: code-system
+    type: exe
+    installer_family: inno_setup
+    distribution: enterprise
+    pe_company_name: "Microsoft Corporation"
+    pe_product_name: "Visual Studio Code"
+    install_command_template: "{installer_filename} /VERYSILENT /NORESTART /MERGETASKS=!runcode"
+    uninstall_command_template: '"C:\Program Files\Microsoft VS Code\unins000.exe" /VERYSILENT /NORESTART'
+    detection_rules:
+    - kind: registry_version
+      key: HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{EA457B21-F73E-494C-ACAB-524FDE069978}_is1
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: true
+    canonical_download_url: "https://update.code.visualstudio.com/latest/win32-x64/stable"
+    information_url: "https://code.visualstudio.com/docs/setup/windows"
+    description: "Visual Studio Code (per-machine SYSTEM build) -- the managed-deployment target. Installs for all users; disable auto-update via policy ('update.mode': 'none')."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: vscode
+      mode: generic
+    notes: "System (per-machine) Inno installer. Detection key is the system AppId _is1 (best-guess; validator confirms/corrects). No filename_pattern -- this entry catches the system installer AND the file fetched by code-user substitution (saved as 'code-system.exe'). Auto-update should be disabled via policy for managed fleets."
+
+  - id: code-user
+    type: exe
+    installer_family: inno_setup
+    distribution: standard
+    pe_company_name: "Microsoft Corporation"
+    pe_product_name: "Visual Studio Code"
+    filename_pattern: "vscodeusersetup"
+    install_command_template: "{installer_filename} /VERYSILENT /NORESTART /MERGETASKS=!runcode"
+    prefer_entry_id: code-system
+    consumer_caveats: "This is the per-USER VS Code installer (VSCodeUserSetup-*.exe). It installs into %LOCALAPPDATA% for a single profile and auto-updates itself, which fights managed deployment (each user gets a private copy; the IME's SYSTEM context can't see or service a per-user install). Use the per-machine SYSTEM build (code-system): it installs for all users and can be version-pinned and superseded centrally."
+    canonical_download_url: "https://update.code.visualstudio.com/latest/win32-x64-user/stable"
+    information_url: "https://code.visualstudio.com/docs/setup/windows"
+    description: "Visual Studio Code (per-user build). NOT a managed-deployment target -- see consumer_caveats; intake substitutes code-system."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      mode: none
+    notes: "Per-user installer, disambiguated from the system build ONLY by filename (identical PE metadata) via filename_pattern 'vscodeusersetup'. Carried to detect the per-user mistake and redirect to code-system. Intentionally NO detection_rules -- it must never publish; the substitution intercepts first. supersedence.mode=none."
