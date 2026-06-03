@@ -483,3 +483,65 @@ entries:
     categories: ["Productivity"]
     min_os_version: "1607"
     notes: "ChromeSetup.exe is the GENERIC Google Updater bootstrapper (PE product name 'Google Installer (x86)', OriginalFilename UpdaterSetup.exe) -- the same stub Google ships for several products, so this PE match is Chrome-assuming (Chrome is by far the dominant case). Carried ONLY to detect the mistake and redirect to chrome-enterprise. Intentionally has no detection_rules -- it must never publish; the substitution intercepts first. supersedence.mode=none (never a supersedence target)."
+
+  # ---- Developer tools: clean per-machine MSIs -------------------
+  # Well-behaved MSI installers (silent via msiexec /qn, ProductCode
+  # detection, stable UpgradeCode for supersedence). ProductName carries
+  # the version, so product_name_pattern is the stable prefix; the
+  # pipeline reads the real ProductCode from the MSI at packaging time.
+  - id: go-lang
+    type: msi
+    installer_family: msi
+    distribution: standard
+    upgrade_code: "{22EA7650-4AC6-4001-BF29-F4B8775DB1C0}"
+    product_code: "{DE47EEF9-51FE-4DE0-BB80-B2FC787772A3}"
+    product_name_pattern: "Go Programming Language"
+    publisher: "Google Inc."
+    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    uninstall_command_template: "msiexec /x {DE47EEF9-51FE-4DE0-BB80-B2FC787772A3} /qn /norestart"
+    information_url: "https://go.dev/dl/"
+    description: "The Go programming language toolchain (per-machine MSI)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: go-lang
+      mode: generic
+    notes: "Clean per-machine MSI. ProductName includes the version (e.g. 'Go Programming Language amd64 go1.26.4'); match on the stable prefix. UpgradeCode is stable across versions for supersedence."
+
+  - id: cmake
+    type: msi
+    installer_family: msi
+    distribution: standard
+    upgrade_code: "{8FFD1D72-B7F1-11E2-8EE5-00238BCA4991}"
+    product_code: "{6A115A5D-0429-4524-87F1-2E7FB10EE520}"
+    product_name_pattern: "CMake"
+    publisher: "Kitware"
+    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    uninstall_command_template: "msiexec /x {6A115A5D-0429-4524-87F1-2E7FB10EE520} /qn /norestart"
+    information_url: "https://cmake.org/download/"
+    description: "CMake cross-platform build-system generator (per-machine MSI)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: cmake
+      mode: generic
+    notes: "Clean per-machine MSI; ProductName is just 'CMake'. UpgradeCode stable across versions for supersedence. (Add ADDLOCAL/ADD_CMAKE_TO_PATH via --install-command if PATH registration is wanted.)"
+
+  - id: temurin-jdk-21
+    type: msi
+    installer_family: msi
+    distribution: enterprise
+    upgrade_code: "{C7371D5C-29EB-0885-C0E4-F8E3B955271F}"
+    product_code: "{9D450299-EAEA-400E-B520-B2F280B79DE4}"
+    product_name_pattern: "Eclipse Temurin JDK"
+    publisher: "Eclipse Adoptium"
+    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    uninstall_command_template: "msiexec /x {9D450299-EAEA-400E-B520-B2F280B79DE4} /qn /norestart"
+    information_url: "https://adoptium.net/temurin/releases/"
+    description: "Eclipse Temurin (OpenJDK) JDK 21 LTS with HotSpot -- the enterprise/open JDK (per-machine MSI)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: temurin-jdk-21
+      mode: generic
+    notes: "Clean per-machine MSI; ProductName includes version ('Eclipse Temurin JDK with Hotspot 21.0.11+10 (x64)'), match on prefix. NOTE: the UpgradeCode differs per FEATURE line (21 vs 17 vs 8) -- this entry is the 21 line; add separate entries for other LTS lines. Set ADDLOCAL features (e.g. FeatureMain,FeatureEnvironment,FeatureJarFileRunWith) via --install-command if PATH/JAVA_HOME registration is wanted."
