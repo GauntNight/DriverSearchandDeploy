@@ -1,0 +1,11 @@
+{"text": "Inspecting the dropped MSI's property table…", "delay_ms": 600}
+{"text": "⚙ tool: Read — first 4 KiB of the MSI (OLE2 compound file header)", "delay_ms": 600}
+{"text": "↳ Confirmed OLE2 / Windows Installer package (D0 CF 11 E0 signature).", "delay_ms": 500}
+{"text": "Property table carries ProductCode + UpgradeCode + ProductVersion — standard MSI.", "delay_ms": 700}
+{"text": "MSIs install silently with msiexec /i <file> /qn /norestart (no UI, no reboot).", "delay_ms": 700}
+{"text": "Detection is automatic for MSI: the pipeline derives a ProductCode rule from the metadata — no manual rule needed.", "delay_ms": 700}
+{"text": "Uninstall is deterministic too: msiexec /x {ProductCode} /qn /norestart.", "delay_ms": 600}
+{"text": "Composing the catalog entry (install command template only; detection auto-derived).", "delay_ms": 600}
+{"text": "```json\n{\n  \"install_command_template\": \"msiexec /i {installer_filename} /qn /norestart\",\n  \"uninstall_command_template\": \"\",\n  \"installer_family\": \"msi\",\n  \"detection_rules\": [],\n  \"product_name\": \"Researched MSI App\",\n  \"publisher\": \"Unknown\"\n}\n```", "delay_ms": 700}
+{"text": "✓ research run complete — writing catalog entry to the local overlay.", "delay_ms": 500}
+{"catalog_result": {"install_command_template": "msiexec /i {installer_filename} /qn /norestart", "uninstall_command_template": "", "installer_family": "msi", "detection_rules": [], "product_name": "Researched MSI App", "publisher": "Unknown"}}

@@ -1,0 +1,53 @@
+{
+  "_comment": "Center-panel fallback for credential-less rehearsal. Rendered when Graph isn't configured; the panel is labelled 'Fixture mode'. Shapes match demo/intune_view.py live rows.",
+  "apps": [
+    {
+      "id": "fixture-7zip-0001",
+      "name": "7-Zip 24.08 (x64)",
+      "version": "24.08.00.0",
+      "publisher": "Igor Pavlov",
+      "created": "2026-05-29",
+      "assignments": [
+        { "ring": "Ring 0 — IT Pilot", "intent": "Required", "group_id": "2c2935d3-6317-41be-a2e0-f567e5ef4dbf" }
+      ],
+      "installed": 1,
+      "pending": 0
+    },
+    {
+      "id": "fixture-vlc-0002",
+      "name": "VLC media player 3.0.21",
+      "version": "3.0.21",
+      "publisher": "VideoLAN",
+      "created": "2026-05-30",
+      "assignments": [
+        { "ring": "Ring 0 — IT Pilot", "intent": "Required", "group_id": "2c2935d3-6317-41be-a2e0-f567e5ef4dbf" }
+      ],
+      "installed": 1,
+      "pending": 0
+    },
+    {
+      "id": "fixture-putty-0003",
+      "name": "PuTTY 0.83",
+      "version": "0.83.0.0",
+      "publisher": "Simon Tatham",
+      "created": "2026-06-01",
+      "assignments": [
+        { "ring": "Ring 0 — IT Pilot", "intent": "Required", "group_id": "2c2935d3-6317-41be-a2e0-f567e5ef4dbf" }
+      ],
+      "installed": 1,
+      "pending": 0
+    },
+    {
+      "id": "fixture-powershell-0004",
+      "name": "PowerShell 7.6.2",
+      "version": "7.6.2.0",
+      "publisher": "Microsoft Corporation",
+      "created": "2026-06-02",
+      "assignments": [
+        { "ring": "Ring 0 — IT Pilot", "intent": "Required", "group_id": "2c2935d3-6317-41be-a2e0-f567e5ef4dbf" }
+      ],
+      "installed": 1,
+      "pending": 0
+    }
+  ]
+}

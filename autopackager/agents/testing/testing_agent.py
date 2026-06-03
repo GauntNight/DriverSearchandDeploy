@@ -1,5 +1,8 @@
 """Testing Agent - Validate Package Installation"""
 
+import os
+import sys
+from datetime import datetime, timezone
 from typing import Dict, Any
 from pathlib import Path
 
@@ -19,6 +22,12 @@ class TestingAgent:
         self.config = get_config()
         self.test_config = self.config.get('testing', {})
         self.enabled = self.test_config.get('enabled', True)
+        # Local install validation: actually install the package on this build
+        # machine, verify it landed (correcting the detection rule from the real
+        # Uninstall key if needed), then uninstall — BEFORE publishing. Defaults
+        # on (operator chose "always gate"). Auto-skipped under pytest.
+        self.local_validation_config = self.test_config.get('local_install_validation', {})
+        self.local_validation_enabled = self.local_validation_config.get('enabled', True)
 
     def test(self, job: Job) -> Dict[str, Any]:
         """
@@ -49,8 +58,23 @@ class TestingAgent:
         test_result = {
             'test_passed': smoke_test_result.get('test_passed', False),
             'smoke_tests': smoke_test_result,
+            'local_install_validation': None,
             'vm_test_results': None
         }
+
+        # Local install validation (pre-publish gate): install → verify →
+        # discover/correct detection → uninstall, on this build machine. Never
+        # runs under pytest (it would install real software) — detected via
+        # sys.modules since pytest.ini's TESTING env needs the absent
+        # pytest-env plugin.
+        running_tests = ('pytest' in sys.modules) or bool(os.environ.get('TESTING'))
+        if self.local_validation_enabled and not running_tests:
+            lv_result = self._run_local_install_validation(package, job)
+            test_result['local_install_validation'] = lv_result
+            if not lv_result.get('skipped'):
+                test_result['test_passed'] = (
+                    test_result['test_passed'] and lv_result.get('passed', False)
+                )
 
         # Check if VM testing is enabled
         vm_testing_enabled = self.test_config.get('vm_testing_enabled', False)
@@ -176,6 +200,79 @@ class TestingAgent:
         logger.debug("Detection rules validated", count=len(package.detection_rules))
         return True
 
+    def _run_local_install_validation(self, package: Package, job: Job) -> Dict[str, Any]:
+        """Install → verify → discover/correct → uninstall on the build machine.
+
+        On a detection mismatch this corrects the rule from the app's real
+        Uninstall key and writes it back to BOTH the Package (so the publish
+        uses the right rule) and the catalog overlay (so the next run is right).
+        Streams progress to the demo console via the job's event channel.
+        """
+        from autopackager.agents.testing.local_install_validator import LocalInstallValidator
+
+        def emit(text: str, level: str = "info"):
+            try:
+                from demo.events import publish_pipeline_event
+                publish_pipeline_event(job.id, "testing", text, level=level)
+            except Exception:
+                pass
+
+        logger.info("Starting local install validation", package_id=package.id)
+        validator = LocalInstallValidator(self.local_validation_config, emit=emit)
+        result = validator.validate(package, job)
+
+        # Apply corrected detection facts, if any.
+        corrected = result.get('corrected_detection_rules')
+        if corrected:
+            self._apply_detection_corrections(package, job, result)
+
+        logger.info(
+            "Local install validation complete",
+            package_id=package.id,
+            passed=result.get('passed'),
+            installed=result.get('installed'),
+            detection_fired=result.get('detection_fired'),
+            corrected=bool(corrected),
+        )
+        return result
+
+    def _apply_detection_corrections(self, package: Package, job: Job, result: Dict[str, Any]):
+        """Persist corrected detection rule + uninstall command (Package + catalog)."""
+        from autopackager.utils.installer_catalog import detection_rule_to_graph
+
+        catalog_rules = result.get('corrected_detection_rules') or []
+        uninstall_cmd = result.get('corrected_uninstall_command')
+
+        # 1) Package gets Graph-format rules (what deployment publishes).
+        graph_rules = []
+        for r in catalog_rules:
+            try:
+                graph_rules.append(detection_rule_to_graph(r))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not convert corrected rule to Graph", error=str(exc))
+        if graph_rules:
+            with db_session_scope() as session:
+                pkg = session.query(Package).filter(Package.id == package.id).first()
+                if pkg:
+                    pkg.detection_rules = graph_rules
+                    if uninstall_cmd:
+                        pkg.uninstall_command = uninstall_cmd
+            logger.info("Package detection rules corrected by validation", package_id=package.id)
+
+        # 2) Catalog overlay gets catalog-format rules (so the next run is right).
+        catalog_entry_id = (job.job_metadata or {}).get('catalog_entry_id')
+        if catalog_entry_id:
+            from autopackager.utils import installer_catalog
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            updates = {'detection_rules': catalog_rules}
+            if uninstall_cmd and '{installer_filename}' not in uninstall_cmd:
+                updates['uninstall_command_template'] = uninstall_cmd
+            installer_catalog.update_overlay_entry(
+                catalog_entry_id, updates,
+                validation_note=f"validated locally {today}; detection corrected to real Uninstall key",
+            )
+            logger.info("Catalog entry corrected by validation", entry_id=catalog_entry_id)
+
     def _update_package_test_status(self, package_id: int, test_result: Dict[str, Any]):
         """Update package test status in database"""
         with db_session_scope() as session:
@@ -185,9 +282,10 @@ class TestingAgent:
                 package.tested = True
                 package.test_passed = test_result.get('test_passed', False)
 
-                # Store both smoke test and VM test results
+                # Store smoke test, local install validation, and VM test results
                 test_logs = {
                     'smoke_tests': test_result.get('smoke_tests', {}).get('test_results', {}),
+                    'local_install_validation': test_result.get('local_install_validation'),
                     'vm_test_results': test_result.get('vm_test_results')
                 }
                 package.test_logs = str(test_logs)

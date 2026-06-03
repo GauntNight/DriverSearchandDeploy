@@ -154,6 +154,12 @@ class DeploymentAgent:
         else:
             self._assign_to_ring(intune_app_id, package, ring_index=0)
 
+        # Post-publish: verify the published metadata is correct, fix if not.
+        try:
+            self._verify_published_metadata(intune_app_id, package, job)
+        except Exception as exc:  # noqa: BLE001 -- verification is a safety net
+            logger.warning("Post-publish metadata verification errored", error=str(exc))
+
         # Update package deployment status
         self._update_package_deployment_status(package.id, intune_app_id)
 
@@ -169,6 +175,56 @@ class DeploymentAgent:
             'status': 'deployed',
             'ring': ring_label,
         }
+
+    def _verify_published_metadata(self, app_id: str, package: Package, job: Job) -> Dict[str, Any]:
+        """Post-publish: confirm detection rules landed on the app; fix if not.
+
+        This is the 'verify publishing metadata is correct; fix if not' step of
+        the workflow. Detection rules are readable only via
+        ``GET /beta/.../mobileApps/{id}`` with NO ``$select`` (v1.0 / $select
+        return them null — see KB 04). When the published app carries no
+        detection rule but we intended one, re-PATCH the ``win32LobApp`` (the
+        existing requirement rules are preserved).
+        """
+        def emit(text: str, level: str = 'info'):
+            try:
+                from demo.events import publish_pipeline_event
+                publish_pipeline_event(job.id, 'deploying', text, level=level)
+            except Exception:
+                pass
+
+        graph_client = self._get_graph_client()
+        try:
+            app = graph_client._beta_get(f"deviceAppManagement/mobileApps/{app_id}")
+        except Exception as exc:  # noqa: BLE001
+            emit(f"Could not read back published metadata: {exc}", 'warn')
+            return {'verified': False, 'fixed': False}
+
+        rules = app.get('rules') or app.get('detectionRules') or []
+
+        def _is_detection(r):
+            return (r.get('ruleType') == 'detection') or ('Detection' in (r.get('@odata.type') or ''))
+
+        detection_present = [r for r in rules if _is_detection(r)]
+        intended = self._normalize_rules(package.detection_rules) if package.detection_rules else []
+
+        if intended and not detection_present:
+            emit("Published app has no detection rule — re-applying the corrected rule…", 'warn')
+            try:
+                preserved = [r for r in rules if not _is_detection(r)]
+                graph_client.update_win32_app(app_id, {
+                    '@odata.type': '#microsoft.graph.win32LobApp',
+                    'rules': preserved + intended,
+                })
+                emit("Detection rule re-applied to the published app ✓")
+                return {'verified': True, 'fixed': True}
+            except Exception as exc:  # noqa: BLE001
+                emit(f"Failed to fix published detection rule: {exc}", 'error')
+                return {'verified': False, 'fixed': False}
+
+        version = app.get('displayVersion') or package.version or '?'
+        emit(f"Published metadata verified — detection rule present, version {version} ✓")
+        return {'verified': bool(detection_present), 'fixed': False}
 
     # ---------------------------------------------------------------------------
     # App create / update / delete

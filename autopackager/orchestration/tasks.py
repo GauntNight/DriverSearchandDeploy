@@ -9,6 +9,23 @@ from autopackager.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _demo_event(job_id, state, text, level="info", **extra):
+    """Additive, optional demo-console hook.
+
+    Publishes a one-line step event to the demo's Redis channel so the demo
+    UI can narrate the pipeline live. This is the ONLY coupling between the
+    core pipeline and the (removable) ``demo/`` package: a lazy import wrapped
+    so a missing ``demo`` package or a Redis hiccup can never affect a real
+    packaging job. Delete ``demo/`` and these calls become silent no-ops.
+    """
+    try:
+        from demo.events import publish_pipeline_event
+
+        publish_pipeline_event(job_id, state, text, level=level, **extra)
+    except Exception:
+        pass
+
+
 @celery_app.task(bind=True, name='autopackager.create_packaging_job')
 def create_packaging_job(
     self,
@@ -81,6 +98,7 @@ def discovery_task(self, job_id: int):
 
     engine = OrchestrationEngine()
     engine.update_job_state(job_id, JobState.DISCOVERING)
+    _demo_event(job_id, "discovering", "Discovery started — resolving installer identity")
 
     try:
         # Import here to avoid circular dependencies
@@ -93,6 +111,8 @@ def discovery_task(self, job_id: int):
         result = agent.discover(job)
 
         if result.get('update_available'):
+            _ver = result.get('latest_version') or 'target'
+            _demo_event(job_id, "discovering", f"Discovery complete — {_ver} ready to package")
             # Update job with discovered information
             metadata_update = {
                 'target_version': result.get('latest_version'),
@@ -144,6 +164,7 @@ def packaging_task(self, previous_result, job_id: int):
 
     engine = OrchestrationEngine()
     engine.update_job_state(job_id, JobState.PACKAGING)
+    _demo_event(job_id, "packaging", "Packaging started — building .intunewin")
 
     try:
         # Import here to avoid circular dependencies
@@ -154,6 +175,19 @@ def packaging_task(self, previous_result, job_id: int):
 
         # Execute packaging
         result = agent.package(job)
+
+        # Narrate the produced artifact size for the demo console.
+        try:
+            from pathlib import Path as _Path
+
+            _iw = result.get('intunewin_path')
+            if _iw and _Path(_iw).exists():
+                _mb = _Path(_iw).stat().st_size / (1024 * 1024)
+                _demo_event(job_id, "packaging", f"Built .intunewin ({_mb:.1f} MB)")
+            else:
+                _demo_event(job_id, "packaging", "Packaging complete")
+        except Exception:
+            pass
 
         # Update job with package information
         engine.update_job_state(
@@ -192,6 +226,7 @@ def testing_task(self, previous_result, job_id: int):
 
     engine = OrchestrationEngine()
     engine.update_job_state(job_id, JobState.TESTING)
+    _demo_event(job_id, "testing", "Testing started — validating package + detection rules")
 
     try:
         # Import here to avoid circular dependencies
@@ -205,12 +240,30 @@ def testing_task(self, previous_result, job_id: int):
 
         if result.get('test_passed'):
             logger.info("Testing passed", job_id=job_id)
+            # `gate=True` lets the demo UI reveal the optional "Approve" button
+            # when the operator launched the job in approval-gate mode.
+            _demo_event(job_id, "testing", "Smoke test passed", gate=True)
             return {"job_id": job_id, "test_passed": True}
-        else:
-            error_msg = f"Testing failed: {result.get('error_message')}"
-            logger.error("Testing failed", job_id=job_id, error=error_msg)
-            engine.mark_job_failed(job_id, error_msg)
-            raise Exception(error_msg)
+
+        # Local install-validation failures are DETERMINISTIC — retrying just
+        # re-installs the app, and for a non-silent installer that re-launches
+        # its UI (the Firefox-EXE infinite-loop incident). Fail terminally,
+        # NO retry, and make sure nothing was left running.
+        liv = result.get('local_install_validation')
+        if liv and not liv.get('skipped') and not liv.get('passed'):
+            msg = ("Local install validation failed — install could not be verified "
+                   f"silently; not retrying. errors={liv.get('errors')}")
+            logger.error("Install validation failed (terminal, no retry)", job_id=job_id, detail=msg)
+            engine.mark_job_failed(job_id, msg)
+            _demo_event(job_id, "failed",
+                        "Install validation failed — publish blocked (no retry). "
+                        "Check the silent-install command.", level="error")
+            return {"job_id": job_id, "test_passed": False, "validation_failed": True}
+
+        error_msg = f"Testing failed: {result.get('error_message')}"
+        logger.error("Testing failed", job_id=job_id, error=error_msg)
+        engine.mark_job_failed(job_id, error_msg)
+        raise Exception(error_msg)
 
     except Exception as e:
         logger.error("Testing phase error", job_id=job_id, error=str(e))
@@ -236,6 +289,7 @@ def deployment_task(self, previous_result, job_id: int):
 
     engine = OrchestrationEngine()
     engine.update_job_state(job_id, JobState.DEPLOYING)
+    _demo_event(job_id, "deploying", "Deploying — creating Win32 app + uploading content")
 
     try:
         # Validate Azure configuration before attempting deployment
@@ -257,6 +311,13 @@ def deployment_task(self, previous_result, job_id: int):
 
         # Execute deployment
         result = agent.deploy(job)
+
+        _app_id = result.get('intune_app_id')
+        _ring = result.get('ring') or 'Ring 0 (IT Pilot)'
+        _demo_event(job_id, "deploying", f"Published to Intune (app {_app_id})")
+        if not result.get('ring') or _ring != 'unassigned':
+            _demo_event(job_id, "deploying", f"Assigned {_ring}")
+        _demo_event(job_id, "completed", "Deployment complete ✓")
 
         # Mark job as completed
         engine.mark_job_completed(

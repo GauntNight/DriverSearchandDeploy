@@ -1,0 +1,19 @@
+# Optional dependencies for the demo console's Claude research bridge.
+# Kept OUT of the core requirements.txt so the bridge stays optional — the
+# deterministic catalog path and the whole UI work without these.
+#
+#   ./venv/Scripts/python.exe -m pip install -r demo/requirements.txt
+#
+# The bridge prefers this SDK; if it is absent it falls back to the installed
+# `claude` CLI (`claude -p --output-format stream-json`). Either path
+# authenticates through the local Claude Code session on this box — no window
+# needs to stay open.
+claude-agent-sdk>=0.1.0 ; python_version >= "3.10"
+
+# Required for the drag-and-drop / file-picker intake (FastAPI multipart form
+# parsing). Without it, POST /api/demo/jobs with a file returns 500.
+python-multipart>=0.0.9
+
+# Everything else the demo needs (fastapi, redis, requests, uvicorn) is already
+# in the core requirements.txt.
+

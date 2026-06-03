@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AutoPackager — Mission Control</title>
+  <link rel="stylesheet" href="/demo/static/demo.css" />
+</head>
+<body>
+  <!-- Header: brand + readiness lights -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">▰▰</span>
+      <span class="brand-name">AutoPackager</span>
+      <span class="brand-sub">Mission Control</span>
+    </div>
+    <div class="readiness" id="readiness">
+      <div class="light" id="light-ai"     data-ok="unknown"><span class="dot"></span> AI</div>
+      <div class="light" id="light-redis"  data-ok="unknown"><span class="dot"></span> Redis</div>
+      <div class="light" id="light-graph"  data-ok="unknown"><span class="dot"></span> Graph</div>
+      <div class="light" id="light-worker" data-ok="unknown"><span class="dot"></span> Worker</div>
+      <span class="mode-badge" id="mode-badge" title="Claude research mode">mode: …</span>
+    </div>
+  </header>
+
+  <!-- Intake bar -->
+  <section class="intake" id="intake">
+    <div id="dropzone" class="dropzone">
+      <div class="dz-inner">
+        <strong>Drop an installer</strong> (.msi / .exe / .zip) — or
+        <span class="link">browse</span>
+        <input id="filepick" type="file" accept=".msi,.exe,.zip" hidden />
+        <div class="dz-hint">Drag a .msi, .exe, or .zip anywhere onto this strip</div>
+      </div>
+    </div>
+    <div class="intake-alt">
+      <div class="row">
+        <input id="url" type="text" placeholder="…or paste a vendor download URL (.msi/.exe)" />
+        <button id="url-go" class="btn">Fetch</button>
+      </div>
+      <div class="row driver-row">
+        <input id="d-vendor" type="text" placeholder="vendor (dell/hp/lenovo)" class="sm" />
+        <input id="d-model" type="text" placeholder="model" class="sm" />
+        <input id="d-type" type="text" placeholder="driver-type" class="sm" />
+        <button id="driver-go" class="btn">Driver job</button>
+      </div>
+      <div class="row opts">
+        <label class="chk"><input type="checkbox" id="gate" /> Ring 0 approval gate</label>
+        <label class="chk">mode
+          <select id="mode">
+            <option value="">(server default)</option>
+            <option value="replay">replay</option>
+            <option value="live">live</option>
+            <option value="off">off</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <!-- Three panels -->
+  <main class="panels">
+    <!-- LEFT: pipeline status -->
+    <section class="panel left">
+      <h2 class="panel-title">Pipeline</h2>
+      <div class="job-head" id="job-head">
+        <div class="job-id">no active job</div>
+        <div class="job-app" id="job-app">drop an installer to begin</div>
+      </div>
+      <ol class="stepper" id="stepper">
+        <li data-state="pending"><span class="tick"></span> Intake</li>
+        <li data-state="discovering"><span class="tick"></span> Discovery</li>
+        <li data-state="packaging"><span class="tick"></span> Packaging</li>
+        <li data-state="testing"><span class="tick"></span> Testing</li>
+        <li data-state="deploying"><span class="tick"></span> Deploying</li>
+        <li data-state="completed"><span class="tick"></span> Completed</li>
+      </ol>
+      <div class="gate-box hidden" id="gate-box">
+        <div class="gate-msg">Awaiting approval to promote to Ring 0</div>
+        <button id="approve" class="btn approve">Approve ▶ Ring 0</button>
+      </div>
+    </section>
+
+    <!-- CENTER: Intune production view -->
+    <section class="panel center">
+      <div class="panel-title-row">
+        <h2 class="panel-title">Intune · Apps › Windows</h2>
+        <div class="center-actions">
+          <span class="src-badge" id="intune-mode">…</span>
+          <button id="verify" class="btn ghost">Verify in Intune ↗</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="intune-table" id="intune-table">
+          <thead>
+            <tr><th>Name</th><th>Version</th><th>Publisher</th><th>Assignment</th><th>Created</th></tr>
+          </thead>
+          <tbody id="intune-body">
+            <tr class="empty"><td colspan="5">Loading tenant apps…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- RIGHT: agent console -->
+    <section class="panel right">
+      <div class="lamp-row">
+        <div class="lamp" id="lamp" data-state="offline">
+          <span class="orb"></span><span class="ring"></span>
+        </div>
+        <div class="lamp-labels">
+          <div class="lamp-label" id="lamp-label">Offline</div>
+          <div class="lamp-sub" id="lamp-sub">preflight not run</div>
+        </div>
+      </div>
+      <div class="console" id="console"></div>
+    </section>
+  </main>
+
+  <script src="/demo/static/demo.js"></script>
+</body>
+</html>
