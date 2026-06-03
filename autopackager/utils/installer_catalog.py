@@ -601,6 +601,28 @@ class CatalogEntry:
     # versions are intentional (Java 8 / 11 / 17 / 21, .NET 6 / 8 / 9,
     # Python 3.11 / 3.12 / 3.13).
     supersedence: Optional[dict] = None
+    # ---- Consumer-vs-enterprise taxonomy ------------------------------
+    # Many vendors ship a CONSUMER build (free download, self-updating, often a
+    # UI-driven or wrapped installer that ignores standard silent switches) AND
+    # an ENTERPRISE build (MSI / managed — the correct packaging target). When a
+    # user feeds us the consumer build, we want to (a) record WHY it's a poor
+    # target and (b) fetch the right one on their behalf. The `distribution`
+    # field above already names the axis ('standard' vs 'enterprise'); these
+    # three add the negative feedback and the redirect.
+    #
+    # prefer_entry_id -- id of a better catalog entry to use INSTEAD of this one
+    #   (typically the enterprise MSI). When set and the target carries a
+    #   canonical_download_url, the intake layer fetches that and proceeds with
+    #   it ("get the correct installer on the user's behalf").
+    prefer_entry_id: Optional[str] = None
+    # consumer_caveats -- human-readable NEGATIVE feedback: why this build is a
+    #   poor packaging target. Surfaced to the operator/console. Pairs with
+    #   distribution='standard'.
+    consumer_caveats: Optional[str] = None
+    # canonical_download_url -- stable vendor URL to fetch THIS installer
+    #   (version-agnostic where possible, e.g. a vendor "latest" link). Used as
+    #   the substitution source when this entry is the target of prefer_entry_id.
+    canonical_download_url: Optional[str] = None
     # Lifecycle / usage
     notes: str = ""
     first_seen: str = ""
@@ -651,6 +673,14 @@ class Catalog:
 
     def by_id(self, entry_id: str) -> Optional[CatalogEntry]:
         return next((e for e in self.entries if e.id == entry_id), None)
+
+    def preferred_for(self, entry: Optional['CatalogEntry']) -> Optional['CatalogEntry']:
+        """Return a better alternative entry for ``entry`` (resolves
+        ``prefer_entry_id`` — e.g. a consumer build pointing at its enterprise
+        MSI), or None when there is no redirect or the target is unknown."""
+        if not entry or not entry.prefer_entry_id:
+            return None
+        return self.by_id(entry.prefer_entry_id)
 
     def match_msi(self, msi_metadata: dict) -> Optional[CatalogEntry]:
         """Find a catalog entry matching an MSI's parsed metadata.
@@ -926,6 +956,51 @@ def record_use(entry_id: str) -> None:
         use_count=target.use_count,
         last_used=target.last_used,
     )
+
+
+def update_overlay_entry(entry_id: str, updates: dict, *, validation_note: str = "") -> Optional['CatalogEntry']:
+    """Set fields on an existing catalog entry in the local overlay.
+
+    Used by the local install-validation step to write back CORRECTED facts
+    discovered by actually installing the app: ``detection_rules`` (the real
+    Uninstall-key registry rule), ``uninstall_command_template`` (the real
+    QuietUninstallString), and ``installer_family``. Only the named ``fields``
+    are touched; everything else is preserved. If the entry exists only in the
+    baseline, a thin overlay copy is created first so the baseline stays
+    pristine.
+
+    ``validation_note`` is appended to the entry's ``notes`` as an audit trail
+    (e.g. "validated locally 2026-06-02; detection corrected"). Returns the
+    updated entry, or None if the id is unknown.
+    """
+    overlay = _local_overlay_entries()
+    target: Optional[CatalogEntry] = None
+    for e in overlay:
+        if e.id == entry_id:
+            target = e
+            break
+    if target is None:
+        base = Catalog(entries=[
+            _entry_from_dict(r)
+            for r in (_load_yaml_file(BASELINE_PATH).get("entries") or [])
+            if _entry_from_dict(r) is not None
+        ]).by_id(entry_id)
+        if base is None:
+            logger.warning("update_overlay_entry: unknown entry", entry_id=entry_id)
+            return None
+        target = CatalogEntry(**asdict(base))
+        overlay.append(target)
+
+    valid = {f.name for f in fields(CatalogEntry)}
+    for k, v in (updates or {}).items():
+        if k in valid:
+            setattr(target, k, v)
+    if validation_note:
+        existing = (target.notes or "").strip()
+        target.notes = (existing + " | " if existing else "") + validation_note
+    _write_local(overlay)
+    logger.info("Catalog entry corrected by validation", entry_id=entry_id, fields=list((updates or {}).keys()))
+    return target
 
 
 def add_msi_entry(

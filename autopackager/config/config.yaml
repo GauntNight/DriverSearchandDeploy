@@ -116,6 +116,20 @@ testing:
   vm_provider: "local"  # local or azure
   snapshot_name: "clean_windows_11"
   timeout_minutes: 30
+  # Local install validation: actually install the package on THIS build
+  # machine, verify it landed (correcting the detection rule from the app's
+  # real Uninstall key if the configured rule doesn't fire), then uninstall —
+  # all BEFORE publishing to Intune. Publishing is gated on this passing.
+  # Auto-skipped under pytest (TESTING=true). A Hyper-V-isolated path can be
+  # slotted in later behind the same step.
+  local_install_validation:
+    enabled: true
+    # A non-silent installer that pops a UI hangs until this fires (then the
+    # whole process tree is killed and the validation fails WITHOUT retry).
+    # Keep it tight so a bad silent-command fails fast on stage; raise only for
+    # genuinely huge installers. Most apps install in well under a minute.
+    timeout_seconds: 240
+    uninstall_timeout_seconds: 180
 
 # Logging
 logging:

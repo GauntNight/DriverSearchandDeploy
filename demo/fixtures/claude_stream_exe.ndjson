@@ -1,0 +1,14 @@
+{"text": "Reading installer header and metadata for the dropped EXE…", "delay_ms": 600}
+{"text": "⚙ tool: Bash — file \"$INSTALLER\"", "delay_ms": 700}
+{"text": "↳ PE32 executable (GUI) Intel 80386, for MS Windows; self-extracting installer", "delay_ms": 500}
+{"text": "VS_VERSIONINFO suggests an Inno Setup package (CompanyName + 'Inno Setup' marker in strings).", "delay_ms": 800}
+{"text": "⚙ tool: Bash — strings -n 8 \"$INSTALLER\" | grep -i -m5 'inno\\|uninstall\\|/VERYSILENT'", "delay_ms": 700}
+{"text": "↳ Found 'Inno Setup Setup Data', 'unins000.exe', '/VERYSILENT' — confirms Inno Setup family.", "delay_ms": 600}
+{"text": "Inno Setup silent switches: /VERYSILENT /NORESTART /SUPPRESSMSGBOXES (no UI, no reboot, no dialogs).", "delay_ms": 700}
+{"text": "Detection: Inno Setup writes an Uninstall registry key under WOW6432Node with a DisplayVersion value.", "delay_ms": 700}
+{"text": "Proposing a registry_version detection rule against DisplayVersion >= the packaged version.", "delay_ms": 600}
+{"text": "Uninstall command: the bundled unins000.exe /VERYSILENT (recorded for later).", "delay_ms": 500}
+{"text": "Composing the catalog entry (install command template + detection rule).", "delay_ms": 600}
+{"text": "```json\n{\n  \"install_command_template\": \"{installer_filename} /VERYSILENT /NORESTART /SUPPRESSMSGBOXES\",\n  \"uninstall_command_template\": \"unins000.exe /VERYSILENT /NORESTART\",\n  \"installer_family\": \"inno_setup\",\n  \"detection_rules\": [{\"kind\": \"registry_version\", \"key\": \"HKEY_LOCAL_MACHINE\\\\SOFTWARE\\\\WOW6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\{app}_is1\", \"value_name\": \"DisplayVersion\", \"operator\": \"greaterThanOrEqual\", \"value\": \"1.0.0\", \"check_32bit_on_64bit\": true}],\n  \"product_name\": \"Researched App\",\n  \"publisher\": \"Unknown\"\n}\n```", "delay_ms": 700}
+{"text": "✓ research run complete — writing catalog entry to the local overlay.", "delay_ms": 500}
+{"catalog_result": {"install_command_template": "{installer_filename} /VERYSILENT /NORESTART /SUPPRESSMSGBOXES", "uninstall_command_template": "unins000.exe /VERYSILENT /NORESTART", "installer_family": "inno_setup", "detection_rules": [{"kind": "registry_version", "key": "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{app}_is1", "value_name": "DisplayVersion", "operator": "greaterThanOrEqual", "value": "1.0.0", "check_32bit_on_64bit": true}], "product_name": "Researched App", "publisher": "Unknown"}}

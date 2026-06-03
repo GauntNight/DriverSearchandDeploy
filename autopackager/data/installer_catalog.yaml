@@ -389,3 +389,49 @@ entries:
     categories: ["Productivity"]
     min_os_version: "1607"
     notes: "Licensed commercial software. Burn bundle; /quiet /norestart are standard Burn switches. pe_product_name 'Snagit' also matches 'Snagit 2023' as a substring, so catalog lookup must prefer SHA-256 hash match (when seen) or pe_product_version over name. The pipeline does."
+
+  # ---- Mozilla Firefox: consumer-vs-enterprise taxonomy ----------
+  # Two entries for the same product on purpose. The CONSUMER EXE is a
+  # poor packaging target (a 7-Zip SFX that ignores standard silent
+  # switches and pops a UI); the ENTERPRISE MSI is the correct one.
+  # `firefox-consumer` carries the negative feedback (consumer_caveats)
+  # and a `prefer_entry_id` redirect so intake fetches the MSI on the
+  # user's behalf when they feed us the consumer build. See the
+  # "Consumer-vs-enterprise" section in packaging-knowledge/02.
+  - id: firefox-msi
+    type: msi
+    upgrade_code: "{3118AB4C-B433-4FBB-B9FA-8F9CA4B5C103}"
+    product_code: "{1294A4C5-9977-480F-9497-C0EA1E630130}"
+    product_name_pattern: "Mozilla Firefox"
+    publisher: "Mozilla"
+    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    uninstall_command_template: "msiexec /x {1294A4C5-9977-480F-9497-C0EA1E630130} /qn /norestart"
+    installer_family: msi
+    distribution: enterprise
+    canonical_download_url: "https://download.mozilla.org/?product=firefox-msi-latest-ssl&os=win64&lang=en-US"
+    supersedence:
+      line: firefox
+      mode: generic
+    information_url: "https://www.mozilla.org/firefox/enterprise/"
+    description: "Mozilla Firefox (Enterprise MSI) -- the supported managed-deployment build. Silent via msiexec /qn; UpgradeCode is stable across versions for supersedence."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "Enterprise MSI is the correct packaging target for Firefox. canonical_download_url is Mozilla's version-agnostic 'latest MSI' link; intake substitutes this for the consumer EXE (firefox-consumer)."
+
+  - id: firefox-consumer
+    type: exe
+    installer_family: custom
+    distribution: standard
+    pe_company_name: "Mozilla"
+    pe_product_name: "Firefox"
+    install_command_template: "{installer_filename} -ms"
+    prefer_entry_id: firefox-msi
+    consumer_caveats: "Consumer Firefox is a 7-Zip self-extracting archive (OriginalFilename 7zS.sfx.exe) wrapping Mozilla's stub installer. It IGNORES standard silent switches (/S, /VERYSILENT) and pops an interactive UI -- its only silent switch is `-ms` -- and the installed browser self-updates, which fights managed deployment. Use the enterprise MSI (firefox-msi): it installs silently via msiexec /qn, exposes a stable UpgradeCode for supersedence, and respects enterprise policy."
+    canonical_download_url: "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=en-US"
+    supersedence:
+      mode: none
+    information_url: "https://www.mozilla.org/firefox/"
+    description: "Mozilla Firefox (consumer build). NOT a managed-deployment target -- see consumer_caveats; intake substitutes firefox-msi."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "Consumer/standard Firefox EXE (7-Zip SFX). Carried ONLY to detect the mistake and redirect to firefox-msi. Intentionally has no detection_rules -- it must never publish; the substitution intercepts first. supersedence.mode=none (never a supersedence target)."

@@ -319,6 +319,18 @@ async def get_recent_activity(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+# --- Demo console (additive, removable) ------------------------------------
+# The demo mission-control UI lives entirely under demo/. Mounting it is a
+# single additive call, guarded so a missing/broken demo package can never stop
+# the core dashboard from serving. Delete demo/ + this block to remove it.
+try:
+    from demo.router import mount_demo
+
+    mount_demo(app)
+except Exception as _demo_exc:  # noqa: BLE001
+    logger.warning(f"Demo console not mounted: {_demo_exc}")
+
+
 # Mount static files directory (must be last to not interfere with routes)
 static_dir = Path(__file__).parent / "static"
 if static_dir.exists():

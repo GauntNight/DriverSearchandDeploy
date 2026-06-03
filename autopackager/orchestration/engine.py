@@ -147,6 +147,20 @@ class OrchestrationEngine:
             session.flush()
             session.expunge(job)
 
+            # Additive, optional demo-console hook. Surfaces failed transitions
+            # in the demo's live console. Lazy + exception-swallowed so the
+            # removable demo package can never affect core job processing.
+            if new_state == JobState.FAILED:
+                try:
+                    from demo.events import publish_pipeline_event
+
+                    publish_pipeline_event(
+                        job_id, "failed",
+                        f"Failed: {error_message or 'see logs'}", level="error",
+                    )
+                except Exception:
+                    pass
+
             return job
 
     def increment_retry_count(self, job_id: int) -> int:
