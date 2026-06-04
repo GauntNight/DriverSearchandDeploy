@@ -138,6 +138,7 @@
     $("job-head").querySelector(".job-id").textContent = "job #" + jobId;
     if (appName) $("job-app").textContent = appName;
     $("gate-box").classList.add("hidden");
+    $("escalation-box").classList.add("hidden");
 
     evtSource = new EventSource(`/api/demo/stream/${jobId}`);
     evtSource.onmessage = (e) => {
@@ -176,6 +177,12 @@
     // Reveal the approval gate when testing passes in gate mode.
     if (gateMode && env.gate === true) {
       $("gate-box").classList.remove("hidden");
+    }
+    // Engineer-escalation: a non-silent installer couldn't be packaged after
+    // the retry ladder — surface a prominent banner for manual review.
+    if (env.escalation === true) {
+      $("esc-msg").textContent = text || "No silent install succeeded — manual review required.";
+      $("escalation-box").classList.remove("hidden");
     }
     // Capture the published Intune app id for the Verify deep-link.
     const m = text.match(/app\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);

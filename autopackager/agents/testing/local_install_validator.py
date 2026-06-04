@@ -107,7 +107,10 @@ class LocalInstallValidator:
             "discovered": None,
             "corrected_detection_rules": None,
             "corrected_uninstall_command": None,
+            "corrected_install_command": None,
             "corrected_install_family": None,
+            "needs_engineer_review": False,
+            "install_attempts": 0,
             "uninstalled": False,
             "errors": [],
             "log": [],
@@ -138,41 +141,83 @@ class LocalInstallValidator:
         before = self._snapshot_uninstall_keys()
         before_pids = self._running_by_name()
 
-        # 2) Install
-        self.emit(f"Install validation: installing {installer.name} silently…")
-        rc, out = self._run(install_cmd, cwd=installer.parent, timeout=self.timeout)
-        # A consumer stub (e.g. ChromeSetup) exits fast after detaching an
-        # elevated updater that keeps installing in the background. Reap those
-        # now so a failed/forbidden installer can't quietly land on the box.
-        result["reaped_detached"] = self._reap_detached_installers(before_pids)
-        result["install_rc"] = rc
-        result["log"].append(f"install rc={rc}")
-        # rc!=0 isn't always fatal (some installers return non-zero on success),
-        # so we judge by detection, not rc alone.
-        if rc not in (0, 3010):  # 3010 = success, reboot required
-            result["log"].append(f"install returned rc={rc} (continuing — verifying by detection)")
-            self.emit(f"Installer exit code {rc} — verifying by detection rather than exit code…",
-                      "warn" if rc else "info")
-
-        # 3) Verify: did the configured detection rule fire?
-        fired, fired_detail = self._eval_rules(detection_rules)
-        result["detection_fired"] = fired
-        result["log"].append(f"configured detection fired={fired} ({fired_detail})")
-
-        # 4) Discover the real ARP entry (diff snapshot)
-        after = self._snapshot_uninstall_keys()
-        discovered = self._discover_new_entry(before, after, package)
-        if discovered:
-            result["discovered"] = discovered
-            result["installed"] = True
+        # 2-4) Install (capped retry ladder) → verify → discover.
+        #
+        # A non-silent installer that pops a UI hangs until the per-attempt
+        # timeout, then _run kills the whole process tree (rc 1460). We treat
+        # that — and any attempt that installs nothing detectable — as a failed
+        # silent strategy and try the next switch set. After up to
+        # _MAX_INSTALL_ATTEMPTS with nothing verifiably installed, we stop and
+        # flag the job for ENGINEER ESCALATION rather than publish an app that
+        # can't be installed silently (RealPlayer-style bundleware).
+        candidates = self._install_candidates(package, installer)
+        fired, fired_detail = (False, "")
+        discovered = None
+        chosen_cmd = None
+        for idx, cmd in enumerate(candidates, 1):
+            result["install_attempts"] = idx
+            # Give the first attempt the full budget (a legit slow installer);
+            # later probes fail fast (if switch #1 hung on a UI, the rest likely
+            # behave similarly).
+            to = self.timeout if idx == 1 else min(self.timeout, 120)
+            self.emit(f"Install validation: attempt {idx}/{len(candidates)} — "
+                      f"installing {installer.name} silently…")
+            rc, out = self._run(cmd, cwd=installer.parent, timeout=to)
+            # A consumer stub (e.g. ChromeSetup) exits fast after detaching an
+            # elevated updater; reap those so nothing lands quietly.
+            result["reaped_detached"] = self._reap_detached_installers(before_pids)
+            result["install_rc"] = rc
+            result["log"].append(f"install attempt {idx} rc={rc}: {cmd[:90]}")
+            if rc == 1460:  # timed out → a window opened; tree already killed
+                self.emit(
+                    f"Attempt {idx}/{len(candidates)} did NOT run silently "
+                    "(it timed out — a window likely opened). Closed it; trying a "
+                    "different silent switch…", "warn")
+                continue
+            if rc not in (0, 3010):  # 3010 = success, reboot required
+                self.emit(f"Attempt {idx} installer exit code {rc} — verifying by "
+                          "detection rather than exit code…", "info")
+            # Verify this attempt: configured rule fired OR a real ARP entry appeared.
+            fired, fired_detail = self._eval_rules(detection_rules)
+            after = self._snapshot_uninstall_keys()
+            discovered = self._discover_new_entry(before, after, package)
+            if discovered or fired:
+                chosen_cmd = cmd
+                result["log"].append(f"attempt {idx} verified (fired={fired}; {fired_detail})")
+                result["installed"] = True
+                if discovered:
+                    result["discovered"] = discovered
+                    self.emit(
+                        f"Verified installed: '{discovered['display_name']}' "
+                        f"v{discovered.get('display_version') or '?'} "
+                        f"(reg key {discovered['key_leaf']})")
+                else:
+                    self.emit("Verified installed (configured detection rule matched).")
+                break
             self.emit(
-                f"Verified installed: '{discovered['display_name']}' "
-                f"v{discovered.get('display_version') or '?'} "
-                f"(reg key {discovered['key_leaf']})"
-            )
-        elif fired:
-            result["installed"] = True
-            self.emit("Verified installed (configured detection rule matched).")
+                f"Attempt {idx}/{len(candidates)} ran but the app wasn't detected as "
+                "installed — trying a different silent switch…", "warn")
+
+        # All silent-install strategies exhausted with nothing verifiable.
+        if not result["installed"]:
+            result["needs_engineer_review"] = True
+            result["passed"] = False
+            result["errors"].append(
+                f"installer did not complete a verifiable silent install after "
+                f"{len(candidates)} attempt(s) — engineer review required")
+            self.emit(
+                f"No silent install succeeded after {len(candidates)} attempt(s) — "
+                "flagging for ENGINEER ESCALATION. This installer likely needs a "
+                "manually-determined silent command (or isn't silent-installable).",
+                "error")
+            return result
+
+        # A non-primary switch set worked → record it so the catalog/package can
+        # learn the command that actually installs silently.
+        if chosen_cmd and candidates and chosen_cmd != candidates[0]:
+            result["corrected_install_command"] = chosen_cmd
+            self.emit("Recorded the silent-install command that worked.")
+        result["detection_fired"] = fired
 
         # 5) If configured rule didn't fire but we found the real entry → correct
         if not fired and discovered:
@@ -495,6 +540,48 @@ class LocalInstallValidator:
             rule["operator"] = "greaterThanOrEqual"
             rule["value"] = str(version)
         return rule
+
+    # -- install -----------------------------------------------------------
+
+    # Max distinct silent-install strategies to try before escalating.
+    _MAX_INSTALL_ATTEMPTS = 3
+
+    # Common EXE silent-switch sets to probe when the primary command doesn't
+    # produce a verifiable install. Ordered most-likely-first across the common
+    # installer engines (NSIS /S, Inno /VERYSILENT, generic /silent|/quiet).
+    _EXE_SILENT_SWITCHES = (
+        "/S",
+        "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES",
+        "/silent",
+        "/quiet /norestart",
+        "/s",
+    )
+
+    def _install_candidates(self, package, installer: Path) -> List[str]:
+        """Ordered, de-duplicated install commands to try (capped).
+
+        The primary command (catalog/derived) goes first; for EXE installers we
+        then probe alternate silent-switch sets in case the catalog guessed the
+        wrong engine. MSI is reliably silent via ``/qn`` so it gets a single
+        attempt. Each alternate reuses the primary's executable token and only
+        swaps the switches.
+        """
+        cmd = (getattr(package, "install_command", "") or "").strip()
+        if not cmd:
+            return []
+        if cmd.lower().startswith("msiexec"):
+            return [cmd]  # MSI: one shot, /qn is deterministic
+        try:
+            argv = shlex.split(cmd, posix=False)
+        except ValueError:
+            argv = cmd.split()
+        exe = argv[0] if argv else installer.name
+        cands = [cmd]
+        for sw in self._EXE_SILENT_SWITCHES:
+            alt = f"{exe} {sw}"
+            if alt not in cands:
+                cands.append(alt)
+        return cands[: self._MAX_INSTALL_ATTEMPTS]
 
     # -- uninstall ---------------------------------------------------------
 

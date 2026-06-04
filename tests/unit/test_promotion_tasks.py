@@ -4,7 +4,27 @@ import unittest
 from unittest.mock import Mock, patch, MagicMock
 from celery.exceptions import Retry
 
-from autopackager.orchestration.tasks import check_ring_promotions
+from autopackager.orchestration.tasks import check_ring_promotions, deployment_task
+
+
+class TestDeploymentChainingGuard(unittest.TestCase):
+    """deployment_task must NOT deploy when testing didn't pass (else it loops
+    on 'package has not passed testing' — the job-21 RealPlayer incident)."""
+
+    @patch('autopackager.agents.deployment.DeploymentAgent')
+    def test_skips_deploy_when_validation_failed(self, mock_agent_cls):
+        prev = {"job_id": 1, "test_passed": False, "validation_failed": True,
+                "needs_engineer_review": True}
+        result = deployment_task(prev, 1)
+        self.assertEqual(result, prev)
+        mock_agent_cls.assert_not_called()
+
+    @patch('autopackager.agents.deployment.DeploymentAgent')
+    def test_skips_deploy_when_test_not_passed(self, mock_agent_cls):
+        prev = {"job_id": 2, "test_passed": False}
+        result = deployment_task(prev, 2)
+        self.assertEqual(result, prev)
+        mock_agent_cls.assert_not_called()
 
 
 class TestCheckRingPromotionsTask(unittest.TestCase):

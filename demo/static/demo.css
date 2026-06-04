@@ -163,6 +163,12 @@ body {
 .stepper li.failed .tick { border-color: var(--bad); background: var(--bad); box-shadow: 0 0 12px var(--bad); }
 .stepper li.failed { color: var(--bad); }
 
+.escalation-box {
+  margin: 0 16px 16px; padding: 14px; border: 1px solid var(--bad);
+  border-radius: 8px; background: rgba(226,75,74,.09);
+}
+.esc-title { font-size: 13px; font-weight: 700; color: var(--bad); margin-bottom: 6px; }
+.esc-msg { font-size: 12px; color: var(--text); line-height: 1.4; }
 .gate-box { margin: 0 16px 16px; padding: 14px; border: 1px solid var(--warn);
   border-radius: 8px; background: rgba(186,117,23,.08); text-align: center; }
 .gate-msg { font-size: 12px; color: var(--warn); margin-bottom: 10px; }
