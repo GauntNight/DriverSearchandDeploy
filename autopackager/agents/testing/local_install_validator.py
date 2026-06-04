@@ -56,6 +56,18 @@ _DETACHED_INSTALLER_NAMES = {
     "googleupdatesetup.exe",
     "googleupdatecore.exe",
     "googleupdatecomregistershell64.exe",
+    # RealPlayer / RealNetworks consumer stub — same detach trick as the Chrome
+    # stub: it pops a UI (we kill that) but ALSO detaches a background install
+    # of RealPlayer + an updater service that escape the launched process tree,
+    # so the app lands on the box despite the validation failing/escalating.
+    # Reap these so an escalated non-silent installer leaves no trace.
+    "realplay.exe",
+    "realplayer.exe",
+    "realplayerupdatesvc.exe",
+    "realsched.exe",
+    "rndlp.exe",
+    "rpdsvc.exe",
+    "rndlresolver.exe",
 }
 
 

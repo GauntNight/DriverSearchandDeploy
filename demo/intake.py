@@ -80,6 +80,11 @@ class Analysis:
     prefer_entry_id: Optional[str] = None
     consumer_caveats: Optional[str] = None
     substituted_from: Optional[str] = None  # set on a substituted analysis
+    # Known non-packageable (escalate / don't package): the matched catalog
+    # entry carries an ``escalate_reason``. Intake escalates immediately (no
+    # install attempt) and flags the job for engineer review.
+    escalate: bool = False
+    escalate_reason: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -97,6 +102,8 @@ class Analysis:
             "prefer_entry_id": self.prefer_entry_id,
             "consumer_caveats": self.consumer_caveats,
             "substituted_from": self.substituted_from,
+            "escalate": self.escalate,
+            "escalate_reason": self.escalate_reason,
             "metadata": self.metadata,
         }
 
@@ -201,6 +208,14 @@ def analyze(path: Path) -> Analysis:
             publisher=pe_meta.get("company_name") or None,
         )
         if entry:
+            if entry.escalate_reason:
+                # Known non-packageable (e.g. RealPlayer bundleware): escalate
+                # immediately, BEFORE computing any install command — no install
+                # attempt, no UI, no detached-stub install.
+                analysis.escalate = True
+                analysis.escalate_reason = entry.escalate_reason
+                analysis.blocker = entry.escalate_reason
+                return analysis
             rules = entry.detection_rules or []
             analysis.detection_rule_count = len(rules)
             analysis.install_command = entry.render_install_command(path.name)
@@ -240,6 +255,11 @@ def analyze(path: Path) -> Analysis:
         publisher=msi_meta.get("manufacturer") or None,
     )
     if entry:
+        if entry.escalate_reason:
+            analysis.escalate = True
+            analysis.escalate_reason = entry.escalate_reason
+            analysis.blocker = entry.escalate_reason
+            return analysis
         analysis.install_command = entry.render_install_command(path.name)
         if entry.prefer_entry_id:
             analysis.prefer_entry_id = entry.prefer_entry_id

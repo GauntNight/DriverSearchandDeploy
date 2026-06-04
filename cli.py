@@ -429,6 +429,15 @@ def _create_exe_software_job(install_command, installer_path, download_url, name
     catalog_entry = catalog.match_exe(pe_metadata=pe_meta, sha256=pe_sha256,
                                       filename=Path(installer_path).name if installer_path else None)
 
+    if catalog_entry and catalog_entry.escalate_reason:
+        console.print(
+            f"\n[bold red]⛔ Engineer escalation — not packaging '{catalog_entry.id}'.[/bold red]\n"
+            f"{catalog_entry.escalate_reason}\n"
+            "This installer is flagged non-packageable in the catalog "
+            "(no silent install / no managed build). Nothing was enqueued."
+        )
+        raise click.Abort()
+
     if not catalog_entry:
         console.print(
             "\n[bold red]✗ No catalog entry matched this EXE.[/bold red]\n"
