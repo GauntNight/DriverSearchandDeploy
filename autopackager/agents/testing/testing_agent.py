@@ -222,11 +222,12 @@ class TestingAgent:
         validator = LocalInstallValidator(self.local_validation_config, emit=emit)
         result = validator.validate(package, job)
 
-        # Apply corrected detection facts and/or a corrected uninstall command
-        # (the uninstall retry ladder may find a working command even when the
-        # detection rule was already fine — persist it either way).
+        # Apply corrected detection facts and/or a corrected install/uninstall
+        # command (the retry ladders may find a working command even when the
+        # detection rule was already fine — persist whatever changed).
         corrected = result.get('corrected_detection_rules')
-        if corrected or result.get('corrected_uninstall_command'):
+        if (corrected or result.get('corrected_uninstall_command')
+                or result.get('corrected_install_command')):
             self._apply_detection_corrections(package, job, result)
 
         logger.info(
@@ -245,16 +246,17 @@ class TestingAgent:
 
         catalog_rules = result.get('corrected_detection_rules') or []
         uninstall_cmd = result.get('corrected_uninstall_command')
+        install_cmd = result.get('corrected_install_command')
 
-        # 1) Package gets Graph-format rules + the working uninstall command
-        #    (what THIS publish ships). Each is applied independently.
+        # 1) Package gets Graph-format rules + the working install/uninstall
+        #    commands (what THIS publish ships). Each is applied independently.
         graph_rules = []
         for r in catalog_rules:
             try:
                 graph_rules.append(detection_rule_to_graph(r))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Could not convert corrected rule to Graph", error=str(exc))
-        if graph_rules or uninstall_cmd:
+        if graph_rules or uninstall_cmd or install_cmd:
             with db_session_scope() as session:
                 pkg = session.query(Package).filter(Package.id == package.id).first()
                 if pkg:
@@ -262,10 +264,13 @@ class TestingAgent:
                         pkg.detection_rules = graph_rules
                     if uninstall_cmd:
                         pkg.uninstall_command = uninstall_cmd
+                    if install_cmd:
+                        pkg.install_command = install_cmd
             logger.info(
                 "Package corrected by validation",
                 package_id=package.id,
                 detection=bool(graph_rules), uninstall=bool(uninstall_cmd),
+                install=bool(install_cmd),
             )
 
         # 2) Catalog overlay gets catalog-format rules (so the next run is right).
@@ -289,12 +294,29 @@ class TestingAgent:
             if (uninstall_cmd and '{installer_filename}' not in uninstall_cmd
                     and not msi_productcode_uninstall):
                 updates['uninstall_command_template'] = uninstall_cmd
+            # A corrected install command (an alternate silent switch set that
+            # worked) is environment-agnostic — store it as a template with the
+            # filename placeholder so the next operator gets the right switches.
+            if install_cmd:
+                tmpl = self._installcmd_to_template(install_cmd)
+                if tmpl:
+                    updates['install_command_template'] = tmpl
             if updates:
                 installer_catalog.update_overlay_entry(
                     catalog_entry_id, updates,
                     validation_note=f"validated locally {today}; corrected by install validation",
                 )
                 logger.info("Catalog entry corrected by validation", entry_id=catalog_entry_id)
+
+    @staticmethod
+    def _installcmd_to_template(install_cmd: str) -> 'str | None':
+        """Turn a literal ``Foo.exe /S`` into a catalog template
+        ``{installer_filename} /S`` (filename-agnostic). Returns None if empty."""
+        parts = (install_cmd or "").strip().split(None, 1)
+        if not parts:
+            return None
+        switches = parts[1] if len(parts) > 1 else ""
+        return ("{installer_filename} " + switches).strip()
 
     def _update_package_test_status(self, package_id: int, test_result: Dict[str, Any]):
         """Update package test status in database"""

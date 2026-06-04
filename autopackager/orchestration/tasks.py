@@ -251,14 +251,36 @@ def testing_task(self, previous_result, job_id: int):
         # NO retry, and make sure nothing was left running.
         liv = result.get('local_install_validation')
         if liv and not liv.get('skipped') and not liv.get('passed'):
-            msg = ("Local install validation failed — install could not be verified "
-                   f"silently; not retrying. errors={liv.get('errors')}")
-            logger.error("Install validation failed (terminal, no retry)", job_id=job_id, detail=msg)
-            engine.mark_job_failed(job_id, msg)
-            _demo_event(job_id, "failed",
-                        "Install validation failed — publish blocked (no retry). "
-                        "Check the silent-install command.", level="error")
-            return {"job_id": job_id, "test_passed": False, "validation_failed": True}
+            escalate = bool(liv.get('needs_engineer_review'))
+            attempts = liv.get('install_attempts')
+            if escalate:
+                # The install ladder tried multiple silent strategies and none
+                # produced a verifiable install (e.g. RealPlayer-style
+                # bundleware). Mark FAILED and flag for engineer review so an
+                # operator can determine a manual silent command (or reject it).
+                msg = (f"Engineer escalation: no verifiable silent install after "
+                       f"{attempts} attempt(s) — manual review required.")
+                engine.update_job_state(
+                    job_id, JobState.FAILED, error_message=msg,
+                    metadata_update={'needs_engineer_review': True,
+                                     'escalation_reason': msg},
+                )
+                _demo_event(
+                    job_id, "failed",
+                    f"⛔ Failed — ENGINEER ESCALATION: no silent install after "
+                    f"{attempts} attempts. Manual review required.",
+                    level="error", escalation=True)
+            else:
+                msg = ("Local install validation failed — install could not be verified "
+                       f"silently; not retrying. errors={liv.get('errors')}")
+                engine.mark_job_failed(job_id, msg)
+                _demo_event(job_id, "failed",
+                            "Install validation failed — publish blocked (no retry). "
+                            "Check the silent-install command.", level="error")
+            logger.error("Install validation failed (terminal, no retry)",
+                         job_id=job_id, detail=msg, escalation=escalate)
+            return {"job_id": job_id, "test_passed": False,
+                    "validation_failed": True, "needs_engineer_review": escalate}
 
         error_msg = f"Testing failed: {result.get('error_message')}"
         logger.error("Testing failed", job_id=job_id, error=error_msg)
@@ -283,6 +305,16 @@ def deployment_task(self, previous_result, job_id: int):
     # If previous task indicated completion, skip
     if previous_result and previous_result.get('completed'):
         logger.info("Skipping deployment - no update needed", job_id=job_id)
+        return previous_result
+
+    # If testing did NOT pass (validation failure / engineer escalation), do not
+    # deploy. The chain still calls this task, but deploying would fail on
+    # "package has not passed testing" and then retry-loop. The job was already
+    # marked FAILED by testing_task — just short-circuit.
+    if previous_result and (previous_result.get('validation_failed')
+                            or previous_result.get('test_passed') is False):
+        logger.info("Skipping deployment - testing did not pass", job_id=job_id,
+                    needs_engineer_review=previous_result.get('needs_engineer_review'))
         return previous_result
 
     logger.info("Starting deployment phase", job_id=job_id)
