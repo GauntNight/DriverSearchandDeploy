@@ -252,6 +252,8 @@
         ? "Catalog hit — deterministic package."
         : data.branch === "substituted"
         ? "Consumer build — fetching the enterprise version on your behalf…"
+        : data.branch === "escalate"
+        ? "Known non-packageable installer — escalating for engineer review (nothing will be installed)."
         : "Driver job created.";
       appendLine({ ts: "", source: "system", text: branchMsg });
     } catch (e) {

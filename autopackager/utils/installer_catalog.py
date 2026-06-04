@@ -476,7 +476,10 @@ class CatalogEntry:
 
     id: str
     type: str  # 'msi' | 'exe'
-    install_command_template: str
+    # Defaulted (not required) so "marker" entries that never install — a
+    # consumer redirect (prefer_entry_id) or a non-packageable escalate entry
+    # (escalate_reason) — don't need a dummy command. Real entries still set it.
+    install_command_template: str = ""
     uninstall_command_template: Optional[str] = None
     # ---- Distribution channel ------------------------------------------
     # See DISTRIBUTION_KINDS for the controlled vocabulary. Mark every
@@ -623,6 +626,15 @@ class CatalogEntry:
     #   (version-agnostic where possible, e.g. a vendor "latest" link). Used as
     #   the substitution source when this entry is the target of prefer_entry_id.
     canonical_download_url: Optional[str] = None
+    # escalate_reason -- when set, this installer is KNOWN-NON-PACKAGEABLE: do
+    #   not attempt to package/install it. Intake escalates immediately (marks
+    #   the job failed + needs_engineer_review with this reason) BEFORE any
+    #   install attempt, so a UI-only / detached-stub installer never runs.
+    #   Distinct from prefer_entry_id (which redirects to a better build): use
+    #   escalate_reason when there is NO managed equivalent to redirect to
+    #   (consumer bundleware like RealPlayer). An entry with escalate_reason
+    #   needs no install_command_template / detection_rules (it never installs).
+    escalate_reason: Optional[str] = None
     # filename_pattern -- disambiguator for product lines whose builds share
     #   IDENTICAL PE metadata and differ only by installer filename (e.g. VS Code
     #   ships a per-user 'VSCodeUserSetup-*.exe' and a per-machine 'VSCodeSetup-*.exe'

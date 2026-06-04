@@ -484,6 +484,30 @@ entries:
     min_os_version: "1607"
     notes: "ChromeSetup.exe is the GENERIC Google Updater bootstrapper (PE product name 'Google Installer (x86)', OriginalFilename UpdaterSetup.exe) -- the same stub Google ships for several products, so this PE match is Chrome-assuming (Chrome is by far the dominant case). Carried ONLY to detect the mistake and redirect to chrome-enterprise. Intentionally has no detection_rules -- it must never publish; the substitution intercepts first. supersedence.mode=none (never a supersedence target)."
 
+  # ---- RealPlayer: KNOWN NON-PACKAGEABLE (escalate / don't package) ----
+  # RealPlayer's "RealNetworks Installer" is consumer bundleware: it pops an
+  # interactive UI and ignores every silent switch we tried, AND (like the
+  # Chrome stub) detaches a background install that escapes the process tree.
+  # Unlike Firefox/Chrome there is NO managed/enterprise build to redirect to,
+  # so there's nothing to substitute -- the correct outcome is to refuse and
+  # flag for engineer review. `escalate_reason` makes intake escalate
+  # IMMEDIATELY, before any install attempt (no UI, no detached install). See
+  # packaging-knowledge/05 (RealPlayer war story).
+  - id: realplayer
+    type: exe
+    installer_family: custom
+    distribution: standard
+    pe_company_name: "RealNetworks"
+    pe_product_name: "RealNetworks Installer"
+    escalate_reason: "RealPlayer is consumer bundleware with no silent install or uninstall (every switch pops a UI) and no managed/enterprise build to deploy. It cannot be packaged for Intune -- flagged for engineer review instead of packaged."
+    supersedence:
+      mode: none
+    information_url: "https://www.real.com/"
+    description: "RealPlayer / RealNetworks consumer installer. NOT a managed-deployment target -- known non-packageable; intake escalates for engineer review."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "Carried ONLY to recognize the mistake and escalate cleanly (no install attempt). Consumer online stub: pops a UI, ignores silent switches, detaches a background install (RealPlayer + updater service). No enterprise equivalent to substitute. supersedence.mode=none. See packaging-knowledge/05."
+
   # ---- Developer tools: clean per-machine MSIs -------------------
   # Well-behaved MSI installers (silent via msiexec /qn, ProductCode
   # detection, stable UpgradeCode for supersedence). ProductName carries

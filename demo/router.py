@@ -354,6 +354,16 @@ async def _handle_installer(
         )
     analysis = await asyncio.to_thread(intake.analyze, saved_path)
 
+    # Known non-packageable (escalate / don't package): the matched catalog
+    # entry carries an escalate_reason (e.g. RealPlayer bundleware). Escalate
+    # immediately — create a job row for the record + SSE channel, mark it
+    # failed/engineer-review, and run NO packaging or install attempt.
+    if analysis.escalate:
+        job_id = await asyncio.to_thread(intake.create_software_job_row, analysis, gate=gate)
+        background.add_task(_run_escalation, job_id, analysis.escalate_reason or
+                            "Known non-packageable installer — engineer review required.")
+        return {"job_id": job_id, "branch": "escalate", "analysis": analysis.to_dict()}
+
     # Consumer-vs-enterprise: the dropped installer matched a consumer build
     # that redirects to a better (enterprise) one. Create the job, then fetch
     # the right installer on the user's behalf with live console feedback.
@@ -382,6 +392,27 @@ async def _handle_installer(
         "job_id": job_id, "branch": "miss",
         "analysis": analysis.to_dict(),
     }
+
+
+def _run_escalation(job_id: int, reason: str):
+    """Background: mark a known non-packageable installer as failed + engineer
+    escalation and narrate it. No packaging, no install attempt, no dispatch."""
+    time.sleep(1.2)  # let the browser's SSE subscription come up first
+    events.publish_pipeline_event(
+        job_id, "pending", f"Known non-packageable installer — {reason}", level="warn")
+    events.publish_pipeline_event(
+        job_id, "failed",
+        f"⛔ Failed — ENGINEER ESCALATION: {reason} Nothing was installed or published.",
+        level="error", escalation=True)
+    try:
+        from autopackager.orchestration.engine import OrchestrationEngine
+        from autopackager.models.job import JobState
+        OrchestrationEngine().update_job_state(
+            job_id, JobState.FAILED, error_message=reason,
+            metadata_update={"needs_engineer_review": True, "escalation_reason": reason})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not mark escalation job failed", job_id=job_id, error=str(exc))
+    events.publish_end(job_id, ok=False, text="escalated")
 
 
 def _run_miss_pipeline(job_id: int, saved_path: str, gate: bool, mode: Optional[str]):
