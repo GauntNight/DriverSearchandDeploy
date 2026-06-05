@@ -1206,5 +1206,79 @@ def discover_unmanaged(source, fmt, out, show_os, limit):
         console.print(f"[dim]note: {e}[/dim]")
 
 
+@cli.command('queue-unmanaged')
+@click.option('--source', type=click.Choice(['intune', 'local', 'both']), default='both',
+              help='Where to read installed software (passed to the delta).')
+@click.option('--include-known/--candidates-only', default=False,
+              help='Also queue the known-packageable bucket (in-catalog, not yet '
+                   'published), not just the unmanaged candidates.')
+@click.option('--limit', type=int, default=10,
+              help='Max number of items to queue (highest device-count first).')
+@click.option('--mode', type=click.Choice(['replay', 'live', 'off']), default=None,
+              help='Research-bridge mode for acquisition/packaging (default: server default).')
+@click.option('--yes', is_flag=True, default=False, help='Skip the confirmation prompt.')
+def queue_unmanaged(source, include_known, limit, mode, yes):
+    """Queue unmanaged-software-delta candidates for packaging (gated, test scope).
+
+    Builds the delta, takes the top unmanaged candidates (optionally also the
+    known-packageable bucket), acquires an installer for each (catalog URL or the
+    research bridge), and runs the gated discovery→packaging→testing pipeline one
+    item at a time. Deployment is HELD for the approval gate — nothing is written
+    to the tenant by this command. The CLI blocks until the batch finishes.
+    """
+    from autopackager.services import software_delta
+    from demo import queue as pkg_queue
+
+    graph_client = None
+    if source in ('intune', 'both'):
+        try:
+            from autopackager.utils.graph_client import GraphAPIClient
+            graph_client = GraphAPIClient()
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]⚠[/yellow] Graph client unavailable ({exc}); using local ARP.")
+
+    delta = software_delta.build_delta(source=source, graph_client=graph_client)
+    rows = list(delta.get('candidates', []))
+    if include_known:
+        rows += list(delta.get('known_packageable', []))
+    rows = rows[:max(0, limit)]
+    if not rows:
+        console.print("[green]Nothing to queue[/green] — no unmanaged candidates found.")
+        return
+
+    table = Table(title=f"Queueing {len(rows)} item(s) — gated, Ring 0 (test)")
+    table.add_column("Name", style="bold")
+    table.add_column("Publisher")
+    table.add_column("Version")
+    table.add_column("Bucket")
+    table.add_column("In catalog?")
+    for r in rows:
+        table.add_row(r.get('name', ''), r.get('publisher') or '', r.get('version') or '',
+                      r.get('bucket') or '', r.get('in_catalog') or '—')
+    console.print(table)
+
+    if not yes and not click.confirm(f"Queue these {len(rows)} item(s) for packaging?", default=True):
+        console.print("Aborted.")
+        return
+
+    import uuid
+    batch_id = uuid.uuid4().hex[:12]
+    specs = []
+    for r in rows:
+        candidate = {
+            'name': r.get('name'), 'publisher': r.get('publisher'),
+            'version': r.get('version'), 'bucket': r.get('bucket'),
+            'in_catalog': r.get('in_catalog'), 'device_count': r.get('device_count'),
+        }
+        job_id = pkg_queue.create_queue_job_row(candidate, batch_id=batch_id)
+        specs.append({'job_id': job_id, 'candidate': candidate})
+        console.print(f"  [cyan]queued[/cyan] job #{job_id} — {candidate['name']}")
+
+    console.print(f"\n[bold]Processing batch {batch_id}[/bold] (one item at a time)…")
+    pkg_queue.run_batch(specs, mode=mode)
+    console.print(f"[green]✓[/green] Batch {batch_id} processed. "
+                  "Approve individual jobs to deploy to Ring 0.")
+
+
 if __name__ == '__main__':
     cli()
