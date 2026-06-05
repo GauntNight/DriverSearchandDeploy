@@ -111,6 +111,31 @@ version_check_schedule:
   enabled: false
   interval_hours: 24
 
+# Unmanaged-software delta (what's installed in the environment but not packaged).
+# Drives `cli.py discover-unmanaged` + the demo delta panel. The classifier sorts
+# every installed app into: managed (published to Intune) / known_packageable (in
+# the catalog, not yet published) / standard_os_component / unmanaged_candidate /
+# ignored. These patterns (case-insensitive regex, matched against DisplayName)
+# define the "standard OS component" bucket and the ignore list. Microsoft *apps*
+# (Azure CLI, VS Code, PowerShell) are deliberately NOT listed here -- they are
+# packaging candidates like any vendor.
+software_delta:
+  microsoft_os_components:
+    - "^Microsoft Edge($| WebView2| Update)"
+    - "^Microsoft OneDrive"
+    - "^Microsoft Intune Management Extension"
+    - "^Microsoft Visual C\\+\\+ \\d{4}"          # VC++ redistributables
+    - "^Microsoft \\.NET (Runtime|Host|Targeting|SDK|Framework)"
+    - "^Windows (SDK|Software Development Kit|App Certification)"
+    - "^Microsoft Update Health Tools"
+    - "^Microsoft Windows Desktop Runtime"
+    - "Redistributable"                            # generic runtime redists
+  ignore_patterns:
+    - "^KB\\d+"                                     # standalone update packages
+    - "Security Update"
+    - "^Update for "
+    - "Hotfix"
+
 # Paths
 paths:
   downloads: "data/downloads"

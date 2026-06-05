@@ -91,6 +91,7 @@
         <h2 class="panel-title">Intune · Apps › Windows</h2>
         <div class="center-actions">
           <span class="src-badge" id="intune-mode">…</span>
+          <button id="software-gap" class="btn ghost">Software gap ⌕</button>
           <button id="verify" class="btn ghost">Verify in Intune ↗</button>
         </div>
       </div>
@@ -131,6 +132,22 @@
         <button class="btn" id="scope-test">Test ring only</button>
       </div>
       <button class="modal-x" id="scope-cancel" title="Cancel">✕</button>
+    </div>
+  </div>
+
+  <!-- Software-gap delta (installed but not packaged) -->
+  <div class="modal-overlay hidden" id="gap-overlay">
+    <div class="modal gap-modal" role="dialog" aria-modal="true" aria-labelledby="gap-title">
+      <h3 id="gap-title">Software gap — installed but not packaged</h3>
+      <div class="gap-counts" id="gap-counts"></div>
+      <div class="gap-note hidden" id="gap-note"></div>
+      <div class="gap-table-wrap">
+        <table class="intune-table" id="gap-table">
+          <thead><tr><th>Unmanaged candidate</th><th>Publisher</th><th>Version</th><th>Devices</th></tr></thead>
+          <tbody id="gap-body"><tr class="empty"><td colspan="4">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <button class="modal-x" id="gap-cancel" title="Close">✕</button>
     </div>
   </div>
 

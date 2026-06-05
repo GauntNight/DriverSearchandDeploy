@@ -54,6 +54,32 @@ async def api_verify_url(app_id: Optional[str] = None):
     return {"url": intune_view.verify_in_intune_url(app_id)}
 
 
+@demo_router.get("/api/demo/intune/software-delta")
+async def api_software_delta(source: str = "both"):
+    """The unmanaged-software gap: installed-but-not-packaged software, classified.
+
+    ``source`` ∈ {intune, local, both}. Builds from Intune Detected Apps (env-wide)
+    + local ARP, vs the managed (published) + catalog set. Degrades to local ARP
+    when the SP lacks DeviceManagementManagedDevices.Read.All (intune_unavailable).
+    """
+    return await asyncio.to_thread(_build_software_delta, source)
+
+
+def _build_software_delta(source: str) -> dict:
+    from autopackager.services import software_delta
+
+    if source not in ("intune", "local", "both"):
+        source = "both"
+    graph_client = None
+    if source in ("intune", "both"):
+        try:
+            from autopackager.utils.graph_client import GraphAPIClient
+            graph_client = GraphAPIClient()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Graph client unavailable for software-delta", error=str(exc))
+    return software_delta.build_delta(source=source, graph_client=graph_client)
+
+
 @demo_router.post("/api/demo/intune/check-version")
 async def api_check_version(request: Request):
     """The 'refresh' brain (spec §2): is there a newer version upstream?

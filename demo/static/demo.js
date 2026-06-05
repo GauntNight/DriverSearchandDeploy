@@ -328,6 +328,13 @@
       window.open(d.url, "_blank", "noopener");
     });
 
+    // Software-gap delta modal.
+    $("software-gap").addEventListener("click", openSoftwareGap);
+    $("gap-cancel").addEventListener("click", () => $("gap-overlay").classList.add("hidden"));
+    $("gap-overlay").addEventListener("click", (e) => {
+      if (e.target === $("gap-overlay")) $("gap-overlay").classList.add("hidden");
+    });
+
     // Upgrade scope dialog — exactly two choices (spec §4).
     $("scope-all").addEventListener("click", () => chooseScope("all"));
     $("scope-test").addEventListener("click", () => chooseScope("test"));
@@ -335,6 +342,54 @@
     $("scope-overlay").addEventListener("click", (e) => {
       if (e.target === $("scope-overlay")) closeScopeDialog();
     });
+  }
+
+  // ---- Software gap (installed but not packaged) ---------------------------
+  function gapChip(cls, text) { return `<span class="gap-chip ${cls}">${esc(text)}</span>`; }
+
+  async function openSoftwareGap() {
+    $("gap-overlay").classList.remove("hidden");
+    $("gap-counts").innerHTML = "";
+    $("gap-note").classList.add("hidden");
+    $("gap-body").innerHTML = `<tr class="empty"><td colspan="4">Scanning inventory…</td></tr>`;
+    try {
+      const r = await fetch("/api/demo/intune/software-delta?source=both");
+      const d = await r.json();
+      renderSoftwareGap(d);
+    } catch (e) {
+      $("gap-body").innerHTML = `<tr class="empty"><td colspan="4">Error: ${esc(String(e))}</td></tr>`;
+    }
+  }
+
+  function renderSoftwareGap(d) {
+    const c = d.counts || {};
+    $("gap-counts").innerHTML =
+      gapChip("candidate", `${c.unmanaged_candidate || 0} unmanaged candidates`) +
+      gapChip("known", `${c.known_packageable || 0} known-packageable`) +
+      gapChip("os", `${c.standard_os_component || 0} standard OS`) +
+      gapChip("os", `${c.store_app || 0} store/MSIX`) +
+      gapChip("managed", `${c.managed || 0} managed`);
+    if (d.intune_unavailable) {
+      $("gap-note").textContent =
+        "Intune Detected Apps unavailable (service principal needs DeviceManagementManagedDevices.Read.All) — showing local device ARP only.";
+      $("gap-note").classList.remove("hidden");
+    }
+    const cands = d.candidates || [];
+    if (!cands.length) {
+      $("gap-body").innerHTML = `<tr class="empty"><td colspan="4">No unmanaged candidates — all installed software is managed or standard OS.</td></tr>`;
+      return;
+    }
+    $("gap-body").innerHTML = "";
+    for (const a of cands) {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        `<td class="app-name"></td>` +
+        `<td>${esc(a.publisher || "")}</td>` +
+        `<td>${esc(a.version || "")}</td>` +
+        `<td>${a.device_count != null ? esc(String(a.device_count)) : "—"}</td>`;
+      tr.querySelector(".app-name").textContent = a.name || "";
+      $("gap-body").appendChild(tr);
+    }
   }
 
   // ---- Intune center panel -------------------------------------------------
