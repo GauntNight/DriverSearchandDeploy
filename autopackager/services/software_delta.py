@@ -122,14 +122,22 @@ def _catalog_index(catalog) -> List[Tuple[str, str]]:
 
 
 def _catalog_match(norm_name: str, catalog_index: List[Tuple[str, str]]) -> Optional[str]:
-    """Return the catalog entry id matching ``norm_name`` (substring either way,
-    min length 4 to avoid spurious hits), or None."""
+    """Return the catalog entry id matching ``norm_name``, or None.
+
+    Exact match always wins. A fuzzy substring match (either direction) requires
+    BOTH names to be >= 4 chars — otherwise a short name lands inside an
+    unrelated longer one (the real bug: "git" is a substring of "snagit", so
+    Git matched the snagit-2023 entry). Short names match only exactly.
+    """
     if not norm_name:
         return None
     for cnorm, cid in catalog_index:
         if not cnorm:
             continue
-        if cnorm == norm_name or (len(cnorm) >= 4 and (cnorm in norm_name or norm_name in cnorm)):
+        if cnorm == norm_name:
+            return cid
+        if (len(cnorm) >= 4 and len(norm_name) >= 4
+                and (cnorm in norm_name or norm_name in cnorm)):
             return cid
     return None
 

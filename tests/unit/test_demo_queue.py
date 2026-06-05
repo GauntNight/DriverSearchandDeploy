@@ -295,6 +295,27 @@ class TestFindInstallerUrl(unittest.TestCase):
         self.assertEqual(out["provenance"], "official downloads page")
         self.assertEqual(out["confidence"], "high")  # normalized lower-case
 
+    def test_stream_json_result_message_is_captured(self):
+        # REGRESSION: the terminal stream-json 'result' event carries the model's
+        # final answer (with the fenced json block). It must reach the parser —
+        # dropping it left agent-found URLs unparsed (the unclean hand-off).
+        import json as _json
+        from demo import claude_bridge
+
+        line = _json.dumps({
+            "type": "result", "subtype": "success",
+            "result": 'Done.\n```json\n{"download_url": '
+                      '"https://github.com/cli/cli/releases/download/v2.93.0/'
+                      'gh_2.93.0_windows_amd64.msi", "provenance": "GitHub releases", '
+                      '"confidence": "high"}\n```',
+        })
+        rendered = claude_bridge._render_ndjson_line(line)
+        parsed = claude_bridge._parse_acquire_result(rendered)
+        self.assertEqual(parsed["download_url"],
+                         "https://github.com/cli/cli/releases/download/v2.93.0/"
+                         "gh_2.93.0_windows_amd64.msi")
+        self.assertEqual(parsed["confidence"], "high")
+
 
 # --- resolve_acquisition: agent-search tier --------------------------------
 

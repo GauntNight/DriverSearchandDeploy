@@ -353,11 +353,20 @@ def _render_ndjson_line(raw: str) -> str:
                 parts.append(block.get("text", ""))
             elif block.get("type") == "tool_use":
                 parts.append(f"⚙ tool: {block.get('name')}")
-        return " ".join(p for p in parts if p).strip()[:500]
+        # Keep generous headroom: the model's FINAL answer (which carries the
+        # fenced ```json block the parsers need) arrives as an assistant text
+        # block. Truncating it to a few hundred chars could clip the closing
+        # fence and break the hand-off, so allow the whole message through.
+        return " ".join(p for p in parts if p).strip()[:4000]
     if typ == "tool_result":
         return "↳ tool result received"
     if typ == "result":
-        return "✓ research run complete"
+        # The terminal 'result' event repeats the model's final answer text in
+        # obj['result']. Return it (not a friendly placeholder) so it lands in
+        # the collected transcript the JSON parsers read — dropping it was the
+        # bug that left agent-found URLs unparsed (parked as 'awaiting manual'
+        # instead of 'awaiting confirm').
+        return obj.get("result") or "✓ research run complete"
     return ""
 
 
