@@ -158,6 +158,47 @@ class GraphAPIClient:
         logger.info("Fetching Win32 app", app_id=app_id)
         return self.get(f"deviceAppManagement/mobileApps/{app_id}")
 
+    def list_detected_apps(self, page_limit: int = 50):
+        """Return Intune's Detected Apps inventory across all managed devices.
+
+        ``deviceManagement/detectedApps`` is Intune's aggregated installed-
+        software list (derived from device ARP), with a per-app ``deviceCount``.
+        Pages by following ``@odata.nextLink``. Each row:
+        ``{id, displayName, version, publisher, platform, deviceCount, sizeInByte}``.
+
+        Requires ``DeviceManagementManagedDevices.Read.All`` on the app
+        registration — without it Graph returns **403**; the exception
+        propagates so callers can fall back to local ARP.
+
+        ``page_limit`` caps how many nextLink pages we follow (safety bound on
+        very large tenants).
+        """
+        logger.info("Fetching Intune detected apps inventory")
+        results = []
+        data = self.get("deviceManagement/detectedApps?$top=100&$orderby=deviceCount desc")
+        pages = 0
+        while True:
+            results.extend(data.get("value", []) or [])
+            nxt = data.get("@odata.nextLink")
+            pages += 1
+            if not nxt or pages >= page_limit:
+                break
+            resp = requests.get(nxt, headers=self._get_headers())
+            self._raise_with_details(resp)
+            data = resp.json()
+        logger.info("Detected apps fetched", count=len(results), pages=pages)
+        return results
+
+    def list_device_detected_apps(self, device_id: str):
+        """Detected apps for a single managed device (per-device drill-down).
+
+        ``managedDevices/{id}/detectedApps``. Same Read.All requirement.
+        """
+        logger.info("Fetching detected apps for device", device_id=device_id)
+        return self.get(
+            f"deviceManagement/managedDevices/{device_id}/detectedApps"
+        ).get("value", []) or []
+
     def create_win32_app(self, app_data):
         """Create a new Win32 app"""
         logger.info("Creating Win32 app", app_name=app_data.get('displayName'))

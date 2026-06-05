@@ -158,5 +158,6 @@ POST /api/demo/jobs                     intake: multipart file | JSON {url} | JS
 GET  /api/demo/stream/{job_id}          SSE: pipeline + claude + lamp events
 GET  /api/demo/intune/apps              live tenant Win32 apps (fixture fallback)
 GET  /api/demo/intune/verify-url        deep-link to the Intune portal
+GET  /api/demo/intune/software-delta    installed-but-not-packaged gap (source=intune|local|both)
 POST /api/demo/jobs/{job_id}/approve    release the optional Ring 0 gate
 ```

@@ -1109,5 +1109,102 @@ def version():
     console.print(f"[bold]AutoPackager[/bold] version {__version__}")
 
 
+@cli.command('discover-unmanaged')
+@click.option('--source', type=click.Choice(['intune', 'local', 'both']), default='both',
+              help='Where to read installed software: intune (Detected Apps, env-wide), '
+                   'local (this device ARP), or both. Falls back to local on a 403.')
+@click.option('--format', 'fmt', type=click.Choice(['table', 'json', 'csv']), default='table')
+@click.option('--out', type=click.Path(dir_okay=False), help='Write the report to this file.')
+@click.option('--show-os', is_flag=True, default=False,
+              help='Also list the standard OS-component + known-packageable buckets.')
+@click.option('--limit', type=int, default=40, help='Max candidate rows to print.')
+def discover_unmanaged(source, fmt, out, show_os, limit):
+    """Delta of software installed in the environment but NOT packaged in Intune.
+
+    Sorts every installed app into managed / known-packageable / standard-OS /
+    unmanaged-candidate / ignored, and surfaces the unmanaged candidates — the
+    backlog of apps that should be packaged but aren't.
+    """
+    import json
+    from autopackager.services import software_delta
+
+    graph_client = None
+    if source in ('intune', 'both'):
+        try:
+            from autopackager.utils.graph_client import GraphAPIClient
+            graph_client = GraphAPIClient()
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]⚠[/yellow] Graph client unavailable ({exc}); using local ARP.")
+
+    delta = software_delta.build_delta(source=source, graph_client=graph_client)
+
+    if delta['intune_unavailable']:
+        console.print(
+            "[yellow]⚠ Intune Detected Apps unavailable[/yellow] — the AutoPackager service "
+            "principal needs [cyan]DeviceManagementManagedDevices.Read.All[/cyan] (admin "
+            "consent). Showing local ARP only.")
+
+    if fmt in ('json', 'csv'):
+        if fmt == 'json':
+            text = json.dumps(delta, indent=2, default=str)
+        else:
+            lines = ["bucket,name,publisher,version,device_count,in_catalog,sources"]
+            for bucket in ('unmanaged_candidate', 'known_packageable', 'standard_os_component', 'managed'):
+                key = {'unmanaged_candidate': 'candidates',
+                       'known_packageable': 'known_packageable',
+                       'standard_os_component': 'standard_os_components',
+                       'managed': 'managed'}[bucket]
+                for r in delta.get(key, []):
+                    vals = [bucket, r.get('name', ''), r.get('publisher') or '', r.get('version') or '',
+                            str(r.get('device_count') or ''), str(r.get('in_catalog') or ''),
+                            ';'.join(r.get('sources', []))]
+                    lines.append(",".join('"%s"' % str(v).replace('"', "'") for v in vals))
+            text = "\n".join(lines)
+        if out:
+            Path(out).write_text(text, encoding='utf-8')
+            console.print(f"[green]✓[/green] Wrote {fmt.upper()} report to {out}")
+        else:
+            console.print(text)
+        return
+
+    c = delta['counts']
+    console.print(
+        f"\n[bold]Software delta[/bold]  (source={delta['source']}, host={delta['hostname']}, "
+        f"installed={delta['total_installed']})")
+    console.print(
+        f"  managed: {c['managed']}    known-packageable: {c['known_packageable']}    "
+        f"standard-OS: {c['standard_os_component']}    store/MSIX: {c.get('store_app', 0)}    "
+        f"[bold red]unmanaged candidates: {c['unmanaged_candidate']}[/bold red]    "
+        f"ignored: {c['ignored']}")
+
+    table = Table(title="Unmanaged candidates — should be packaged but aren't")
+    table.add_column("Name", style="bold")
+    table.add_column("Publisher")
+    table.add_column("Version")
+    table.add_column("Devices", justify="right")
+    table.add_column("In catalog?")
+    for r in delta['candidates'][:limit]:
+        table.add_row(r.get('name', ''), r.get('publisher') or '', r.get('version') or '',
+                      str(r.get('device_count') or ''), r.get('in_catalog') or '—')
+    console.print(table)
+    extra = len(delta['candidates']) - limit
+    if extra > 0:
+        console.print(f"  [dim]… and {extra} more (raise --limit or --format json).[/dim]")
+
+    if show_os:
+        if delta['known_packageable']:
+            console.print("\n[bold]Known-packageable[/bold] (in catalog, not yet published): "
+                          + ", ".join(r['name'] for r in delta['known_packageable']))
+        if delta['standard_os_components']:
+            console.print("[dim]Standard OS components: "
+                          + ", ".join(r['name'] for r in delta['standard_os_components']) + "[/dim]")
+
+    if out:
+        Path(out).write_text(json.dumps(delta, indent=2, default=str), encoding='utf-8')
+        console.print(f"\n[green]✓[/green] Wrote full JSON report to {out}")
+    for e in delta['errors']:
+        console.print(f"[dim]note: {e}[/dim]")
+
+
 if __name__ == '__main__':
     cli()
