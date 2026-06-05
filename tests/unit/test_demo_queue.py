@@ -61,14 +61,23 @@ class TestResolveAcquisition(unittest.TestCase):
         bridge.assert_called_once()
 
     def test_no_url_returns_none(self):
-        with patch("demo.queue.claude_bridge.check_version", return_value={}):
+        # Unknown candidate (no catalog entry) → agent search finds nothing.
+        with patch("demo.queue.claude_bridge.find_installer_url", return_value={}):
             out = pkg_queue.resolve_acquisition({"name": "Obscure", "publisher": "Nobody"})
         self.assertIsNone(out["download_url"])
 
     def test_non_installer_url_rejected(self):
-        with patch("demo.queue.claude_bridge.check_version",
-                   return_value={"download_url": "https://x.example/release-notes.html"}):
-            out = pkg_queue.resolve_acquisition({"name": "Thing"})
+        # Known product whose version-check returns a non-installer link → rejected,
+        # then the agent search also finds nothing → no URL.
+        entry = Mock()
+        entry.canonical_download_url = None
+        cat = Mock()
+        cat.by_id.return_value = entry
+        with patch("autopackager.utils.installer_catalog.load_catalog", return_value=cat), \
+             patch("demo.queue.claude_bridge.check_version",
+                   return_value={"download_url": "https://x.example/release-notes.html"}), \
+             patch("demo.queue.claude_bridge.find_installer_url", return_value={}):
+            out = pkg_queue.resolve_acquisition({"name": "Thing", "in_catalog": "thing"})
         self.assertIsNone(out["download_url"])  # .html is not a known installer
 
 
@@ -290,11 +299,9 @@ class TestFindInstallerUrl(unittest.TestCase):
 # --- resolve_acquisition: agent-search tier --------------------------------
 
 class TestResolveAcquisitionAgentSearch(unittest.TestCase):
-    def test_agent_search_when_version_check_empty(self):
-        # No catalog id → no catalog URL; version-check yields nothing; the agent
-        # search finds one → source 'agent-search' + provenance/confidence.
-        with patch("demo.queue.claude_bridge.check_version", return_value={}), \
-             patch("demo.queue.claude_bridge.find_installer_url",
+    def test_unknown_candidate_uses_agent_search(self):
+        # No catalog entry → straight to the agent web search (untrusted → confirm).
+        with patch("demo.queue.claude_bridge.find_installer_url",
                    return_value={"download_url": "https://x.example/tool.exe",
                                  "provenance": "vendor site", "confidence": "medium"}) as find:
             out = pkg_queue.resolve_acquisition({"name": "Tool", "publisher": "Vendor"})
@@ -304,12 +311,19 @@ class TestResolveAcquisitionAgentSearch(unittest.TestCase):
         self.assertEqual(out["confidence"], "medium")
         find.assert_called_once()
 
-    def test_version_check_wins_before_agent_search(self):
-        with patch("demo.queue.claude_bridge.check_version",
+    def test_known_product_version_check_wins_before_agent_search(self):
+        # WITH a catalog entry, version-check is trusted and short-circuits search.
+        entry = Mock()
+        entry.canonical_download_url = None
+        cat = Mock()
+        cat.by_id.return_value = entry
+        with patch("autopackager.utils.installer_catalog.load_catalog", return_value=cat), \
+             patch("demo.queue.claude_bridge.check_version",
                    return_value={"download_url": "https://x.example/known.msi",
                                  "latest_version": "2.0"}), \
              patch("demo.queue.claude_bridge.find_installer_url") as find:
-            out = pkg_queue.resolve_acquisition({"name": "Known", "publisher": "V"})
+            out = pkg_queue.resolve_acquisition(
+                {"name": "Known", "publisher": "V", "in_catalog": "known"})
         self.assertEqual(out["source"], "version-check")
         find.assert_not_called()  # didn't need to search
 

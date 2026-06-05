@@ -77,10 +77,12 @@ def resolve_acquisition(
         "download_url": None, "source": None, "latest_version": version,
         "provenance": None, "confidence": None,
     }
+    label = (f"{name} {publisher}".strip()) or entry_id or "application"
+    slug = entry_id or name
 
-    # 1) Curated catalog URL — trusted.
+    # KNOWN product (has a catalog entry): trust the curated catalog URL, then the
+    # version-check brain (the catalog gives us a product + source context).
     entry = None
-    source_url = None
     if entry_id:
         try:
             from autopackager.utils import installer_catalog
@@ -88,29 +90,29 @@ def resolve_acquisition(
             entry = installer_catalog.load_catalog().by_id(entry_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Queue: catalog lookup failed", entry_id=entry_id, error=str(exc))
-        if entry and entry.canonical_download_url:
+    if entry:
+        if entry.canonical_download_url:
             out.update(download_url=entry.canonical_download_url, source="catalog")
             return out
-        source_url = entry.canonical_download_url if entry else None
+        try:
+            res = claude_bridge.check_version(
+                label, version, entry.canonical_download_url,
+                mode=mode, job_id=job_id, slug=slug,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Queue: version-check bridge failed", candidate=name, error=str(exc))
+            res = {}
+        url = (res.get("download_url") or "").strip() or None
+        if url and intake.is_known_installer(url):
+            out.update(download_url=url, source="version-check",
+                       latest_version=res.get("latest_version") or version)
+            return out
+        # Known product but no curated/version URL — fall through to a web search,
+        # which (being agent-found) still requires operator confirm.
 
-    # 2) Version-check brain — latest version + URL for a known product.
-    label = (f"{name} {publisher}".strip()) or entry_id or "application"
-    slug = entry_id or name
-    try:
-        res = claude_bridge.check_version(
-            label, version, source_url, mode=mode, job_id=job_id, slug=slug,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Queue: version-check bridge failed", candidate=name, error=str(exc))
-        res = {}
-    url = (res.get("download_url") or "").strip() or None
-    if url and intake.is_known_installer(url):
-        out.update(download_url=url, source="version-check",
-                   latest_version=res.get("latest_version") or version)
-        return out
-
-    # 3) Agent web-search for an unknown app's installer (live only). The URL is
-    # untrusted → the caller requires an operator confirm before download.
+    # UNKNOWN candidate (or a known product with no resolvable URL): the agent
+    # searches the web for the official installer (LIVE only). This URL is NOT
+    # trusted — the caller requires an operator confirm before download/install.
     try:
         found = claude_bridge.find_installer_url(
             name, publisher, mode=mode, job_id=job_id, slug=slug)
