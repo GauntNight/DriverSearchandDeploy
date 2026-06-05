@@ -118,6 +118,12 @@
           <div class="lamp-sub" id="lamp-sub">preflight not run</div>
         </div>
       </div>
+      <!-- Action bar: shown while an action runs; Cancel aborts it. Other
+           actions stay greyed out until the current one settles or is cancelled. -->
+      <div class="action-bar hidden" id="action-bar">
+        <span class="action-status" id="action-status">Working…</span>
+        <button class="btn danger" id="action-cancel" title="Cancel the current action">Cancel ✕</button>
+      </div>
       <div class="console" id="console"></div>
     </section>
   </main>
@@ -143,9 +149,21 @@
       <div class="gap-note hidden" id="gap-note"></div>
       <div class="gap-table-wrap">
         <table class="intune-table" id="gap-table">
-          <thead><tr><th>Unmanaged candidate</th><th>Publisher</th><th>Version</th><th>Devices</th></tr></thead>
-          <tbody id="gap-body"><tr class="empty"><td colspan="4">Loading…</td></tr></tbody>
+          <thead><tr>
+            <th class="gap-check"><input type="checkbox" id="gap-select-all" title="Select all" /></th>
+            <th>Software</th><th>Publisher</th><th>Version</th><th>Bucket</th><th>Devices</th>
+          </tr></thead>
+          <tbody id="gap-body"><tr class="empty"><td colspan="6">Loading…</td></tr></tbody>
         </table>
+      </div>
+      <div class="gap-actions">
+        <span class="gap-sel-note" id="gap-sel-note">Select software to queue for packaging.</span>
+        <button class="btn primary" id="gap-queue" disabled>Queue selected for packaging</button>
+      </div>
+      <div class="gap-hint">
+        Queued items are acquired, packaged, and install-tested on this build box
+        one at a time, then held at the <strong>Ring 0 approval gate</strong> —
+        nothing is written to the tenant until you approve each one.
       </div>
       <button class="modal-x" id="gap-cancel" title="Close">✕</button>
     </div>
