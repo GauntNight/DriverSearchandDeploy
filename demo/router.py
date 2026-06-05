@@ -161,6 +161,27 @@ async def api_cancel_job(job_id: int):
     return {"job_id": job_id, "cancelled": bool(ok)}
 
 
+@demo_router.post("/api/demo/queue/{job_id}/confirm-url")
+async def api_queue_confirm_url(job_id: int, request: Request, background: BackgroundTasks):
+    """Approve an agent-FOUND installer URL for an ``awaiting_confirm`` queue item.
+
+    Body ``{url?}`` — optional override of the stashed proposed URL (lets the
+    operator correct it). Resumes the gated pipeline: download → analyze →
+    discovery→packaging→testing (deployment still held for the approval gate).
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    url = (body or {}).get("url") or None
+    if url and not intake.is_known_installer(url):
+        return JSONResponse(
+            {"error": "url must point to a direct .msi, .exe, or .zip installer."},
+            status_code=400)
+    background.add_task(pkg_queue.confirm_and_package, job_id, url)
+    return {"job_id": job_id, "branch": "queue-confirm"}
+
+
 @demo_router.post("/api/demo/queue/{job_id}/installer")
 async def api_queue_installer(job_id: int, request: Request, background: BackgroundTasks):
     """Resume an awaiting-installer queue item once the operator drops a file."""

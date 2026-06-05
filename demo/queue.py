@@ -55,22 +55,30 @@ def resolve_acquisition(
 ) -> Dict[str, Optional[str]]:
     """Resolve a download URL for a delta candidate.
 
-    Strategy:
-      1. ``known_packageable`` whose catalog entry carries a
-         ``canonical_download_url`` → use it directly (deterministic, no model).
-      2. Otherwise ask the version-check research bridge (``check_version``) for
-         the product's latest installer URL — passing the catalog entry's source
-         URL as a hint when we have one.
+    Strategy (each step's ``source`` drives the trust decision downstream):
+      1. ``catalog`` — ``known_packageable`` whose catalog entry carries a
+         ``canonical_download_url`` (operator-curated; trusted, auto-proceeds).
+      2. ``version-check`` — the version-check brain returns a download URL,
+         using the catalog entry's source URL as a hint (known product; trusted).
+      3. ``agent-search`` — for a genuinely UNKNOWN candidate, the agent searches
+         the web for the official installer (LIVE only). This URL is NOT trusted:
+         the caller parks the item for an operator confirm before downloading.
 
-    Returns ``{"download_url", "source", "latest_version"}`` (``download_url``
-    None when nothing fetchable was found — the caller then parks the item for a
-    manual installer drop). Never raises.
+    Returns ``{"download_url", "source", "latest_version", "provenance",
+    "confidence"}`` (``download_url`` None → caller parks for a manual drop).
+    Never raises.
     """
     name = candidate.get("name") or ""
     publisher = candidate.get("publisher") or ""
     version = candidate.get("version")
     entry_id = candidate.get("in_catalog") or candidate.get("catalog_entry_id")
 
+    out: Dict[str, Optional[str]] = {
+        "download_url": None, "source": None, "latest_version": version,
+        "provenance": None, "confidence": None,
+    }
+
+    # 1) Curated catalog URL — trusted.
     entry = None
     source_url = None
     if entry_id:
@@ -81,16 +89,11 @@ def resolve_acquisition(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Queue: catalog lookup failed", entry_id=entry_id, error=str(exc))
         if entry and entry.canonical_download_url:
-            return {
-                "download_url": entry.canonical_download_url,
-                "source": "catalog",
-                "latest_version": version,
-            }
+            out.update(download_url=entry.canonical_download_url, source="catalog")
+            return out
         source_url = entry.canonical_download_url if entry else None
 
-    # Research-bridge acquisition: the version-check brain returns the latest
-    # version AND its direct download URL — exactly the installer we want, even
-    # for a product we don't yet manage (current_version is just a hint here).
+    # 2) Version-check brain — latest version + URL for a known product.
     label = (f"{name} {publisher}".strip()) or entry_id or "application"
     slug = entry_id or name
     try:
@@ -98,17 +101,29 @@ def resolve_acquisition(
             label, version, source_url, mode=mode, job_id=job_id, slug=slug,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Queue: acquisition bridge failed", candidate=name, error=str(exc))
+        logger.warning("Queue: version-check bridge failed", candidate=name, error=str(exc))
         res = {}
-
     url = (res.get("download_url") or "").strip() or None
     if url and intake.is_known_installer(url):
-        return {
-            "download_url": url,
-            "source": "research",
-            "latest_version": res.get("latest_version") or version,
-        }
-    return {"download_url": None, "source": "research", "latest_version": version}
+        out.update(download_url=url, source="version-check",
+                   latest_version=res.get("latest_version") or version)
+        return out
+
+    # 3) Agent web-search for an unknown app's installer (live only). The URL is
+    # untrusted → the caller requires an operator confirm before download.
+    try:
+        found = claude_bridge.find_installer_url(
+            name, publisher, mode=mode, job_id=job_id, slug=slug)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Queue: installer search failed", candidate=name, error=str(exc))
+        found = {}
+    furl = (found.get("download_url") or "").strip() or None
+    if furl and intake.is_known_installer(furl):
+        out.update(download_url=furl, source="agent-search",
+                   provenance=found.get("provenance"), confidence=found.get("confidence"))
+        return out
+
+    return out  # nothing found → caller parks for a manual installer drop
 
 
 # --- Job-row creation (the queue is just tagged Job rows) -------------------
@@ -289,14 +304,16 @@ def acquire_and_package(
 ) -> str:
     """Acquire an installer for ``candidate`` and dispatch the gated pipeline.
 
-    Returns a short outcome tag: ``"dispatched"``, ``"awaiting_installer"``,
-    ``"failed"``, or ``"cancelled"``. Narrates throughout over the job's SSE
-    channel. Mirrors ``demo.router._run_miss_pipeline`` but starts from an
-    identity instead of a dropped file.
-    """
-    from pathlib import Path
-    from autopackager.orchestration.engine import OrchestrationEngine
+    Returns a short outcome tag: ``"dispatched"``, ``"awaiting_confirm"``,
+    ``"awaiting_installer"``, ``"failed"``, or ``"cancelled"``. Narrates over the
+    job's SSE channel. Mirrors ``demo.router._run_miss_pipeline`` but starts from
+    an identity instead of a dropped file.
 
+    Trust gate: a curated catalog URL or a version-check URL (known product)
+    proceeds automatically; an **agent-searched** URL (genuinely unknown app) is
+    parked for an operator confirm before anything is downloaded/installed — the
+    supply-chain guardrail (ChromeSetup-stub / RealPlayer-bundleware lessons).
+    """
     name = candidate.get("name") or "software"
     if _is_cancelled(job_id):
         return "cancelled"
@@ -309,6 +326,7 @@ def acquire_and_package(
 
     acq = resolve_acquisition(candidate, mode=mode, job_id=job_id)
     url = acq.get("download_url")
+    source = acq.get("source")
     if not url:
         # No fetchable source: park for a manual installer drop (mirrors the
         # upgrade path's awaiting_upload fallback). Leave the row PENDING.
@@ -321,9 +339,37 @@ def acquire_and_package(
         events.publish_lamp(job_id, "ready", "authenticated · standing by")
         return "awaiting_installer"
 
+    if source == "agent-search":
+        # Agent-FOUND URL → require operator confirm before download/install.
+        provenance = acq.get("provenance") or "agent web search"
+        confidence = acq.get("confidence") or "unknown"
+        _merge_metadata(job_id, {
+            "queue_proposed_url": url,
+            "queue_url_provenance": provenance,
+            "queue_url_confidence": confidence,
+        })
+        _set_origin_state(job_id, "awaiting_confirm")
+        events.publish_pipeline_event(
+            job_id, "pending",
+            f"Found a candidate installer for {name} (confidence: {confidence}). "
+            f"Source: {provenance}. Confirm before download/install:\n{url}",
+            level="warn", awaiting_confirm=True, proposed_url=url,
+            provenance=provenance, confidence=confidence,
+        )
+        events.publish_lamp(job_id, "ready", "authenticated · standing by")
+        return "awaiting_confirm"
+
+    # Trusted source (catalog / version-check) → proceed automatically.
     events.publish_pipeline_event(
-        job_id, "pending", f"Found installer ({acq.get('source')}) — fetching {url}",
+        job_id, "pending", f"Found installer ({source}) — fetching {url}",
     )
+    return _download_then(job_id, url, mode=mode)
+
+
+def _download_then(job_id: int, url: str, *, mode: Optional[str] = None) -> str:
+    """Download ``url`` into the sandbox, then analyze + dispatch. Tag outcome."""
+    from autopackager.orchestration.engine import OrchestrationEngine
+
     try:
         saved = intake.download_to_sandbox(url)
     except Exception as exc:  # noqa: BLE001
@@ -335,11 +381,18 @@ def acquire_and_package(
         )
         events.publish_end(job_id, ok=False, text="download failed")
         return "failed"
-
     if _is_cancelled(job_id):
         return "cancelled"
+    return _analyze_and_dispatch(job_id, str(saved), mode=mode)
 
-    analysis = intake.analyze(saved)
+
+def _analyze_and_dispatch(job_id: int, saved_path: str, *, mode: Optional[str] = None) -> str:
+    """Analyze a staged installer (escalate/substitute/research as needed) and
+    dispatch the gated pipeline. Shared by acquire / confirm / manual-drop."""
+    from pathlib import Path
+    from autopackager.orchestration.engine import OrchestrationEngine
+
+    analysis = intake.analyze(Path(saved_path))
 
     # Known non-packageable (e.g. RealPlayer bundleware): escalate, install
     # nothing — exactly the dropped-file behaviour.
@@ -386,6 +439,47 @@ def acquire_and_package(
         job_id, "pending", "Installer ready — running the gated packaging pipeline.",
     )
     return "dispatched"
+
+
+def confirm_and_package(
+    job_id: int, url: Optional[str] = None, *, mode: Optional[str] = None,
+) -> str:
+    """Resume an ``awaiting_confirm`` item once the operator approves the URL.
+
+    ``url`` overrides the stashed proposed URL (lets the operator correct it).
+    Downloads, analyzes, and dispatches the gated pipeline. Returns the outcome.
+    """
+    from autopackager.orchestration.engine import OrchestrationEngine
+
+    if _is_cancelled(job_id):
+        return "cancelled"
+    if not url:
+        job = OrchestrationEngine().get_job(job_id)
+        url = (job.job_metadata or {}).get("queue_proposed_url") if job else None
+    if not url or not intake.is_known_installer(url):
+        events.publish_pipeline_event(
+            job_id, "failed", "No valid installer URL to confirm.", level="error")
+        events.publish_end(job_id, ok=False, text="no url")
+        return "failed"
+    _set_origin_state(job_id, "acquiring")
+    events.publish_pipeline_event(
+        job_id, "pending", f"Confirmed — fetching {url}",
+    )
+    return _download_then(job_id, url, mode=mode)
+
+
+def _merge_metadata(job_id: int, updates: Dict[str, Any]) -> None:
+    """Merge keys into a job's metadata without changing its state. Best-effort."""
+    try:
+        from autopackager.orchestration.engine import OrchestrationEngine
+
+        engine = OrchestrationEngine()
+        job = engine.get_job(job_id)
+        if not job:
+            return
+        engine.update_job_state(job_id, job.state, metadata_update=updates)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _set_origin_state(job_id: int, state: str) -> None:
@@ -440,8 +534,9 @@ def run_batch(job_specs: List[Dict[str, Any]], *, mode: Optional[str] = None) ->
                 # Operator cancelled the in-flight item — stop the whole batch.
                 _cancel_remaining(job_specs[idx:])
                 break
-        elif outcome == "awaiting_installer":
-            # Parked for a manual drop — don't block the rest of the batch on it.
+        elif outcome in ("awaiting_installer", "awaiting_confirm"):
+            # Parked for a human (manual drop or URL confirm) — don't block the
+            # rest of the batch on it; the operator resumes it independently.
             continue
         elif outcome == "cancelled":
             _cancel_remaining(job_specs[idx:])
@@ -464,38 +559,8 @@ def finalize_with_installer(job_id: int, installer_path: str, *, mode: Optional[
     Analyzes the dropped file (research on a miss), attaches metadata, and
     dispatches the gated pipeline. Returns ``"dispatched"`` / ``"failed"``.
     """
-    from pathlib import Path
-    from autopackager.orchestration.engine import OrchestrationEngine
-
     if _is_cancelled(job_id):
         return "cancelled"
-    analysis = intake.analyze(Path(installer_path))
-    if analysis.escalate:
-        reason = analysis.escalate_reason or "Known non-packageable installer."
-        OrchestrationEngine().update_job_state(
-            job_id, JobState.FAILED, error_message=reason,
-            metadata_update={"needs_engineer_review": True, "escalation_reason": reason},
-        )
-        events.publish_pipeline_event(
-            job_id, "failed",
-            f"⛔ Failed — ENGINEER ESCALATION: {reason}", level="error", escalation=True)
-        events.publish_end(job_id, ok=False, text="escalated")
-        return "failed"
-    if analysis.prefer_entry_id:
-        try:
-            sub = intake.substitute_with_enterprise(analysis)
-            if sub:
-                analysis = sub
-        except Exception:  # noqa: BLE001
-            pass
-    if analysis.branch != "hit":
-        events.publish_pipeline_event(
-            job_id, "pending", "Catalog miss — researching how to package this…")
-        claude_bridge.research_and_learn(job_id, analysis, mode=mode)
-        analysis = intake.analyze(Path(analysis.path))
-    intake.update_software_metadata(job_id, analysis)
-    _set_origin_state(job_id, "packaging")
-    intake.dispatch_pipeline(job_id, gate=True)
     events.publish_pipeline_event(
-        job_id, "pending", "Installer received — running the gated packaging pipeline.")
-    return "dispatched"
+        job_id, "pending", "Installer received — packaging it now.")
+    return _analyze_and_dispatch(job_id, installer_path, mode=mode)

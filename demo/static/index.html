@@ -83,6 +83,17 @@
         <div class="esc-title">⛔ Failed · Engineer Escalation</div>
         <div class="esc-msg" id="esc-msg">Manual review required.</div>
       </div>
+      <!-- Agent-found installer URL — confirm before download/install. -->
+      <div class="confirm-box hidden" id="confirm-box">
+        <div class="cf-title">🔎 Agent found an installer — confirm before install</div>
+        <div class="cf-meta" id="cf-meta"></div>
+        <input class="cf-url" id="cf-url" type="text" spellcheck="false"
+               title="Edit the URL if the agent's pick is wrong" />
+        <div class="cf-actions">
+          <button class="btn primary" id="cf-confirm">Confirm &amp; package</button>
+          <button class="btn ghost" id="cf-reject">Reject</button>
+        </div>
+      </div>
     </section>
 
     <!-- CENTER: Intune production view -->

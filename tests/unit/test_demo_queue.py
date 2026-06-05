@@ -57,7 +57,7 @@ class TestResolveAcquisition(unittest.TestCase):
             out = pkg_queue.resolve_acquisition(
                 {"name": "Tool", "publisher": "Vendor", "in_catalog": "tool"})
         self.assertEqual(out["download_url"], "https://x.example/tool.exe")
-        self.assertEqual(out["source"], "research")
+        self.assertEqual(out["source"], "version-check")
         bridge.assert_called_once()
 
     def test_no_url_returns_none(self):
@@ -232,6 +232,15 @@ class TestRunBatch(unittest.TestCase):
             pkg_queue.run_batch(self._specs(1))
         wait.assert_not_called()  # a parked item is not waited on
 
+    def test_awaiting_confirm_does_not_block_batch(self):
+        with patch("demo.queue._is_cancelled", return_value=False), \
+             patch("demo.queue.acquire_and_package",
+                   side_effect=["awaiting_confirm", "dispatched"]), \
+             patch("demo.queue._wait_for_settle", return_value="gate") as wait:
+            pkg_queue.run_batch(self._specs(1, 2))
+        # Item 1 parked for confirm (no wait); item 2 dispatched + waited.
+        self.assertEqual(wait.call_count, 1)
+
 
 # --- router helper ----------------------------------------------------------
 
@@ -252,6 +261,143 @@ class TestRouterCreateRows(unittest.TestCase):
         self.assertEqual([s["job_id"] for s in specs], [101, 102])
         self.assertTrue(batch_id)
         self.assertEqual(crj.call_count, 2)
+
+
+# --- find_installer_url bridge ---------------------------------------------
+
+class TestFindInstallerUrl(unittest.TestCase):
+    def test_off_and_replay_do_not_fabricate(self):
+        from demo import claude_bridge
+
+        for m in ("off", "replay"):
+            out = claude_bridge.find_installer_url("Obscure App", "Vendor", mode=m)
+            self.assertIsNone(out["download_url"], m)  # live-only by design
+            self.assertEqual(out["mode"], m)
+
+    def test_live_returns_url_provenance_confidence(self):
+        from demo import claude_bridge
+
+        with patch("demo.claude_bridge._run_find_url_live",
+                   return_value={"download_url": "https://vendor.example/App-x64.msi",
+                                 "provenance": "official downloads page",
+                                 "confidence": "High"}):
+            out = claude_bridge.find_installer_url("App", "Vendor", mode="live")
+        self.assertEqual(out["download_url"], "https://vendor.example/App-x64.msi")
+        self.assertEqual(out["provenance"], "official downloads page")
+        self.assertEqual(out["confidence"], "high")  # normalized lower-case
+
+
+# --- resolve_acquisition: agent-search tier --------------------------------
+
+class TestResolveAcquisitionAgentSearch(unittest.TestCase):
+    def test_agent_search_when_version_check_empty(self):
+        # No catalog id → no catalog URL; version-check yields nothing; the agent
+        # search finds one → source 'agent-search' + provenance/confidence.
+        with patch("demo.queue.claude_bridge.check_version", return_value={}), \
+             patch("demo.queue.claude_bridge.find_installer_url",
+                   return_value={"download_url": "https://x.example/tool.exe",
+                                 "provenance": "vendor site", "confidence": "medium"}) as find:
+            out = pkg_queue.resolve_acquisition({"name": "Tool", "publisher": "Vendor"})
+        self.assertEqual(out["source"], "agent-search")
+        self.assertEqual(out["download_url"], "https://x.example/tool.exe")
+        self.assertEqual(out["provenance"], "vendor site")
+        self.assertEqual(out["confidence"], "medium")
+        find.assert_called_once()
+
+    def test_version_check_wins_before_agent_search(self):
+        with patch("demo.queue.claude_bridge.check_version",
+                   return_value={"download_url": "https://x.example/known.msi",
+                                 "latest_version": "2.0"}), \
+             patch("demo.queue.claude_bridge.find_installer_url") as find:
+            out = pkg_queue.resolve_acquisition({"name": "Known", "publisher": "V"})
+        self.assertEqual(out["source"], "version-check")
+        find.assert_not_called()  # didn't need to search
+
+
+# --- acquire_and_package: trust gate ---------------------------------------
+
+class TestAcquireTrustGate(unittest.TestCase):
+    def setUp(self):
+        self._p = [
+            patch("demo.queue.events", MagicMock()),
+            patch("demo.queue._is_cancelled", return_value=False),
+            patch("demo.queue._set_origin_state"),
+        ]
+        for p in self._p:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self._p])
+
+    def test_agent_found_url_parks_for_confirm(self):
+        with patch("demo.queue.resolve_acquisition",
+                   return_value={"download_url": "https://x/found.exe", "source": "agent-search",
+                                 "provenance": "vendor site", "confidence": "low"}), \
+             patch("demo.queue._merge_metadata") as merge, \
+             patch("demo.queue.intake.download_to_sandbox") as dl, \
+             patch("demo.queue.intake.dispatch_pipeline") as disp:
+            out = pkg_queue.acquire_and_package(5, {"name": "Tool"})
+        self.assertEqual(out, "awaiting_confirm")
+        dl.assert_not_called()     # NOTHING downloaded without confirm
+        disp.assert_not_called()
+        # The proposed URL is stashed for the confirm endpoint to read back.
+        stashed = merge.call_args.args[1]
+        self.assertEqual(stashed["queue_proposed_url"], "https://x/found.exe")
+
+    def test_version_check_url_proceeds_without_confirm(self):
+        with patch("demo.queue.resolve_acquisition",
+                   return_value={"download_url": "https://x/known.msi", "source": "version-check"}), \
+             patch("demo.queue.intake.download_to_sandbox", return_value="C:/sb/known.msi"), \
+             patch("demo.queue.intake.analyze", return_value=_analysis(branch="hit")), \
+             patch("demo.queue.intake.update_software_metadata"), \
+             patch("demo.queue.intake.dispatch_pipeline") as disp:
+            out = pkg_queue.acquire_and_package(6, {"name": "Known"})
+        self.assertEqual(out, "dispatched")
+        disp.assert_called_once_with(6, gate=True)  # trusted → auto-proceed
+
+
+# --- confirm_and_package ---------------------------------------------------
+
+class TestConfirmAndPackage(unittest.TestCase):
+    def setUp(self):
+        self._p = [
+            patch("demo.queue.events", MagicMock()),
+            patch("demo.queue._is_cancelled", return_value=False),
+            patch("demo.queue._set_origin_state"),
+        ]
+        for p in self._p:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self._p])
+
+    def test_reads_stashed_url_and_dispatches(self):
+        engine = MagicMock()
+        engine.get_job.return_value = _job(JobState.PENDING)
+        engine.get_job.return_value.job_metadata = {"queue_proposed_url": "https://x/app.msi"}
+        with patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine), \
+             patch("demo.queue.intake.download_to_sandbox", return_value="C:/sb/app.msi"), \
+             patch("demo.queue.intake.analyze", return_value=_analysis(branch="hit")), \
+             patch("demo.queue.intake.update_software_metadata"), \
+             patch("demo.queue.intake.dispatch_pipeline") as disp:
+            out = pkg_queue.confirm_and_package(9)
+        self.assertEqual(out, "dispatched")
+        disp.assert_called_once_with(9, gate=True)
+
+    def test_override_url_used(self):
+        with patch("demo.queue.intake.download_to_sandbox", return_value="C:/sb/o.msi") as dl, \
+             patch("demo.queue.intake.analyze", return_value=_analysis(branch="hit")), \
+             patch("demo.queue.intake.update_software_metadata"), \
+             patch("demo.queue.intake.dispatch_pipeline"):
+            out = pkg_queue.confirm_and_package(9, "https://x/override.msi")
+        self.assertEqual(out, "dispatched")
+        dl.assert_called_once_with("https://x/override.msi")
+
+    def test_no_url_fails(self):
+        engine = MagicMock()
+        engine.get_job.return_value = _job(JobState.PENDING)
+        engine.get_job.return_value.job_metadata = {}
+        with patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine), \
+             patch("demo.queue.intake.download_to_sandbox") as dl:
+            out = pkg_queue.confirm_and_package(9)
+        self.assertEqual(out, "failed")
+        dl.assert_not_called()
 
 
 # --- CLI: queue-unmanaged ---------------------------------------------------

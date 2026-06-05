@@ -44,6 +44,7 @@
   let currentSettled = false;          // guard: settle each streamed job once
   let activeBatch = null;              // { jobs:[{job_id,name}], idx, job_ids } | null
   let pendingQueueInstaller = null;    // job_id of an awaiting-installer queue item
+  let pendingConfirm = null;           // { job_id, url } awaiting URL confirm
 
   function setBusy(on, status) {
     busy = on;
@@ -189,7 +190,10 @@
         captureSideEffects(env);
         // Settle the action when its automated work is done: it reached the
         // approval gate, completed, failed, or parked awaiting an installer.
-        if (env.awaiting_installer === true) {
+        if (env.awaiting_confirm === true) {
+          showConfirmBox(currentJob, env.proposed_url, env.provenance, env.confidence);
+          settleCurrent("confirm");
+        } else if (env.awaiting_installer === true) {
           pendingQueueInstaller = currentJob;
           $("dropzone").classList.add("drag");  // prompt the manual installer drop
           settleCurrent("awaiting");
@@ -433,6 +437,10 @@
     // Right-panel Cancel — aborts the in-flight action (single job or batch).
     $("action-cancel").addEventListener("click", cancelCurrentAction);
 
+    // Confirm/reject an agent-found installer URL.
+    $("cf-confirm").addEventListener("click", confirmFoundUrl);
+    $("cf-reject").addEventListener("click", rejectFoundUrl);
+
     // Upgrade scope dialog — exactly two choices (spec §4).
     $("scope-all").addEventListener("click", () => chooseScope("all"));
     $("scope-test").addEventListener("click", () => chooseScope("test"));
@@ -573,6 +581,44 @@
     // gate-box (Approve ▶ Ring 0) reveals when this item passes testing.
     gateMode = true;
     openStream(job.job_id, job.name || `item ${i + 1}`);
+  }
+
+  // ---- Confirm an agent-found installer URL --------------------------------
+  function showConfirmBox(jobId, url, provenance, confidence) {
+    pendingConfirm = { job_id: jobId, url: url || "" };
+    $("cf-url").value = url || "";
+    $("cf-meta").textContent =
+      `Confidence: ${confidence || "unknown"} · Source: ${provenance || "agent search"}`;
+    $("confirm-box").classList.remove("hidden");
+  }
+
+  async function confirmFoundUrl() {
+    if (!pendingConfirm) return;
+    const jobId = pendingConfirm.job_id;
+    const url = ($("cf-url").value || "").trim();
+    $("confirm-box").classList.add("hidden");
+    pendingConfirm = null;
+    try {
+      const r = await fetch(`/api/demo/queue/${jobId}/confirm-url`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url || null }),
+      });
+      const data = await r.json();
+      if (data.error) { flashConsoleError(data.error); return; }
+      openStream(jobId, "confirmed installer");
+    } catch (e) {
+      flashConsoleError(String(e));
+    }
+  }
+
+  async function rejectFoundUrl() {
+    if (!pendingConfirm) return;
+    const jobId = pendingConfirm.job_id;
+    $("confirm-box").classList.add("hidden");
+    pendingConfirm = null;
+    try { await fetch(`/api/demo/jobs/${jobId}/cancel`, { method: "POST" }); } catch (e) { /* ignore */ }
+    appendLine({ source: "system", level: "warn",
+      text: `Rejected the agent-found URL for job #${jobId} — cancelled. Drop an installer to package it manually.` });
   }
 
   // ---- Cancel the in-flight action -----------------------------------------
