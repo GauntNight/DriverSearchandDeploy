@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 
 from autopackager.utils.logger import get_logger
 from demo import events, intake, preflight, intune_view, claude_bridge
+from demo import queue as pkg_queue
 
 logger = get_logger(__name__)
 
@@ -78,6 +79,123 @@ def _build_software_delta(source: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Graph client unavailable for software-delta", error=str(exc))
     return software_delta.build_delta(source=source, graph_client=graph_client)
+
+
+# --- Packaging queue (from the software-delta backlog) ---------------------
+
+@demo_router.post("/api/demo/queue")
+async def api_queue(request: Request, background: BackgroundTasks):
+    """Queue selected delta candidates for packaging.
+
+    Body ``{items: [{name, publisher?, version?, bucket?, in_catalog?}, ...],
+    mode?}``. Each item becomes a gated (test-scope) Job row immediately, then a
+    single background runner processes them ONE AT A TIME (acquire installer →
+    gated discovery→packaging→testing; deployment held for the approval gate).
+
+    Returns ``{batch_id, jobs: [{job_id, name}]}`` so the console can stream the
+    queued jobs in sequence and offer a Cancel.
+    """
+    body = await request.json()
+    items = body.get("items") or []
+    mode = body.get("mode") or None
+    if not isinstance(items, list) or not items:
+        return JSONResponse(
+            {"error": "items (a non-empty list of candidates) required"}, status_code=400)
+    try:
+        batch_id, specs = await asyncio.to_thread(_create_queue_rows, items)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Queue intake failed", error=str(exc), exc_info=True)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    if not specs:
+        return JSONResponse({"error": "no valid candidates (each needs a name)"}, status_code=400)
+    background.add_task(pkg_queue.run_batch, specs, mode=mode)
+    return {
+        "batch_id": batch_id,
+        "jobs": [{"job_id": s["job_id"], "name": s["candidate"].get("name")} for s in specs],
+    }
+
+
+def _create_queue_rows(items: list):
+    """Create a Job row per candidate; return (batch_id, specs). Runs in a thread."""
+    import uuid
+
+    batch_id = uuid.uuid4().hex[:12]
+    specs = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        name = (raw.get("name") or "").strip()
+        if not name:
+            continue
+        candidate = {
+            "name": name,
+            "publisher": raw.get("publisher"),
+            "version": raw.get("version"),
+            "bucket": raw.get("bucket"),
+            "in_catalog": raw.get("in_catalog") or raw.get("catalog_entry_id"),
+            "device_count": raw.get("device_count"),
+        }
+        job_id = pkg_queue.create_queue_job_row(candidate, batch_id=batch_id)
+        specs.append({"job_id": job_id, "candidate": candidate})
+    return batch_id, specs
+
+
+@demo_router.post("/api/demo/queue/cancel")
+async def api_queue_cancel(request: Request):
+    """Cancel a queue batch — marks every not-yet-terminal job CANCELLED so the
+    runner stops advancing. Body ``{job_ids: [int, ...]}``."""
+    body = await request.json()
+    job_ids = body.get("job_ids") or []
+    try:
+        ids = [int(j) for j in job_ids]
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "job_ids must be integers"}, status_code=400)
+    n = await asyncio.to_thread(pkg_queue.cancel_batch, ids)
+    return {"cancelled": n}
+
+
+@demo_router.post("/api/demo/jobs/{job_id}/cancel")
+async def api_cancel_job(job_id: int):
+    """Cancel a single in-flight action (the right-panel Cancel button)."""
+    ok = await asyncio.to_thread(pkg_queue.cancel_job, job_id)
+    return {"job_id": job_id, "cancelled": bool(ok)}
+
+
+@demo_router.post("/api/demo/queue/{job_id}/confirm-url")
+async def api_queue_confirm_url(job_id: int, request: Request, background: BackgroundTasks):
+    """Approve an agent-FOUND installer URL for an ``awaiting_confirm`` queue item.
+
+    Body ``{url?}`` — optional override of the stashed proposed URL (lets the
+    operator correct it). Resumes the gated pipeline: download → analyze →
+    discovery→packaging→testing (deployment still held for the approval gate).
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    url = (body or {}).get("url") or None
+    if url and not intake.is_known_installer(url):
+        return JSONResponse(
+            {"error": "url must point to a direct .msi, .exe, or .zip installer."},
+            status_code=400)
+    background.add_task(pkg_queue.confirm_and_package, job_id, url)
+    return {"job_id": job_id, "branch": "queue-confirm"}
+
+
+@demo_router.post("/api/demo/queue/{job_id}/installer")
+async def api_queue_installer(job_id: int, request: Request, background: BackgroundTasks):
+    """Resume an awaiting-installer queue item once the operator drops a file."""
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "filename"):
+        return JSONResponse({"error": "file required"}, status_code=400)
+    if not intake.is_known_installer(upload.filename):
+        return JSONResponse(
+            {"error": f"Unsupported file type (got '{upload.filename}')."}, status_code=400)
+    data = await upload.read()
+    saved = await asyncio.to_thread(intake.save_upload, upload.filename, data)
+    background.add_task(pkg_queue.finalize_with_installer, job_id, str(saved))
+    return {"job_id": job_id, "branch": "queue-installer"}
 
 
 @demo_router.post("/api/demo/intune/check-version")

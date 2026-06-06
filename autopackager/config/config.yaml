@@ -136,6 +136,15 @@ software_delta:
     - "^Update for "
     - "Hotfix"
 
+# Packaging queue: turn the software-delta backlog into packaging jobs. Queued
+# items are always GATED (deployment held for the approval gate) and TEST scope
+# (Ring 0) — a bulk select must never silently write the tenant. Items are
+# processed one at a time so the box-bound install validation never overlaps.
+packaging_queue:
+  default_scope: "test"      # test (Ring 0) only; "all" not enabled for the queue
+  default_gate: true         # always hold deployment for the approval gate
+  max_concurrent: 1          # process one queued item at a time
+
 # Paths
 paths:
   downloads: "data/downloads"

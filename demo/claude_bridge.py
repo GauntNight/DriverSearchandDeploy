@@ -69,6 +69,18 @@ _VERSION_KEYS = (
     "is_newer",
 )
 
+# The installer-acquisition contract — used when a queued candidate has NO known
+# source URL and the agent must FIND the official installer. Returns the URL plus
+# where it came from (provenance) and a confidence so the operator can judge it
+# before anything is downloaded/installed. LIVE-ONLY (replay/off don't fabricate
+# URLs for arbitrary apps — they park the item for a manual installer drop).
+_ACQUIRE_KEYS = (
+    "download_url",
+    "provenance",
+    "confidence",
+    "product_name",
+)
+
 
 def get_mode(explicit: Optional[str] = None) -> str:
     mode = (explicit or os.environ.get("DEMO_CLAUDE_MODE") or "replay").lower()
@@ -341,11 +353,20 @@ def _render_ndjson_line(raw: str) -> str:
                 parts.append(block.get("text", ""))
             elif block.get("type") == "tool_use":
                 parts.append(f"⚙ tool: {block.get('name')}")
-        return " ".join(p for p in parts if p).strip()[:500]
+        # Keep generous headroom: the model's FINAL answer (which carries the
+        # fenced ```json block the parsers need) arrives as an assistant text
+        # block. Truncating it to a few hundred chars could clip the closing
+        # fence and break the hand-off, so allow the whole message through.
+        return " ".join(p for p in parts if p).strip()[:4000]
     if typ == "tool_result":
         return "↳ tool result received"
     if typ == "result":
-        return "✓ research run complete"
+        # The terminal 'result' event repeats the model's final answer text in
+        # obj['result']. Return it (not a friendly placeholder) so it lands in
+        # the collected transcript the JSON parsers read — dropping it was the
+        # bug that left agent-found URLs unparsed (parked as 'awaiting manual'
+        # instead of 'awaiting confirm').
+        return obj.get("result") or "✓ research run complete"
     return ""
 
 
@@ -626,4 +647,181 @@ def check_version(
         if job_id is not None:
             events.publish_claude_event(job_id, f"Version check error: {exc}", level="error")
             events.publish_lamp(job_id, "error", "version check failed")
+        return base
+
+
+# === Installer acquisition (find the URL for an unknown app) =================
+#
+# When a queued candidate has no catalog source URL and the version-check brain
+# can't resolve one, the agent searches the web for the official installer. This
+# is LIVE-ONLY by design (operator decision): replay/off don't fabricate URLs —
+# they park the item for a manual installer drop. The result is NEVER acted on
+# automatically; the caller surfaces the URL + provenance + confidence for an
+# operator confirm before downloading/installing (the supply-chain guardrail —
+# see the ChromeSetup-stub and RealPlayer-bundleware war stories).
+
+
+def _find_url_prompt(name: str, publisher: str) -> str:
+    """Focused 'find the official installer' prompt (web search)."""
+    return (
+        "You are sourcing a Windows application for silent enterprise deployment "
+        "via Microsoft Intune. Find the OFFICIAL vendor download URL for a "
+        "silently-installable Windows installer.\n\n"
+        f"Application: {name}\n"
+        f"Publisher: {publisher or '(unknown)'}\n\n"
+        "Requirements:\n"
+        "1. Prefer the VENDOR'S OWN site over mirrors/aggregators (no "
+        "softonic/cnet/filehippo/uptodown etc.).\n"
+        "2. Prefer an enterprise/offline/full installer (.msi when available, "
+        "else a silent-capable .exe) over a tiny web 'stub'/'online' bootstrapper "
+        "that downloads at run time — stubs break unattended install.\n"
+        "3. The URL must be a DIRECT link to the installer file (ends in .msi/"
+        ".exe/.zip), not a landing page.\n"
+        "4. If you cannot find an official direct installer link with reasonable "
+        "confidence, return an empty download_url rather than guessing.\n\n"
+        "Use web search/fetch to verify the link is the official current build. "
+        "When done, emit EXACTLY ONE fenced json block as your final message (no "
+        "prose after it):\n"
+        "```json\n"
+        "{\n"
+        '  "download_url": "https://vendor.example/app/Setup-x64.msi",\n'
+        '  "provenance": "found on the official downloads page vendor.example/download",\n'
+        '  "confidence": "high|medium|low",\n'
+        '  "product_name": "..."\n'
+        "}\n"
+        "```\n"
+    )
+
+
+def _parse_acquire_result(text: str) -> Optional[Dict[str, Any]]:
+    """Extract the last fenced ```json block and keep only acquisition keys."""
+    if not text:
+        return None
+    blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    candidate = blocks[-1] if blocks else None
+    if candidate is None:
+        m = re.findall(r"(\{(?:[^{}]|\{[^{}]*\})*\})", text, re.DOTALL)
+        candidate = m[-1] if m else None
+    if not candidate:
+        return None
+    try:
+        obj = json.loads(candidate)
+    except (ValueError, TypeError):
+        return None
+    return {k: obj.get(k) for k in _ACQUIRE_KEYS if k in obj}
+
+
+def _run_find_url_live(job_id: Any, name: str, publisher: str) -> Dict[str, Any]:
+    """Live installer search. Prefers the Agent SDK, falls back to the CLI.
+
+    Grants web tools (WebSearch/WebFetch) plus Read/Bash so the model can find
+    AND sanity-check the vendor link. Tolerant of a missing engine (returns {}).
+    """
+    prompt = _find_url_prompt(name, publisher)
+    collected: list[str] = []
+
+    # SDK path
+    try:
+        from claude_agent_sdk import query, ClaudeAgentOptions  # type: ignore
+        import asyncio
+
+        if job_id is not None:
+            events.publish_claude_event(job_id, "[live] searching for an official installer…")
+        options = ClaudeAgentOptions(
+            allowed_tools=["WebSearch", "WebFetch", "Read", "Bash"],
+            cwd=str(SANDBOX_DIR),
+        )
+
+        async def _go():
+            async for message in query(prompt=prompt, options=options):
+                text = _stringify_sdk_message(message)
+                if text:
+                    collected.append(text)
+                    if job_id is not None:
+                        events.publish_claude_event(job_id, text)
+
+        asyncio.run(_go())
+        return _parse_acquire_result("\n".join(collected)) or {}
+    except ImportError:
+        pass  # SDK not installed — fall through to CLI
+
+    # CLI fallback
+    cmd = [
+        "claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
+        "--allowedTools", "WebSearch,WebFetch,Read,Bash",
+    ]
+    if job_id is not None:
+        events.publish_claude_event(job_id, "[live] launching installer search…")
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=str(SANDBOX_DIR), stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1,
+        )
+    except FileNotFoundError:
+        if job_id is not None:
+            events.publish_claude_event(
+                job_id, "research engine not found on PATH.", level="error")
+        return {}
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        raw = raw.strip()
+        if not raw:
+            continue
+        line_text = _render_ndjson_line(raw)
+        if line_text:
+            collected.append(line_text)
+            if job_id is not None:
+                events.publish_claude_event(job_id, line_text)
+    proc.wait(timeout=10)
+    return _parse_acquire_result("\n".join(collected)) or {}
+
+
+def find_installer_url(
+    name: str,
+    publisher: Optional[str] = None,
+    *,
+    mode: Optional[str] = None,
+    job_id: Any = None,
+    slug: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Find an official installer URL for ``name`` by ``publisher``.
+
+    Returns ``{"download_url", "provenance", "confidence", "product_name",
+    "mode"}`` (``download_url`` None when nothing trustworthy was found). LIVE
+    ONLY: in ``replay``/``off`` returns ``download_url=None`` without fabricating
+    a link, so the caller parks the item for a manual installer drop. Never
+    raises — a failure returns an empty result.
+    """
+    mode = get_mode(mode)
+    base = {
+        "download_url": None, "provenance": None, "confidence": None,
+        "product_name": None, "mode": mode,
+    }
+    if mode != "live":
+        # No canned URLs for arbitrary apps — honest miss → manual drop.
+        return base
+
+    if job_id is not None:
+        events.publish_lamp(job_id, "thinking", "searching for an installer…")
+    try:
+        result = _run_find_url_live(job_id, name, publisher or "")
+        url = (result.get("download_url") or "").strip() or None
+        out = {
+            "download_url": url,
+            "provenance": (result.get("provenance") or "").strip() or None,
+            "confidence": (result.get("confidence") or "").strip().lower() or None,
+            "product_name": (result.get("product_name") or "").strip() or None,
+            "mode": mode,
+        }
+        if job_id is not None:
+            msg = (f"Found a candidate installer: {url}" if url
+                   else "No official installer URL found — manual drop needed.")
+            events.publish_claude_event(job_id, msg)
+            events.publish_lamp(job_id, "ready", "authenticated · standing by")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Installer search failed", app=name, error=str(exc))
+        if job_id is not None:
+            events.publish_claude_event(job_id, f"Installer search error: {exc}", level="error")
+            events.publish_lamp(job_id, "error", "installer search failed")
         return base

@@ -86,6 +86,18 @@ class TestClassify(unittest.TestCase):
     def test_store_app_bucket(self):
         self.assertEqual(self._c({"name": "Microsoft.WindowsTerminal"}), "store_app")
 
+    def test_catalog_match_rejects_short_substring_false_positive(self):
+        # REGRESSION: "git" must not fuzzy-match "snagit" (Git was wrongly bucketed
+        # as the snagit-2023 entry). Exact and real >=4 substrings still match.
+        snagit_only = [(sd.normalize_name("Snagit 2023"), "snagit-2023")]
+        self.assertIsNone(sd._catalog_match("git", snagit_only))
+        self.assertEqual(
+            sd._catalog_match("git", [(sd.normalize_name("Git"), "git-for-windows")]),
+            "git-for-windows")  # exact still matches
+        self.assertEqual(
+            sd._catalog_match("google chrome", [(sd.normalize_name("Chrome"), "chrome")]),
+            "chrome")  # legit >=4 substring still matches
+
 
 def _catalog():
     return Catalog(entries=[

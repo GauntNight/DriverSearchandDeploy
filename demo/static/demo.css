@@ -302,6 +302,49 @@ body {
 }
 .gap-table-wrap { max-height: 46vh; overflow-y: auto; }
 .gap-modal h3 { margin-bottom: 10px; }
+.gap-check { width: 34px; text-align: center; }
+.gap-check input { cursor: pointer; }
+.gap-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-top: 12px;
+}
+.gap-sel-note { font-size: 11.5px; color: var(--text-dim); }
+.gap-hint { font-size: 11px; color: var(--text-mute); margin-top: 8px; line-height: 1.5; }
+.btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+
+/* Right-panel action bar + Cancel (single-action lock) */
+.action-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin: 0 16px 10px; padding: 8px 12px;
+  border: 1px solid var(--border-2); border-radius: 6px; background: var(--panel);
+}
+.action-status { font-family: var(--mono); font-size: 11.5px; color: var(--accent); }
+.btn.danger { background: linear-gradient(180deg, var(--error), #a83533); }
+
+/* Agent-found installer URL confirm box (supply-chain gate) */
+.confirm-box {
+  margin: 0 16px 16px; padding: 14px; border: 1px solid var(--warn);
+  border-radius: 8px; background: rgba(186,117,23,.08);
+}
+.cf-title { font-size: 12px; font-weight: 700; color: var(--warn); margin-bottom: 8px; }
+.cf-meta { font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+.cf-url {
+  width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border-2); border-radius: 6px; padding: 7px 9px;
+  font-family: var(--mono); font-size: 11.5px; margin-bottom: 10px;
+}
+.cf-actions { display: flex; gap: 10px; }
+
+/* Busy lock: while an action runs, all OTHER action surfaces are greyed out
+   and non-interactive. The right-panel Cancel + the gate-box Approve stay live
+   (they continue/abort the current action). */
+body.busy .intake,
+body.busy #software-gap,
+body.busy #verify,
+body.busy .ver-refresh,
+body.busy .ver-badge[data-state="available"] {
+  opacity: .45; pointer-events: none; filter: grayscale(.3);
+}
 
 /* Scrollbars */
 ::-webkit-scrollbar { width: 9px; height: 9px; }

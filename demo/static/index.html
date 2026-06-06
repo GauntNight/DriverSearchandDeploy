@@ -83,6 +83,17 @@
         <div class="esc-title">⛔ Failed · Engineer Escalation</div>
         <div class="esc-msg" id="esc-msg">Manual review required.</div>
       </div>
+      <!-- Agent-found installer URL — confirm before download/install. -->
+      <div class="confirm-box hidden" id="confirm-box">
+        <div class="cf-title">🔎 Agent found an installer — confirm before install</div>
+        <div class="cf-meta" id="cf-meta"></div>
+        <input class="cf-url" id="cf-url" type="text" spellcheck="false"
+               title="Edit the URL if the agent's pick is wrong" />
+        <div class="cf-actions">
+          <button class="btn primary" id="cf-confirm">Confirm &amp; package</button>
+          <button class="btn ghost" id="cf-reject">Reject</button>
+        </div>
+      </div>
     </section>
 
     <!-- CENTER: Intune production view -->
@@ -118,6 +129,12 @@
           <div class="lamp-sub" id="lamp-sub">preflight not run</div>
         </div>
       </div>
+      <!-- Action bar: shown while an action runs; Cancel aborts it. Other
+           actions stay greyed out until the current one settles or is cancelled. -->
+      <div class="action-bar hidden" id="action-bar">
+        <span class="action-status" id="action-status">Working…</span>
+        <button class="btn danger" id="action-cancel" title="Cancel the current action">Cancel ✕</button>
+      </div>
       <div class="console" id="console"></div>
     </section>
   </main>
@@ -143,9 +160,21 @@
       <div class="gap-note hidden" id="gap-note"></div>
       <div class="gap-table-wrap">
         <table class="intune-table" id="gap-table">
-          <thead><tr><th>Unmanaged candidate</th><th>Publisher</th><th>Version</th><th>Devices</th></tr></thead>
-          <tbody id="gap-body"><tr class="empty"><td colspan="4">Loading…</td></tr></tbody>
+          <thead><tr>
+            <th class="gap-check"><input type="checkbox" id="gap-select-all" title="Select all" /></th>
+            <th>Software</th><th>Publisher</th><th>Version</th><th>Bucket</th><th>Devices</th>
+          </tr></thead>
+          <tbody id="gap-body"><tr class="empty"><td colspan="6">Loading…</td></tr></tbody>
         </table>
+      </div>
+      <div class="gap-actions">
+        <span class="gap-sel-note" id="gap-sel-note">Select software to queue for packaging.</span>
+        <button class="btn primary" id="gap-queue" disabled>Queue selected for packaging</button>
+      </div>
+      <div class="gap-hint">
+        Queued items are acquired, packaged, and install-tested on this build box
+        one at a time, then held at the <strong>Ring 0 approval gate</strong> —
+        nothing is written to the tenant until you approve each one.
       </div>
       <button class="modal-x" id="gap-cancel" title="Close">✕</button>
     </div>
