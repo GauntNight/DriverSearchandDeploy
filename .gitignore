@@ -101,6 +101,13 @@ htmlcov/
 .auto-claude-security.json
 .auto-claude-status
 .claude_settings.json
+
+# Operator-specific project instructions: local-only by design. Carries
+# tenant/service-principal identifiers and an operator-authority posture, so it
+# is intentionally NOT shared (see the file's own header). Previously excluded
+# only via .git/info/exclude (local, non-portable); committed here so the rule
+# travels with the repo.
+CLAUDE.md
 .worktrees/
 .security-key
 logs/security/
