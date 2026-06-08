@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [1.7.0] - 2026-06-08
+
 Phase 2 groundwork: an **operator-side AI research bridge** plus the discovery/queue machinery that uses it, surfaced through a **Mission Control demo console** — all additive under the removable `demo/` package and the new `software_delta` service, with the deterministic four-stage pipeline unchanged. Also includes the prior repository cleanup and documentation refresh. Full suite: 715 tests collected.
 
 ### Added
@@ -14,6 +16,7 @@ Phase 2 groundwork: an **operator-side AI research bridge** plus the discovery/q
 - **Pre-publish install validation + retry ladder** (`autopackager/agents/testing/local_install_validator.py`). Actually installs the package on the host and verifies by detection rule or a new ARP entry (discovery-via-diff) before publishing. Capped retry ladder (`_MAX_INSTALL_ATTEMPTS=3`) probes alternate EXE silent switches; a working non-primary switch is recorded as `corrected_install_command`. Non-silent installers (UI timeout, rc 1460) and bundleware exhaust the ladder and are flagged `needs_engineer_review` (ENGINEER ESCALATION) instead of publishing an app Intune can never mark installed. `_reap_detached_installers` kills detached consumer stubs (e.g. ChromeSetup). Catalog entries can declare `escalate` (e.g. RealPlayer) to install nothing and escalate immediately.
 - **Mission Control demo console** (`demo/`). Single-screen three-panel console (pipeline status · live Intune view · AI agent console + lamp) showing intake → Intune → Ring 0 with the AI research narrating live over SSE. Additive endpoints under `/api/demo/...` (`preflight`, `POST /jobs`, `GET /stream/{job_id}`, `GET /intune/apps`, `GET /intune/software-delta`, `POST /jobs/{job_id}/approve`). Fully removable: delete `demo/` + the one `mount_demo(app)` line and the core is untouched.
 - **Catalog growth.** Consumer→enterprise taxonomies (Chrome, VS Code user/system) and dev-tool entries (R, Git for Windows, RStudio, Go, CMake, Temurin JDK 21, Snagit); RealPlayer marked escalate/don't-package.
+- **Tenant-agnostic catalog snapshot / export** (`installer_catalog.export_catalog_snapshot` + `cli.py catalog export`). Copies the hard-won catalog *rules* (install/uninstall commands, detection rules, installer family, supersedence capability, Intune attribute overrides) into a committable YAML while stripping every tenant-specific field — `first_seen`, `last_used`, `use_count`, `version`, and `verified_versions` (which carries tenant-bound Intune app GUIDs), enforced by the new `OVERLAY_ONLY_FIELDS` set + a sanitization guard. `--source merged|overlay|baseline` selects scope; entries are sorted by id for stable diffs. The first export captured 38 rules (16 learned only in the local overlay) so that knowledge can be committed and promoted into the shipped baseline instead of living only in the gitignored overlay.
 
 ### Removed
 
@@ -25,6 +28,10 @@ Phase 2 groundwork: an **operator-side AI research bridge** plus the discovery/q
 
 - **Redis bootstrap** — `Install-AutoPackager.ps1` now prefers Memurai (maintained, Redis-compatible) via winget, then falls back to the existing Chocolatey → archived-zip path. `start-redis.bat`/`launch-all.bat` skip if port 6379 is already served and resolve a server from `tools\redis` or PATH.
 - **Documentation restructure** — external/aspirational docs moved out of the product-doc root: whitepaper + PR/FAQ → `docs/design-history/`; Intune Cookbook chapter references (ch04/ch11) → `docs/claude-reference/`. Each new folder has a README explaining its role. README version (1.3.0 → 1.6.0) and test count (597+ → 621 passing) corrected; added a documentation map.
+
+### Version
+
+- `__version__` bumped to `1.7.0`. README Current Status / Credits and CLAUDE.md refreshed (test count 621 → 715; new capability rows; corrected the stale "No LLM is used" row to reflect the operator-side AI research bridge).
 
 ## [1.6.0] - 2026-06-01
 

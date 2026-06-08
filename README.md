@@ -661,7 +661,7 @@ This repository was sanitized for public release. Git history prior to the initi
 ## Credits
 
 Built with AI assistance.
-Version 1.6.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
+Version 1.7.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
 Intune publishing, deployment rings with automatic promotion and rollback, continuous
 catalog discovery, status polling, web dashboard, and CLI. Software packaging covers both
 MSI and EXE installers (catalog-driven detection/silent-install) plus operator-opt-in MSI
