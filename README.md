@@ -14,11 +14,18 @@ to auto-fill the Intune app, generate the uninstall command and product-code det
 and roll the package out across the same deployment rings. See
 [Packaging MSI Software](#packaging-msi-software).
 
-> **Note on "AI":** Phase 1 is **deterministic** — discovery parses published OEM XML/CAB
-> catalogs and install commands are generated from file-type heuristics. There is **no LLM
-> in the current code path.** LLM-powered discovery and silent-install-parameter research
-> are planned for Phase 2 (see [Roadmap](#roadmap)). Any LLM API key collected by the
-> installer is reserved for those future phases and is not used today.
+> **Note on "AI":** The **core four-stage pipeline is deterministic** — discovery parses
+> published OEM XML/CAB catalogs, and known installers package from catalog entries + MSI/PE
+> metadata with no model in the loop. On top of that there is now an **operator-side AI
+> research bridge** (`demo/claude_bridge.py`, via the Claude Agent SDK or `claude -p`) that
+> handles the *gaps*: when a dropped installer isn't in the catalog it researches the silent
+> install command + detection rule and **writes it back to the catalog so the next run is
+> deterministic**; it can also check vendors for newer versions and find an official installer
+> URL for an unknown app (operator-confirmed before anything downloads). This bridge is
+> **operator-side only** — it never ships to a customer endpoint, and the deterministic catalog
+> path remains the only customer-facing component. It is surfaced today through the **Mission
+> Control demo console** (see [AI research bridge & Mission Control](#ai-research-bridge--mission-control-console)).
+> The LLM API key collected by the installer remains reserved for future product-side phases.
 
 ## Overview
 
@@ -106,9 +113,15 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | Database tracking | ✅ Working | SQLite by default; PostgreSQL optional (install `psycopg2`) |
 | CLI | ✅ Working | `init`, `create-driver-job`, `create-software-job` (MSI + EXE dispatch, wrapped-installer unwrap pre-stage, `--supersede` / `--supersedes <id>` opt-in flags), `inspect-msi`, `inspect-exe`, `jobs list/status/cancel/promote/halt-promotion/purge`, `worker start/purge`, `validate-azure` (`jobs rollback` is a stub — rollback runs automatically via polling) |
 | Web dashboard (FastAPI + REST) | ✅ Working | Job, deployment, discovery, and stats endpoints |
-| LLM-driven discovery / install-param research | ❌ Planned (Phase 2) | No LLM is used in the current code |
+| AI-driven install-param research | ✅ Working (operator-side) | The AI research bridge authors silent install commands + detection rules for unknown installers and writes them back to the catalog. Operator-side only (Mission Control console), not a shipped endpoint feature. Note: it authenticates via the local Claude session — the `llm` config block / OpenAI key are still unused |
+| Autonomous customer-facing version discovery | ❌ Planned (Phase 2/3) | The bridge checks versions operator-side; an unattended product service is still to come |
 | COTS / general software discovery | ⚠️ Partial | MSI applications are packaged from a supplied install command + MSI metadata (see [Packaging MSI Software](#packaging-msi-software)). Automatic *version* discovery for software (checking vendors for updates) is still Phase 2 |
-| Automated test suite | ✅ Working | 621 tests passing — unit, integration, CLI, API |
+| **AI research bridge (operator-side)** | ✅ Working | `demo/claude_bridge.py` via the Claude Agent SDK (or `claude -p` CLI). Three contracts: catalog-miss research (silent install command + detection rule, written back to the catalog so the next run is a deterministic HIT), version-check ("is there a newer build?"), and installer-URL acquisition (web-search for the official vendor download, operator-confirmed). Three modes via `DEMO_CLAUDE_MODE`: `live` / `replay` / `off`. Operator-side only; never shipped to an endpoint |
+| **Unmanaged-software delta** | ✅ Working | `autopackager/services/software_delta.py` — combines installed inventory (Intune Detected Apps + local ARP) with the managed set (published Win32 apps + catalog) and classifies into `managed` / `known_packageable` / `standard_os_component` / `store_app` / `unmanaged_candidate` / `ignored`. Surfaces the actionable "installed but not packaged" gap; degrades to local-ARP-only if the SP can't read `detectedApps` |
+| **Packaging queue from the delta** | ✅ Working | `demo/queue.py` — turns selected delta candidates into gated packaging jobs one at a time. Acquisition cascade: curated catalog URL → version-check brain → agent web-search (unknown app → parked for an operator confirm). Always Ring-0-scoped and deploy-gated; single-action lock + responsive cancel |
+| **Pre-publish install validation** | ✅ Working | `local_install_validator.py` actually installs the package on the host and verifies by detection rule or a new ARP entry before publishing. Capped retry ladder probes alternate silent switches; a working one is recorded as the corrected command. Unrecoverable installers (non-silent / bundleware) are flagged ENGINEER ESCALATION instead of publishing an app Intune can never detect; detached consumer stubs are reaped |
+| **Mission Control demo console** | ✅ Working | `demo/` — single-screen three-panel console (pipeline status · live Intune view · AI agent console + lamp) showing intake → Intune → Ring 0 with the AI research narrating live over SSE. Fully removable (`demo/` + one mount line); the core is untouched |
+| Automated test suite | ✅ Working | 715 tests passing — unit, integration, CLI, API |
 
 ## Quick Start
 
@@ -380,6 +393,69 @@ Mechanics: at publish time, the deployment agent creates a **new** Intune app (s
 > *versions* from vendors (the way driver discovery scans OEM catalogs) remains a Phase 2
 > item — see [Roadmap](#roadmap).
 
+## AI research bridge & Mission Control console
+
+The core pipeline packages *known* installers deterministically. The **AI research bridge**
+(`demo/claude_bridge.py`) handles the cases the catalog doesn't cover yet — and feeds its
+findings *back* into that deterministic catalog so the system gets faster over time. It runs a
+real agent through the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk) (preferred)
+or the `claude -p` CLI (fallback), and authenticates through the local Claude session — no API
+key required for the subscription path.
+
+It does three jobs:
+
+1. **Catalog-miss research.** Drop an installer that isn't in the catalog. The bridge inspects
+   the real file (allowlisted Read/Bash/Write scoped to a sandbox dir) and determines the silent
+   install command and — for EXEs — an Intune detection rule, then **writes a catalog entry**.
+   Run the same app again and it resolves as a deterministic HIT — *the system visibly learns.*
+2. **Version check.** Given an app's source and deployed version, the bridge reports the latest
+   upstream build. A real version comparison (PEP 440) overrides the model's own claim whenever
+   both versions parse.
+3. **Installer acquisition.** For an unknown app with no known download, the bridge web-searches
+   for the **official vendor** installer (preferring enterprise/offline MSIs over web stubs) and
+   returns the URL with provenance + a confidence rating. This result is **never acted on
+   automatically** — the operator confirms before anything is downloaded or installed (the
+   supply-chain guardrail).
+
+These power the **unmanaged-software delta** (what's installed across the fleet but not yet
+packaged) and the **packaging queue** that turns that backlog into gated, Ring-0-scoped jobs one
+at a time.
+
+### Mission Control demo console
+
+A single-screen, three-panel console (`demo/`) shows one app going **intake → Intune → Ring 0**
+with the AI research narrating live:
+
+```
+┌───────────────┬──────────────────────────────┬────────────────┐
+│  Pipeline     │  Intune "Production" view     │  Agent console │
+│  status       │  (live Graph data)            │  + AI lamp     │
+└───────────────┴──────────────────────────────┴────────────────┘
+```
+
+```powershell
+# Start infra, then open the console
+./launch-all.bat
+$env:DEMO_CLAUDE_MODE = "replay"   # replay (default) | live | off
+# → http://localhost:8000/demo
+```
+
+`DEMO_CLAUDE_MODE` selects the miss path: **`replay`** streams a captured research run (zero risk),
+**`live`** runs a real cold research session, **`off`** skips research (hit-only). For the live path,
+install the optional SDK once with `./venv/Scripts/python.exe -m pip install -r demo/requirements.txt`.
+
+> **Operator-side only.** The research bridge runs on the operator's box with an allowlisted
+> toolset scoped to a sandbox dir — it is **never** shipped to a customer endpoint. The
+> deterministic catalog path remains the only customer-facing component. The whole layer is
+> removable: delete `demo/` and the one `mount_demo(app)` line and the core is untouched.
+>
+> **Billing (2026-06-15):** on subscription plans the Agent SDK / `claude -p` draw from a
+> separate monthly Agent-SDK credit pool. An exhausted pool surfaces as a red AI lamp, never a
+> silent hang. Decide subscription vs `ANTHROPIC_API_KEY` billing before relying on the live path.
+
+See **[demo/README.md](demo/README.md)** for the full rehearsal playbook, endpoint list, and
+replay-fixture format.
+
 ## Configuration
 
 Configure AutoPackager via `autopackager/config/config.yaml`:
@@ -503,11 +579,10 @@ Be aware of the following before relying on AutoPackager in production:
 
 - **Windows required for real packaging.** `.intunewin` creation depends on `IntuneWinAppUtil.exe`. On other platforms (or when the tool is missing) packaging produces a placeholder file that cannot be published.
 - **HP discovery is incomplete.** The HP catalog parser returns placeholder SoftPaq URLs and should not be used to drive real HP driver jobs yet.
-- **Testing is shallow by default.** The smoke test only validates that package files exist and commands/detection rules are well-formed. Real installation testing requires a configured Hyper-V host; the Azure VM provider is not implemented.
-- **Detection rules are generated heuristically (drivers).** The default registry detection rule for drivers is a best-effort template and may need manual adjustment. MSI software packages instead get a precise product-code detection rule read from the MSI.
-- **Software packaging is MSI-only.** The metadata-driven path reads MSI files; `.exe` and other installer types still fall back to file-type heuristics for their install commands.
-- **No automatic software version discovery yet.** MSI packaging works from an installer you supply; it does not yet scan vendors for newer software releases (Phase 2).
-- **No LLM features yet.** Discovery and install-command generation are fully deterministic. The `llm` config block and the OpenAI/Anthropic dependencies are unused.
+- **Smoke testing is shallow.** The default smoke check only validates that package files exist and commands/detection rules are well-formed. A deeper **pre-publish install validation** (actually installs on the host and verifies, with a silent-switch retry ladder and engineer escalation) runs on Windows; full VM-based testing still requires a configured Hyper-V host, and the Azure VM provider is not implemented.
+- **Detection rules are generated heuristically (drivers).** The default registry detection rule for drivers is a best-effort template and may need manual adjustment. MSI software packages instead get a precise product-code detection rule read from the MSI; EXE packages rely on the catalog entry's detection rules.
+- **Automatic software version discovery is operator-side and demo-grade.** The AI research bridge can check a vendor for a newer build and find an official installer URL, but it runs operator-side (through the Mission Control console / packaging queue), not as an unattended product service. A fully autonomous, customer-facing version-discovery service remains a Phase 2/3 item.
+- **The AI research bridge is operator-side, not a shipped product feature.** It runs on the operator's box with an allowlisted, sandboxed toolset and is never deployed to a customer endpoint. The deterministic catalog path is the only customer-facing component. The `llm` config block / OpenAI dependency remain reserved for future product-side phases.
 - **Supersedence is opt-in, not automatic.** New versions are published as separate Intune apps. The operator chooses whether to link them via `cli.py create-software-job --supersede` (catalog-declared chain) or `--supersedes <id>` (explicit), at publish time. Pilot-verified for MSI; EXE / `wrapped_*` supersedence has not been exercised live yet.
 - **Rollback requires a prior known-good package.** Automatic rollback only works if an earlier deployed + tested package for the same name exists in the database.
 
@@ -515,9 +590,11 @@ Be aware of the following before relying on AutoPackager in production:
 
 ### Phase 2: COTS Software Update Automation (In Progress)
 - ✅ **MSI software packaging from metadata + install command** (delivered) — see [Packaging MSI Software](#packaging-msi-software)
-- ⬜ LLM-powered software *version* discovery (checking vendors for new releases)
-- ⬜ Silent install parameter research for non-MSI installers (`.exe`)
-- ⬜ Support for 50+ common applications (Chrome, Adobe, 7-Zip, etc.)
+- ✅ **EXE software packaging** (catalog-driven detection + silent-install families) (delivered)
+- ✅ **AI silent-install-parameter research for non-MSI installers** (delivered, operator-side) — the research bridge authors the silent command + detection rule for an unknown installer and writes it back to the catalog
+- 🟡 **AI-powered software *version* discovery** (operator-side via the version-check bridge / packaging queue) — autonomous, customer-facing version tracking is still to come
+- 🟡 **Unmanaged-software delta + packaging queue** (delivered, operator-side) — surfaces "installed but not packaged" and queues gated jobs
+- ⬜ Support for 50+ common applications (growing catalog: 7-Zip, Chrome, VS Code, dev tools, …)
 - ⬜ Full PSADT integration
 
 ### Phase 3: New Software and Full Autonomy (Planned)
@@ -553,6 +630,7 @@ Not sure where to start? Use this map.
 - **Test Suite Guide**: [tests/README.md](tests/README.md) — pytest layout, fixtures, and coverage targets
 - **Changelog**: [CHANGELOG.md](CHANGELOG.md) — release history
 - **Intune Packaging References**: [docs/claude-reference/](docs/claude-reference/) — authoritative driver (ch04) and Win32 app (ch11) packaging references for building catalog entries and installer families
+- **AI research bridge & demo console**: [demo/README.md](demo/README.md) — Mission Control console, the `DEMO_CLAUDE_MODE` research modes, rehearsal playbook, endpoints, and replay-fixture format
 - **Design History**: [docs/design-history/](docs/design-history/) — the original whitepaper and PR/FAQ (pre-release vision; describe unbuilt Phase-2 features)
 
 ### Web Dashboard
@@ -587,5 +665,8 @@ Version 1.6.0 — Phase 1 (driver automation): catalog-based discovery, Win32 pa
 Intune publishing, deployment rings with automatic promotion and rollback, continuous
 catalog discovery, status polling, web dashboard, and CLI. Software packaging covers both
 MSI and EXE installers (catalog-driven detection/silent-install) plus operator-opt-in MSI
-supersedence. LLM-driven discovery remains Phase 2. See [CHANGELOG.md](CHANGELOG.md) for the
-full release history.
+supersedence. Phase 2 is now underway: an operator-side **AI research bridge** (Claude Agent
+SDK / `claude -p`) fills catalog gaps, checks vendors for newer versions, and sources installer
+URLs; an **unmanaged-software delta** and **packaging queue** turn the "installed but not
+packaged" backlog into gated jobs; and a **Mission Control demo console** narrates it live.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history.
