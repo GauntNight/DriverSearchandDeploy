@@ -1,6 +1,7 @@
 """Discovery Agent - Find New Software/Driver Versions"""
 
 import os
+import re
 import requests
 import xmltodict
 from pathlib import Path
@@ -64,11 +65,17 @@ class DiscoveryAgent:
         # Parse catalog
         catalog_data = xmltodict.parse(catalog_xml)
 
+        # Resolve the target OS (Windows10/Windows11) so we don't hand a
+        # Win10 pack to a Win11 device. Sourced from the model's Intune
+        # managed device when available; None means "don't filter by OS".
+        target_os = self._resolve_target_os(job)
+
         # Find matching driver pack for the model
         driver_pack = self._find_dell_driver_pack(
             catalog_data,
             job.hardware_model,
-            job.driver_type
+            job.driver_type,
+            target_os=target_os,
         )
 
         if driver_pack:
@@ -86,11 +93,13 @@ class DiscoveryAgent:
                 'download_url': download_url,
                 'release_notes': driver_pack.get('releaseNotes', ''),
                 'release_date': driver_pack.get('dateTime', ''),
-                'file_size': driver_pack.get('size', 0)
+                'file_size': driver_pack.get('size', 0),
+                'target_os': target_os,
+                'os_code': driver_pack.get('osCode', ''),
             }
         else:
-            logger.warning("No driver pack found", model=job.hardware_model)
-            return {'update_available': False}
+            logger.warning("No driver pack found", model=job.hardware_model, target_os=target_os)
+            return {'update_available': False, 'target_os': target_os}
 
     def _download_dell_catalog(self, catalog_config: Dict) -> str:
         """Download Dell driver catalog CAB file and extract XML"""
@@ -134,50 +143,198 @@ class DiscoveryAgent:
         self,
         catalog_data: Dict,
         hardware_model: str,
-        driver_type: Optional[str] = None
+        driver_type: Optional[str] = None,
+        target_os: Optional[str] = None,
     ) -> Optional[Dict]:
-        """Find matching driver pack in Dell catalog"""
+        """Find the best matching Dell driver pack for a model (+ OS).
+
+        Selection logic — fixes three legacy bugs that surfaced live against a
+        real Latitude 5420 (it used to return a "Latitude 5420 Rugged" /
+        Windows10 / 2021 pack for a plain Latitude 5420 on Windows 11):
+
+          1. **Exact model match.** Normalised, exact model-name match so
+             ``"Latitude 5420"`` does not also match ``"Latitude 5420 Rugged"``
+             or ``"E5420"`` via substring. Falls back to substring only when
+             there is no exact match (logged), to stay resilient to catalogs
+             that qualify the model name.
+          2. **OS filter.** Keep only packs whose ``osCode`` set contains
+             ``target_os`` (e.g. ``"Windows11"``). Skipped when ``target_os``
+             is None; relaxed with a warning if the OS filter empties the set.
+          3. **Newest wins.** Among the survivors, pick the latest by release
+             date (tie-broken by the Dell A-rev version) instead of the first
+             pack in document order.
+        """
         try:
-            driver_packs = catalog_data['DriverPackManifest']['DriverPackage']
+            packs = catalog_data['DriverPackManifest']['DriverPackage']
+        except (KeyError, TypeError):
+            return None
+        if not isinstance(packs, list):
+            packs = [packs]
 
-            if not isinstance(driver_packs, list):
-                driver_packs = [driver_packs]
+        try:
+            infos = [self._dell_pack_info(p) for p in packs]
+            target = self._normalize_model(hardware_model)
 
-            for pack in driver_packs:
-                # Brand can be a dict (single brand) or list (multiple brands) due to
-                # how xmltodict parses repeated XML elements.
-                brands = pack.get('SupportedSystems', {}).get('Brand', {})
-                if not isinstance(brands, list):
-                    brands = [brands]
+            exact = [pi for pi in infos if target and target in pi['models_norm']]
+            candidates = exact
+            if not candidates:
+                candidates = [pi for pi in infos
+                              if target and any(target in m for m in pi['models_norm'])]
+                if candidates:
+                    logger.warning(
+                        "No exact Dell model match; falling back to substring",
+                        model=hardware_model, matched=len(candidates))
 
-                supported_systems = []
-                for brand in brands:
-                    models = brand.get('Model', [])
-                    if not isinstance(models, list):
-                        models = [models]
-                    supported_systems.extend(models)
+            if not candidates:
+                return None
 
-                # Check if hardware model matches
-                for system in supported_systems:
-                    if isinstance(system, dict):
-                        system_name = system.get('@name', '')
-                    else:
-                        system_name = str(system)
+            if target_os:
+                os_matched = [pi for pi in candidates if target_os in pi['os_codes']]
+                if os_matched:
+                    candidates = os_matched
+                else:
+                    logger.warning(
+                        "No Dell pack for target OS; ignoring OS filter",
+                        model=hardware_model, target_os=target_os)
 
-                    if hardware_model.lower() in system_name.lower():
-                        # Match found, return driver pack info
-                        return {
-                            'name': pack.get('@name', ''),
-                            'dellVersion': pack.get('@dellVersion', ''),
-                            'path': pack.get('@path', ''),
-                            'releaseNotes': pack.get('@releaseNotes', ''),
-                            'dateTime': pack.get('@dateTime', ''),
-                            'size': pack.get('@size', 0)
-                        }
+            # Newest by release date, tie-broken by Dell A-rev version.
+            best = max(candidates, key=lambda pi: (pi['date_key'], pi['version_key']))
+            logger.info(
+                "Selected Dell driver pack", model=hardware_model, target_os=target_os,
+                version=best['pack_return']['dellVersion'],
+                os_code=best['pack_return']['osCode'],
+                candidates=len(candidates))
+            return best['pack_return']
 
         except Exception as e:
             logger.error("Error parsing Dell catalog", error=str(e))
+            return None
 
+    @staticmethod
+    def _as_list(value):
+        """Normalise xmltodict's dict-or-list-or-None into a list."""
+        if value is None:
+            return []
+        return value if isinstance(value, list) else [value]
+
+    @staticmethod
+    def _normalize_model(name: Optional[str]) -> str:
+        """Case-fold, trim, and collapse internal whitespace for model compare."""
+        return ' '.join((name or '').strip().casefold().split())
+
+    @staticmethod
+    def _dell_arev_to_int(version: Optional[str]) -> int:
+        """Map a Dell A-rev version (``A13`` -> 13, ``A00`` -> 0) to an int.
+
+        Returns -1 for anything that doesn't parse, so non-A-rev versions
+        simply lose the tie-break to dated packs rather than crashing.
+        """
+        try:
+            return int(str(version or '').strip().lstrip('Aa') or -1)
+        except ValueError:
+            return -1
+
+    def _dell_pack_info(self, pack: Dict) -> Dict[str, Any]:
+        """Pre-extract the fields the selector needs from one DriverPackage."""
+        models = []
+        for brand in self._as_list((pack.get('SupportedSystems') or {}).get('Brand')):
+            if not isinstance(brand, dict):
+                continue
+            for m in self._as_list(brand.get('Model')):
+                models.append(m.get('@name', '') if isinstance(m, dict) else str(m))
+
+        os_codes = {
+            o.get('@osCode', '')
+            for o in self._as_list((pack.get('SupportedOperatingSystems') or {}).get('OperatingSystem'))
+            if isinstance(o, dict)
+        }
+
+        date_raw = pack.get('@dateTime') or ''
+        try:
+            date_key = datetime.fromisoformat(date_raw)
+        except (ValueError, TypeError):
+            date_key = datetime.min
+
+        return {
+            'models_norm': {self._normalize_model(m) for m in models},
+            'os_codes': os_codes,
+            'date_key': date_key,
+            'version_key': self._dell_arev_to_int(pack.get('@dellVersion')),
+            'pack_return': {
+                'name': pack.get('@name', ''),
+                'dellVersion': pack.get('@dellVersion', ''),
+                'path': pack.get('@path', ''),
+                'releaseNotes': pack.get('@releaseNotes', ''),
+                'dateTime': pack.get('@dateTime', ''),
+                'size': pack.get('@size', 0),
+                'osCode': ','.join(sorted(c for c in os_codes if c)),
+            },
+        }
+
+    def _resolve_target_os(self, job) -> Optional[str]:
+        """Resolve the Dell ``osCode`` to filter packs by for this job.
+
+        Order of precedence:
+          1. ``job.job_metadata['target_os']`` if the caller set it explicitly.
+          2. The OS of an Intune managed device of this hardware model — when a
+             model spans Win10/Win11 we prefer the newest (Windows11).
+          3. ``None`` (no OS filter).
+
+        Best-effort: any failure talking to Graph degrades to None so driver
+        discovery never hard-fails on the OS lookup (and unit tests, which have
+        no Graph, simply get None).
+        """
+        meta = getattr(job, 'job_metadata', None)
+        if isinstance(meta, dict) and meta.get('target_os'):
+            return meta['target_os']
+
+        model = getattr(job, 'hardware_model', None)
+        if not model:
+            return None
+
+        try:
+            from autopackager.utils.graph_client import GraphAPIClient
+            gc = GraphAPIClient()
+            resp = gc.get(
+                "deviceManagement/managedDevices"
+                "?$filter=operatingSystem eq 'Windows'"
+                "&$select=model,operatingSystem,osVersion&$top=100")
+            wanted = self._normalize_model(model)
+            codes = set()
+            for d in resp.get('value', []) or []:
+                if self._normalize_model(d.get('model')) == wanted:
+                    code = self._os_code_from_os_version(d.get('osVersion'))
+                    if code:
+                        codes.add(code)
+            if not codes:
+                return None
+            for pref in ('Windows11', 'Windows10'):  # newest wins on mixed fleets
+                if pref in codes:
+                    logger.info("Resolved target OS from Intune device",
+                                model=model, target_os=pref)
+                    return pref
+            return sorted(codes)[0]
+        except Exception as e:  # noqa: BLE001 — OS lookup is best-effort
+            logger.warning("Could not resolve target OS from Intune; no OS filter",
+                           model=model, error=str(e))
+            return None
+
+    @staticmethod
+    def _os_code_from_os_version(os_version: Optional[str]) -> Optional[str]:
+        """Map a Windows ``managedDevice.osVersion`` to a Dell catalog osCode.
+
+        Windows 10 and 11 both report ``10.0.<build>``; build >= 22000 is
+        Windows 11.
+        """
+        try:
+            parts = str(os_version or '').split('.')
+            build = int(parts[2]) if len(parts) >= 3 else 0
+        except (ValueError, IndexError):
+            return None
+        if build >= 22000:
+            return 'Windows11'
+        if build > 0:
+            return 'Windows10'
         return None
 
     def _discover_hp_driver(self, job: Job) -> Dict[str, Any]:
@@ -306,11 +463,16 @@ class DiscoveryAgent:
         # Parse catalog
         catalog_data = xmltodict.parse(catalog_xml)
 
+        # Resolve target OS (Windows10/Windows11) so we pick the right SCCM
+        # driver pack for the device's OS, same as the Dell path.
+        target_os = self._resolve_target_os(job)
+
         # Find matching driver for the model
         driver_info = self._find_lenovo_driver(
             catalog_data,
             job.hardware_model,
-            job.driver_type
+            job.driver_type,
+            target_os=target_os,
         )
 
         if driver_info:
@@ -326,11 +488,13 @@ class DiscoveryAgent:
                 'download_url': download_url,
                 'release_notes': driver_info.get('releaseNotes', ''),
                 'release_date': driver_info.get('releaseDate', ''),
-                'file_size': driver_info.get('size', 0)
+                'file_size': driver_info.get('size', 0),
+                'target_os': target_os,
+                'os_code': driver_info.get('os_code', ''),
             }
         else:
-            logger.warning("No Lenovo driver found", model=job.hardware_model)
-            return {'update_available': False}
+            logger.warning("No Lenovo driver found", model=job.hardware_model, target_os=target_os)
+            return {'update_available': False, 'target_os': target_os}
 
     def _download_lenovo_catalog(self, catalog_config: Dict) -> str:
         """Download Lenovo driver catalog XML"""
@@ -349,71 +513,129 @@ class DiscoveryAgent:
             with open(xml_file, 'wb') as f:
                 f.write(response.content)
 
-        # Read XML
-        with open(xml_file, 'r', encoding='utf-8') as f:
+        # Read XML. utf-8-sig strips the BOM Lenovo ships, which would otherwise
+        # make xmltodict/expat choke ("not well-formed") on the leading ﻿.
+        with open(xml_file, 'r', encoding='utf-8-sig') as f:
             return f.read()
+
+    # Map our canonical OS code to Lenovo's catalog @os values.
+    _LENOVO_OS_CODE = {'Windows11': 'win11', 'Windows10': 'win10'}
 
     def _find_lenovo_driver(
         self,
         catalog_data: Dict,
         hardware_model: str,
-        driver_type: Optional[str] = None
+        driver_type: Optional[str] = None,
+        target_os: Optional[str] = None,
     ) -> Optional[Dict]:
-        """Find matching driver in Lenovo catalog"""
+        """Find the best Lenovo SCCM driver pack for a model (+ OS).
+
+        The real ``catalogv2.xml`` is ``ModelList -> Model -> SCCM`` — the
+        SCCM/MECM driver pack — NOT the ``Products -> Product -> Driver`` shape
+        the legacy code assumed (which matched **nothing**, leaving Lenovo
+        discovery non-functional). Each ``Model`` carries machine ``Types``
+        (e.g. ``20XW``), a ``BIOS`` element, and one or more ``SCCM`` packs
+        keyed by ``@os`` (``win10``/``win11``), Windows feature ``@version``
+        (``1909``/``22H2``), and ``@date``; ``#text`` is the full pack URL.
+
+        Selection:
+          1. **Match the model** by machine ``Type`` code (exact), else exact
+             normalized name, else normalized-substring (logged fallback).
+             Lenovo names embed gen + type codes (``ThinkPad X1 Carbon 9TH Gen
+             Type 20XW 20XX``), so the machine type is the most reliable key.
+          2. **OS filter** the SCCM packs to ``win10``/``win11`` (relaxed with a
+             warning if it empties the set).
+          3. **Newest wins** — latest by ``@date``, tie-broken by Windows
+             feature version.
+
+        ``driver_type`` is accepted for signature parity but doesn't apply: an
+        SCCM pack is a whole-model driver bundle, not a per-category driver.
+        """
         try:
-            # Lenovo catalog structure: Products -> Product -> Driver
-            products = catalog_data.get('Products', {}).get('Product', [])
+            models = catalog_data['ModelList']['Model']
+        except (KeyError, TypeError):
+            return None
+        if not isinstance(models, list):
+            models = [models]
 
-            if not isinstance(products, list):
-                products = [products]
+        target = self._normalize_model(hardware_model)
+        if not target:
+            return None
 
-            for product in products:
-                # Check if model matches
-                model_name = product.get('@name', '')
-                model_type = product.get('@type', '')
+        def types_of(model):
+            node = (model.get('Types') or {}).get('Type')
+            return {self._normalize_model(t) for t in self._as_list(node) if isinstance(t, str)}
 
-                if hardware_model.lower() in model_name.lower():
-                    # Found matching product
-                    drivers = product.get('Driver', [])
+        def name_of(model):
+            return self._normalize_model(model.get('@name'))
 
-                    if not isinstance(drivers, list):
-                        drivers = [drivers]
+        by_type = [m for m in models if target in types_of(m)]
+        by_name_exact = [m for m in models if name_of(m) == target]
+        by_name_sub = [m for m in models if target and target in name_of(m)]
+        matched = by_type or by_name_exact or by_name_sub
+        if not matched:
+            return None
+        if not (by_type or by_name_exact):
+            logger.warning("No exact Lenovo model/type match; using name substring",
+                           model=hardware_model, matched=len(matched))
 
-                    # Filter by driver type if specified
-                    for driver in drivers:
-                        driver_category = driver.get('@category', '').lower()
+        # Gather every SCCM pack across the matched model(s).
+        packs = []
+        for model in matched:
+            for sccm in self._as_list(model.get('SCCM')):
+                if isinstance(sccm, dict):
+                    packs.append((model, sccm))
+        if not packs:
+            return None
 
-                        # If specific driver type requested, filter
-                        if driver_type and driver_type.lower() not in driver_category:
-                            continue
+        lenovo_os = self._LENOVO_OS_CODE.get(target_os)
+        if lenovo_os:
+            os_packs = [(m, s) for (m, s) in packs if s.get('@os') == lenovo_os]
+            if os_packs:
+                packs = os_packs
+            else:
+                logger.warning("No Lenovo SCCM pack for target OS; ignoring OS filter",
+                               model=hardware_model, target_os=target_os)
 
-                        # Return first matching driver
-                        # In production, would return the latest version
-                        return {
-                            'name': driver.get('@name', 'Unknown Driver'),
-                            'version': driver.get('@version', 'Unknown'),
-                            'url': driver.get('URL', {}).get('#text', ''),
-                            'releaseNotes': driver.get('@rebootType', ''),
-                            'releaseDate': driver.get('@date', ''),
-                            'size': int(driver.get('@size', 0))
-                        }
+        def date_key(sccm):
+            try:
+                return datetime.fromisoformat(sccm.get('@date'))
+            except (ValueError, TypeError):
+                return datetime.min
 
-                    # If no specific driver type match, return driver pack
-                    if drivers:
-                        first_driver = drivers[0]
-                        return {
-                            'name': f"Lenovo {model_name} Driver Pack",
-                            'version': first_driver.get('@version', 'Latest'),
-                            'url': first_driver.get('URL', {}).get('#text', ''),
-                            'releaseNotes': f"Driver pack for {model_name}",
-                            'releaseDate': first_driver.get('@date', ''),
-                            'size': int(first_driver.get('@size', 0))
-                        }
+        best_model, best = max(
+            packs, key=lambda ms: (date_key(ms[1]), self._win_release_key(ms[1].get('@version'))))
+        logger.info(
+            "Selected Lenovo driver pack", model=hardware_model, target_os=target_os,
+            os_code=best.get('@os'), date=best.get('@date'),
+            windows_release=best.get('@version'), candidates=len(packs))
+        return {
+            'name': best_model.get('@name', ''),
+            'version': best.get('@date', '') or best.get('@version', ''),
+            'url': best.get('#text', '') or '',
+            'releaseNotes': '',
+            'releaseDate': best.get('@date', ''),
+            'size': 0,
+            'os_code': best.get('@os', ''),
+            'windows_release': best.get('@version', ''),
+        }
 
-        except Exception as e:
-            logger.error("Error parsing Lenovo catalog", error=str(e))
+    @staticmethod
+    def _win_release_key(version: Optional[str]) -> int:
+        """Sortable key for a Windows feature-release string, for tie-breaks.
 
-        return None
+        ``22H2`` -> 2202, ``21H2`` -> 2102, ``1909`` -> 1909, ``*``/unknown ->
+        -1. Only used to break ties when two SCCM packs share a release date,
+        so cross-scheme magnitude consistency isn't important.
+        """
+        s = str(version or '').strip().upper()
+        m = re.match(r'^(\d{2})H(\d)$', s)
+        if m:
+            return int(m.group(1)) * 100 + int(m.group(2))
+        try:
+            return int(s)
+        except ValueError:
+            return -1
 
     def _discover_software(self, job: Job) -> Dict[str, Any]:
         """Discover software metadata for an MSI or EXE packaging job.
