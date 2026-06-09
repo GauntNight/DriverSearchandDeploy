@@ -1307,3 +1307,101 @@ class TestFilenamePatternDisambiguation:
         # without a filename the gated consumer entry can't be confirmed -> ungated wins
         m = c.match_exe(pe_metadata=pe, filename=None)
         assert m is not None and m.id == 'code-system'
+
+
+class TestCatalogSnapshotExport:
+    """export_catalog_snapshot must copy the agnostic RULES while dropping
+    every tenant-specific field (the whole point: don't lose catalog knowledge,
+    don't leak tenant data)."""
+
+    # An overlay entry that carries BOTH agnostic rules and tenant-specific
+    # fields (usage counters, per-tenant version, verified_versions with a
+    # tenant-bound Intune app GUID).
+    LEARNED = {
+        'id': 'acme-tool',
+        'type': 'exe',
+        'installer_family': 'inno_setup',
+        'install_command_template': '{installer_filename} /VERYSILENT /NORESTART',
+        'uninstall_command_template': 'unins000.exe /VERYSILENT',
+        'pe_company_name': 'Acme',
+        'pe_product_name': 'Acme Tool',
+        'detection_rules': [{'kind': 'registry_exists', 'key': r'HKLM\Software\Acme'}],
+        'supersedence': {'line': 'acme-tool', 'mode': 'generic'},
+        'notes': 'Researched by Claude bridge (demo)',
+        # --- tenant-specific: must NOT survive ---
+        'first_seen': '2026-06-01',
+        'last_used': '2026-06-07',
+        'use_count': 5,
+        'version': '3.2.1',
+        'verified_versions': [
+            {'product_version': '3.2.1', 'verified_at': '2026-06-07',
+             'verified_intune_app_id': 'TENANT-GUID-abc123', 'status': 'newest'},
+        ],
+    }
+
+    BASELINE = {'version': 1, 'entries': [{
+        'id': '7-zip', 'type': 'msi',
+        'install_command_template': 'msiexec /i {installer_filename} /qn /norestart',
+        'upgrade_code': '{UPGRADE}', 'product_code': '{PRODUCT}',
+        'product_name_pattern': '7-Zip', 'publisher': 'Igor Pavlov',
+        'supersedence': {'line': '7-zip', 'mode': 'generic'},
+    }]}
+
+    def _seed(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, self.BASELINE)
+        _write_yaml(local, {'version': 1, 'entries': [self.LEARNED]})
+
+    def test_sanitize_strips_tenant_fields_keeps_rules(self):
+        entry = ic.CatalogEntry(**{k: v for k, v in self.LEARNED.items()
+                                   if k in {f.name for f in ic.fields(ic.CatalogEntry)}})
+        clean = ic.sanitize_entry_for_baseline(entry)
+        for tenant_field in ic.OVERLAY_ONLY_FIELDS:
+            assert tenant_field not in clean
+        # Agnostic rules survive.
+        assert clean['install_command_template'].endswith('/VERYSILENT /NORESTART')
+        assert clean['detection_rules'][0]['kind'] == 'registry_exists'
+        assert clean['installer_family'] == 'inno_setup'
+        assert clean['supersedence']['mode'] == 'generic'
+
+    def test_export_merged_captures_overlay_rules_without_tenant_data(self, temp_catalog_paths, tmp_path):
+        self._seed(temp_catalog_paths)
+        out = tmp_path / 'snapshot.yaml'
+        summary = ic.export_catalog_snapshot(out, source='merged')
+
+        assert summary['entry_count'] == 2          # baseline 7-zip + learned acme-tool
+        assert summary['overlay_only'] == 1          # acme-tool is not in the baseline
+        text = out.read_text(encoding='utf-8')
+        # The learned RULES are preserved...
+        assert 'acme-tool' in text
+        assert '/VERYSILENT /NORESTART' in text
+        # ...but the tenant-bound GUID never leaks (not even in a comment).
+        assert 'TENANT-GUID-abc123' not in text
+
+        # Field-level guarantee: no overlay-only KEY survives on any entry. (The
+        # header comment names those fields as documentation, so check the
+        # parsed entries, not the raw text.)
+        data = yaml.safe_load(text)
+        ids = [e['id'] for e in data['entries']]
+        assert ids == sorted(ids)                    # stable, sorted by id
+        for e in data['entries']:
+            assert not (set(e) & ic.OVERLAY_ONLY_FIELDS)
+
+    def test_export_overlay_source_only_local_entries(self, temp_catalog_paths, tmp_path):
+        self._seed(temp_catalog_paths)
+        out = tmp_path / 'overlay.yaml'
+        summary = ic.export_catalog_snapshot(out, source='overlay')
+        assert summary['entry_count'] == 1
+        data = yaml.safe_load(out.read_text(encoding='utf-8'))
+        assert [e['id'] for e in data['entries']] == ['acme-tool']
+
+    def test_export_is_reloadable_as_a_catalog(self, temp_catalog_paths, tmp_path):
+        """A snapshot must parse back into valid CatalogEntry rows (so it can
+        be promoted into the baseline)."""
+        self._seed(temp_catalog_paths)
+        out = tmp_path / 'snapshot.yaml'
+        ic.export_catalog_snapshot(out, source='merged')
+        data = yaml.safe_load(out.read_text(encoding='utf-8'))
+        rebuilt = [ic._entry_from_dict(r) for r in data['entries']]
+        assert all(e is not None for e in rebuilt)
+        assert {e.id for e in rebuilt} == {'7-zip', 'acme-tool'}

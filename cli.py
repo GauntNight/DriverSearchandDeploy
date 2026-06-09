@@ -1041,6 +1041,49 @@ def start_worker(concurrency):
         console.print(f"[bold red]✗[/bold red] Failed to start worker: {str(e)}")
 
 
+@cli.group()
+def catalog():
+    """Inspect and export the installer catalog"""
+    pass
+
+
+@catalog.command('export')
+@click.option('--output', '-o', 'output',
+              default='autopackager/data/installer_catalog.snapshot.yaml',
+              help='Where to write the snapshot (default: committable path under autopackager/data/).')
+@click.option('--source', type=click.Choice(['merged', 'overlay', 'baseline']),
+              default='merged', show_default=True,
+              help='merged = baseline+overlay; overlay = only locally-learned entries; baseline = committed baseline.')
+def catalog_export(output, source):
+    """Copy the catalog RULES to a tenant-agnostic, committable snapshot.
+
+    Strips every tenant-specific field (usage counts, per-tenant version, and
+    verified_versions — which carries tenant-bound Intune app GUIDs) so the
+    hard-won install/uninstall commands, detection rules, installer families,
+    and supersedence capability are preserved without leaking anything true of
+    only this tenant.
+    """
+    from autopackager.utils import installer_catalog
+
+    try:
+        summary = installer_catalog.export_catalog_snapshot(output, source=source)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[bold red]✗[/bold red] Catalog export failed: {e}")
+        raise SystemExit(1)
+
+    console.print(
+        f"[bold green]✓[/bold green] Wrote {summary['entry_count']} entr"
+        f"{'y' if summary['entry_count'] == 1 else 'ies'} "
+        f"([cyan]{summary['msi']}[/cyan] msi · [cyan]{summary['exe']}[/cyan] exe; "
+        f"[yellow]{summary['overlay_only']}[/yellow] not in the shipped baseline) "
+        f"→ [bold]{summary['output']}[/bold]"
+    )
+    console.print(
+        "  Tenant-specific fields (use_count, version, verified_versions) were stripped. "
+        "Review, then promote into autopackager/data/installer_catalog.yaml to ship."
+    )
+
+
 @cli.command()
 def validate_azure():
     """Validate Azure/Intune configuration for deployment"""
