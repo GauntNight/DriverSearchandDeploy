@@ -161,7 +161,8 @@ class TestDiscoveryAgentDell(unittest.TestCase):
         """Test successful Dell driver discovery"""
         mock_xmltodict.return_value = self.sample_catalog_data
 
-        with patch.object(self.agent, '_download_dell_catalog', return_value='<xml>'):
+        with patch.object(self.agent, '_download_dell_catalog', return_value='<xml>'), \
+             patch.object(self.agent, '_resolve_target_os', return_value=None):
             result = self.agent._discover_dell_driver(self.job)
 
             self.assertTrue(result['update_available'])
@@ -178,7 +179,8 @@ class TestDiscoveryAgentDell(unittest.TestCase):
 
         self.job.hardware_model = 'NonExistentModel'
 
-        with patch.object(self.agent, '_download_dell_catalog', return_value='<xml>'):
+        with patch.object(self.agent, '_download_dell_catalog', return_value='<xml>'), \
+             patch.object(self.agent, '_resolve_target_os', return_value=None):
             result = self.agent._discover_dell_driver(self.job)
 
             self.assertFalse(result['update_available'])
