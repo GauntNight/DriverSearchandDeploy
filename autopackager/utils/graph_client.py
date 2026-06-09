@@ -478,6 +478,22 @@ class GraphAPIClient:
 
         Returns:
             The created profile JSON (includes ``id``).
+
+        .. warning::
+            **App-only (client-credentials) creation is currently blocked in
+            the ngbg test tenant.** Observed 2026-06-08: this POST returns a
+            403 from the Intune Windows-Update-for-Business backend (the
+            ``SoftwareUpdateService`` proxy) *even though* the service
+            principal holds ``DeviceManagementConfiguration.ReadWrite.All``
+            (the Graph scope gate passes — the error has no "must have scope"
+            text). The most likely cause is that the tenant's WUfB deployment
+            service has not been onboarded yet; the first driver-update
+            profile must be created interactively by a signed-in admin in the
+            Intune portal (Devices → Windows → Driver updates), which onboards
+            the tenant. After that, the *read* surface below
+            (:meth:`get_driver_update_profile`, :meth:`list_driver_inventory`)
+            works under the SP token. See the discovery journal
+            (``driver-mgmt-wufb``) for the full trace.
         """
         logger.info(
             "Creating driver update profile",
@@ -523,6 +539,68 @@ class GraphAPIClient:
         """List all Driver Update Profiles in the tenant."""
         logger.info("Listing driver update profiles")
         return self._beta_get('deviceManagement/windowsDriverUpdateProfiles')
+
+    def get_driver_update_profile(self, profile_id: str, expand_assignments: bool = False):
+        """Fetch a single Driver Update Profile by id.
+
+        With ``expand_assignments=True`` the returned object carries an
+        ``assignments`` collection (each ``target.groupId`` is a targeted
+        group). Read-only; works under the app-only SP token.
+        """
+        logger.info("Fetching driver update profile", profile_id=profile_id)
+        endpoint = f'deviceManagement/windowsDriverUpdateProfiles/{profile_id}'
+        if expand_assignments:
+            endpoint += '?$expand=assignments'
+        return self._beta_get(endpoint)
+
+    def find_driver_update_profile_by_name(self, display_name: str):
+        """Return the first profile whose ``displayName`` matches, else None.
+
+        Convenience for the CLI/service so operators can reference a profile
+        by its human name instead of the GUID.
+        """
+        for prof in self.list_driver_update_profiles().get('value', []) or []:
+            if prof.get('displayName') == display_name:
+                return prof
+        return None
+
+    def list_driver_inventory(self, profile_id: str, page_limit: int = 50):
+        """Return the per-driver inventory (the update *delta*) for a profile.
+
+        ``windowsDriverUpdateProfiles/{id}/driverInventories`` is the list of
+        ``windowsDriverUpdateInventory`` rows Windows Update surfaced as
+        *applicable* to the devices the profile targets — i.e. each row is a
+        driver for which a newer version is available. Each row:
+        ``{id, name, version, manufacturer, driverClass, category,
+        approvalStatus, applicableDeviceCount, releaseDateTime,
+        deployDateTime}`` where:
+
+        - ``category`` ∈ ``recommended | previouslyApproved | other``
+        - ``approvalStatus`` ∈ ``needsReview | approved | declined | suspended``
+
+        Pages by following ``@odata.nextLink`` (``page_limit`` bounds it).
+        Read-only; works under the app-only SP token. Returns ``[]`` while the
+        profile is still being inventoried (the ~1-2 day WUfB sync after first
+        assignment) — an empty list is the *pending* state, not an error.
+        """
+        logger.info("Fetching driver inventory", profile_id=profile_id)
+        results = []
+        data = self._beta_get(
+            f'deviceManagement/windowsDriverUpdateProfiles/{profile_id}/driverInventories'
+        )
+        pages = 0
+        while True:
+            results.extend(data.get('value', []) or [])
+            nxt = data.get('@odata.nextLink')
+            pages += 1
+            if not nxt or pages >= page_limit:
+                break
+            resp = requests.get(nxt, headers=self._get_headers())
+            self._raise_with_details(resp)
+            data = resp.json()
+        logger.info("Driver inventory fetched", profile_id=profile_id,
+                    count=len(results), pages=pages)
+        return results
 
     # ---------------------------------------------------------------------------
     # Deployment Status (Win32 app install status tracking)

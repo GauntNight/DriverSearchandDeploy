@@ -1323,5 +1323,156 @@ def queue_unmanaged(source, include_known, limit, mode, yes):
                   "Approve individual jobs to deploy to Ring 0.")
 
 
+@cli.group()
+def drivers():
+    """Read-only Intune-native driver management (Windows Driver Update Profiles).
+
+    Surfaces the driver-update delta Windows Update computes for the devices a
+    profile targets. These commands never create or modify anything — profile
+    creation is an interactive Intune-portal step (see `drivers list-profiles`
+    output when the tenant has none).
+    """
+    pass
+
+
+def _drivers_graph_client():
+    """Build a GraphAPIClient or print a friendly error and return None."""
+    try:
+        from autopackager.utils.graph_client import GraphAPIClient
+        return GraphAPIClient()
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]✗[/red] Graph client unavailable: {exc}")
+        return None
+
+
+@drivers.command('list-profiles')
+@click.option('--format', 'fmt', type=click.Choice(['table', 'json']), default='table')
+def drivers_list_profiles(fmt):
+    """List Windows Driver Update Profiles in the tenant."""
+    import json
+    gc = _drivers_graph_client()
+    if gc is None:
+        raise click.Abort()
+
+    profs = gc.list_driver_update_profiles().get('value', []) or []
+    if fmt == 'json':
+        console.print(json.dumps(profs, indent=2, default=str))
+        return
+
+    if not profs:
+        console.print(
+            "\n[yellow]No Windows Driver Update Profiles in the tenant.[/yellow]\n"
+            "Create the first one interactively (this also onboards the tenant's "
+            "Windows Update for Business service):\n"
+            "  [cyan]intune.microsoft.com → Devices → Windows → Manage updates → "
+            "Windows Driver updates → Create profile[/cyan]\n"
+            "Use [bold]Manual[/bold] approval (inventory only — nothing installs "
+            "without your approval), then assign it to a device group.")
+        return
+
+    table = Table(title="Windows Driver Update Profiles")
+    table.add_column("Name", style="bold")
+    table.add_column("Approval")
+    table.add_column("Id")
+    for p in profs:
+        table.add_row(p.get('displayName') or '', p.get('approvalType') or '—', p.get('id') or '')
+    console.print(table)
+
+
+@drivers.command('inventory')
+@click.argument('profile', required=False)
+@click.option('--format', 'fmt', type=click.Choice(['table', 'json']), default='table')
+@click.option('--needs-review', is_flag=True, default=False,
+              help='Only show drivers whose approvalStatus is needsReview.')
+@click.option('--out', type=click.Path(dir_okay=False), help='Write the full JSON report to this file.')
+@click.option('--limit', type=int, default=40, help='Max driver rows to print per profile.')
+def drivers_inventory(profile, fmt, needs_review, out, limit):
+    """Show the driver-update delta for a profile (or all profiles).
+
+    PROFILE is an optional profile GUID or display name; omit it to report on
+    every profile. Each row is a driver for which Windows Update found a newer
+    applicable version (the current-vs-available delta).
+    """
+    import json
+    from autopackager.services import driver_inventory
+
+    gc = _drivers_graph_client()
+    if gc is None:
+        raise click.Abort()
+
+    report = driver_inventory.build_report(gc, profile=profile)
+
+    if out:
+        Path(out).write_text(json.dumps(report, indent=2, default=str), encoding='utf-8')
+        console.print(f"[green]✓[/green] Wrote full JSON report to {out}")
+    if fmt == 'json':
+        console.print(json.dumps(report, indent=2, default=str))
+        return
+
+    status = report['status']
+    if status == 'no_profiles':
+        console.print(
+            "\n[yellow]No driver inventory to show.[/yellow] "
+            "No matching Windows Driver Update Profile exists — run "
+            "[cyan]cli.py drivers list-profiles[/cyan] (it explains how to create one).")
+        for e in report['errors']:
+            console.print(f"[dim]note: {e}[/dim]")
+        return
+
+    console.print(
+        f"\n[bold]Driver-update delta[/bold]  (profiles={report['profile_count']}, "
+        f"drivers={report['total_drivers']}, "
+        f"[bold red]needs review: {report['needs_review']}[/bold red])")
+
+    if status == 'pending':
+        console.print(
+            "[yellow]⏳ Inventory pending.[/yellow] The profile(s) exist but Windows "
+            "Update hasn't surfaced drivers yet — first inventory takes ~1-2 days after "
+            "assignment, and only devices with diagnostic data (telemetry) enabled "
+            "report drivers.")
+
+    for p in report['profiles']:
+        groups = ', '.join(p['assigned_group_ids']) or '—'
+        console.print(
+            f"\n[bold cyan]{p['display_name']}[/bold cyan]  "
+            f"(approval={p['approval_type'] or '—'}, drivers={p['driver_count']}, "
+            f"groups={groups})")
+        if p['pending']:
+            console.print("  [dim]no drivers inventoried yet[/dim]")
+            continue
+        if p['by_class']:
+            console.print("  [dim]by class: "
+                          + ", ".join(f"{k}={v}" for k, v in p['by_class'].items()) + "[/dim]")
+
+        rows = p['drivers']
+        if needs_review:
+            rows = [d for d in rows if d['approval_status'] == 'needsReview']
+            if not rows:
+                console.print("  [dim](no needs-review drivers)[/dim]")
+                continue
+
+        table = Table()
+        table.add_column("Driver", style="bold")
+        table.add_column("Manufacturer")
+        table.add_column("Class")
+        table.add_column("Version")
+        table.add_column("Category")
+        table.add_column("Approval")
+        table.add_column("Devices", justify="right")
+        for d in rows[:limit]:
+            approval = d['approval_status']
+            approval_disp = f"[red]{approval}[/red]" if approval == 'needsReview' else approval
+            table.add_row(
+                d['name'], d['manufacturer'], d['driver_class'], d['version'],
+                d['category'], approval_disp, str(d['applicable_device_count']))
+        console.print(table)
+        extra = len(rows) - limit
+        if extra > 0:
+            console.print(f"  [dim]… and {extra} more (raise --limit or --format json).[/dim]")
+
+    for e in report['errors']:
+        console.print(f"[dim]note: {e}[/dim]")
+
+
 if __name__ == '__main__':
     cli()

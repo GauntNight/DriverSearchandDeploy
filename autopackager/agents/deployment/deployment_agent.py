@@ -1569,6 +1569,23 @@ class DeploymentAgent:
 
         Note: The approval type is **immutable** after creation. To change it
         you must delete and recreate the profile.
+
+        .. warning::
+            **Not wired into the pipeline, and live creation is currently
+            blocked.** Nothing in the orchestration chain calls this method —
+            driver jobs flow through the standard Win32-app deploy path. More
+            importantly, the underlying ``create_driver_update_profile`` POST
+            returns a 403 from the Intune WUfB backend under app-only
+            (client-credentials) auth in the ngbg tenant (observed
+            2026-06-08) despite the SP holding the correct
+            ``DeviceManagementConfiguration.ReadWrite.All`` scope — the
+            tenant's WUfB deployment service must first be onboarded by a
+            signed-in admin creating a profile in the Intune portal. Until
+            that onboarding is done (and app-only create is re-verified), this
+            method cannot be relied on for automated driver deployment. The
+            *read* side (``GraphAPIClient.list_driver_inventory``) does work
+            under the SP token once a profile exists. See the discovery
+            journal entry ``driver-mgmt-wufb``.
         """
         logger.info(
             "Creating driver update profile deployment",
