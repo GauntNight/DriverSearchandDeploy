@@ -1,6 +1,7 @@
 """Discovery Agent - Find New Software/Driver Versions"""
 
 import os
+import re
 import requests
 import xmltodict
 from pathlib import Path
@@ -462,11 +463,16 @@ class DiscoveryAgent:
         # Parse catalog
         catalog_data = xmltodict.parse(catalog_xml)
 
+        # Resolve target OS (Windows10/Windows11) so we pick the right SCCM
+        # driver pack for the device's OS, same as the Dell path.
+        target_os = self._resolve_target_os(job)
+
         # Find matching driver for the model
         driver_info = self._find_lenovo_driver(
             catalog_data,
             job.hardware_model,
-            job.driver_type
+            job.driver_type,
+            target_os=target_os,
         )
 
         if driver_info:
@@ -482,11 +488,13 @@ class DiscoveryAgent:
                 'download_url': download_url,
                 'release_notes': driver_info.get('releaseNotes', ''),
                 'release_date': driver_info.get('releaseDate', ''),
-                'file_size': driver_info.get('size', 0)
+                'file_size': driver_info.get('size', 0),
+                'target_os': target_os,
+                'os_code': driver_info.get('os_code', ''),
             }
         else:
-            logger.warning("No Lenovo driver found", model=job.hardware_model)
-            return {'update_available': False}
+            logger.warning("No Lenovo driver found", model=job.hardware_model, target_os=target_os)
+            return {'update_available': False, 'target_os': target_os}
 
     def _download_lenovo_catalog(self, catalog_config: Dict) -> str:
         """Download Lenovo driver catalog XML"""
@@ -505,71 +513,129 @@ class DiscoveryAgent:
             with open(xml_file, 'wb') as f:
                 f.write(response.content)
 
-        # Read XML
-        with open(xml_file, 'r', encoding='utf-8') as f:
+        # Read XML. utf-8-sig strips the BOM Lenovo ships, which would otherwise
+        # make xmltodict/expat choke ("not well-formed") on the leading ﻿.
+        with open(xml_file, 'r', encoding='utf-8-sig') as f:
             return f.read()
+
+    # Map our canonical OS code to Lenovo's catalog @os values.
+    _LENOVO_OS_CODE = {'Windows11': 'win11', 'Windows10': 'win10'}
 
     def _find_lenovo_driver(
         self,
         catalog_data: Dict,
         hardware_model: str,
-        driver_type: Optional[str] = None
+        driver_type: Optional[str] = None,
+        target_os: Optional[str] = None,
     ) -> Optional[Dict]:
-        """Find matching driver in Lenovo catalog"""
+        """Find the best Lenovo SCCM driver pack for a model (+ OS).
+
+        The real ``catalogv2.xml`` is ``ModelList -> Model -> SCCM`` — the
+        SCCM/MECM driver pack — NOT the ``Products -> Product -> Driver`` shape
+        the legacy code assumed (which matched **nothing**, leaving Lenovo
+        discovery non-functional). Each ``Model`` carries machine ``Types``
+        (e.g. ``20XW``), a ``BIOS`` element, and one or more ``SCCM`` packs
+        keyed by ``@os`` (``win10``/``win11``), Windows feature ``@version``
+        (``1909``/``22H2``), and ``@date``; ``#text`` is the full pack URL.
+
+        Selection:
+          1. **Match the model** by machine ``Type`` code (exact), else exact
+             normalized name, else normalized-substring (logged fallback).
+             Lenovo names embed gen + type codes (``ThinkPad X1 Carbon 9TH Gen
+             Type 20XW 20XX``), so the machine type is the most reliable key.
+          2. **OS filter** the SCCM packs to ``win10``/``win11`` (relaxed with a
+             warning if it empties the set).
+          3. **Newest wins** — latest by ``@date``, tie-broken by Windows
+             feature version.
+
+        ``driver_type`` is accepted for signature parity but doesn't apply: an
+        SCCM pack is a whole-model driver bundle, not a per-category driver.
+        """
         try:
-            # Lenovo catalog structure: Products -> Product -> Driver
-            products = catalog_data.get('Products', {}).get('Product', [])
+            models = catalog_data['ModelList']['Model']
+        except (KeyError, TypeError):
+            return None
+        if not isinstance(models, list):
+            models = [models]
 
-            if not isinstance(products, list):
-                products = [products]
+        target = self._normalize_model(hardware_model)
+        if not target:
+            return None
 
-            for product in products:
-                # Check if model matches
-                model_name = product.get('@name', '')
-                model_type = product.get('@type', '')
+        def types_of(model):
+            node = (model.get('Types') or {}).get('Type')
+            return {self._normalize_model(t) for t in self._as_list(node) if isinstance(t, str)}
 
-                if hardware_model.lower() in model_name.lower():
-                    # Found matching product
-                    drivers = product.get('Driver', [])
+        def name_of(model):
+            return self._normalize_model(model.get('@name'))
 
-                    if not isinstance(drivers, list):
-                        drivers = [drivers]
+        by_type = [m for m in models if target in types_of(m)]
+        by_name_exact = [m for m in models if name_of(m) == target]
+        by_name_sub = [m for m in models if target and target in name_of(m)]
+        matched = by_type or by_name_exact or by_name_sub
+        if not matched:
+            return None
+        if not (by_type or by_name_exact):
+            logger.warning("No exact Lenovo model/type match; using name substring",
+                           model=hardware_model, matched=len(matched))
 
-                    # Filter by driver type if specified
-                    for driver in drivers:
-                        driver_category = driver.get('@category', '').lower()
+        # Gather every SCCM pack across the matched model(s).
+        packs = []
+        for model in matched:
+            for sccm in self._as_list(model.get('SCCM')):
+                if isinstance(sccm, dict):
+                    packs.append((model, sccm))
+        if not packs:
+            return None
 
-                        # If specific driver type requested, filter
-                        if driver_type and driver_type.lower() not in driver_category:
-                            continue
+        lenovo_os = self._LENOVO_OS_CODE.get(target_os)
+        if lenovo_os:
+            os_packs = [(m, s) for (m, s) in packs if s.get('@os') == lenovo_os]
+            if os_packs:
+                packs = os_packs
+            else:
+                logger.warning("No Lenovo SCCM pack for target OS; ignoring OS filter",
+                               model=hardware_model, target_os=target_os)
 
-                        # Return first matching driver
-                        # In production, would return the latest version
-                        return {
-                            'name': driver.get('@name', 'Unknown Driver'),
-                            'version': driver.get('@version', 'Unknown'),
-                            'url': driver.get('URL', {}).get('#text', ''),
-                            'releaseNotes': driver.get('@rebootType', ''),
-                            'releaseDate': driver.get('@date', ''),
-                            'size': int(driver.get('@size', 0))
-                        }
+        def date_key(sccm):
+            try:
+                return datetime.fromisoformat(sccm.get('@date'))
+            except (ValueError, TypeError):
+                return datetime.min
 
-                    # If no specific driver type match, return driver pack
-                    if drivers:
-                        first_driver = drivers[0]
-                        return {
-                            'name': f"Lenovo {model_name} Driver Pack",
-                            'version': first_driver.get('@version', 'Latest'),
-                            'url': first_driver.get('URL', {}).get('#text', ''),
-                            'releaseNotes': f"Driver pack for {model_name}",
-                            'releaseDate': first_driver.get('@date', ''),
-                            'size': int(first_driver.get('@size', 0))
-                        }
+        best_model, best = max(
+            packs, key=lambda ms: (date_key(ms[1]), self._win_release_key(ms[1].get('@version'))))
+        logger.info(
+            "Selected Lenovo driver pack", model=hardware_model, target_os=target_os,
+            os_code=best.get('@os'), date=best.get('@date'),
+            windows_release=best.get('@version'), candidates=len(packs))
+        return {
+            'name': best_model.get('@name', ''),
+            'version': best.get('@date', '') or best.get('@version', ''),
+            'url': best.get('#text', '') or '',
+            'releaseNotes': '',
+            'releaseDate': best.get('@date', ''),
+            'size': 0,
+            'os_code': best.get('@os', ''),
+            'windows_release': best.get('@version', ''),
+        }
 
-        except Exception as e:
-            logger.error("Error parsing Lenovo catalog", error=str(e))
+    @staticmethod
+    def _win_release_key(version: Optional[str]) -> int:
+        """Sortable key for a Windows feature-release string, for tie-breaks.
 
-        return None
+        ``22H2`` -> 2202, ``21H2`` -> 2102, ``1909`` -> 1909, ``*``/unknown ->
+        -1. Only used to break ties when two SCCM packs share a release date,
+        so cross-scheme magnitude consistency isn't important.
+        """
+        s = str(version or '').strip().upper()
+        m = re.match(r'^(\d{2})H(\d)$', s)
+        if m:
+            return int(m.group(1)) * 100 + int(m.group(2))
+        try:
+            return int(s)
+        except ValueError:
+            return -1
 
     def _discover_software(self, job: Job) -> Dict[str, Any]:
         """Discover software metadata for an MSI or EXE packaging job.

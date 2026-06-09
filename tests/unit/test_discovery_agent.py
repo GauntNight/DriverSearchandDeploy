@@ -451,37 +451,39 @@ class TestDiscoveryAgentLenovo(unittest.TestCase):
         self.job.current_version = '1.0.0'
         self.job.vendor = 'lenovo'
 
+        # Real catalogv2.xml shape: ModelList -> Model -> SCCM (driver pack).
         self.sample_catalog_data = {
-            'Products': {
-                'Product': {
+            'ModelList': {
+                '@version': '1.0',
+                'Model': {
                     '@name': 'ThinkPad X1 Carbon Gen 9',
-                    '@type': 'ThinkPad',
-                    'Driver': {
-                        '@name': 'Intel Chipset Driver',
-                        '@version': '10.1.18838.8283',
-                        '@category': 'Chipset',
-                        '@date': '2024-01-15',
-                        '@size': '5242880',
-                        'URL': {
-                            '#text': 'https://download.lenovo.com/drivers/driver.exe'
-                        }
-                    }
-                }
+                    '@arch': 'Intel',
+                    'Types': {'Type': ['20XW', '20XX']},
+                    'SCCM': [
+                        {'@os': 'win10', '@version': '22H2', '@date': '2024-01-15',
+                         '#text': 'https://download.lenovo.com/drivers/w10.exe'},
+                        {'@os': 'win11', '@version': '22H2', '@date': '2024-01-15',
+                         '#text': 'https://download.lenovo.com/drivers/w11.exe'},
+                    ],
+                },
             }
         }
 
     @patch('autopackager.agents.discovery.discovery_agent.xmltodict.parse')
     def test_discover_lenovo_driver_success(self, mock_xmltodict):
-        """Test successful Lenovo driver discovery"""
+        """Test successful Lenovo driver discovery (real SCCM shape)"""
         mock_xmltodict.return_value = self.sample_catalog_data
+        # Lenovo SCCM packs are date/feature-release versioned, not semver;
+        # with no known current version an available pack is an update.
+        self.job.current_version = None
 
-        with patch.object(self.agent, '_download_lenovo_catalog', return_value='<xml>'):
+        with patch.object(self.agent, '_download_lenovo_catalog', return_value='<xml>'), \
+             patch.object(self.agent, '_resolve_target_os', return_value='Windows11'):
             result = self.agent._discover_lenovo_driver(self.job)
 
             self.assertTrue(result['update_available'])
-            self.assertEqual(result['latest_version'], '10.1.18838.8283')
-            self.assertEqual(result['download_url'], 'https://download.lenovo.com/drivers/driver.exe')
-            self.assertEqual(result['file_size'], 5242880)
+            self.assertEqual(result['os_code'], 'win11')
+            self.assertEqual(result['download_url'], 'https://download.lenovo.com/drivers/w11.exe')
 
     @patch('autopackager.agents.discovery.discovery_agent.xmltodict.parse')
     def test_discover_lenovo_driver_no_match(self, mock_xmltodict):
@@ -490,91 +492,61 @@ class TestDiscoveryAgentLenovo(unittest.TestCase):
 
         self.job.hardware_model = 'NonExistentModel'
 
-        with patch.object(self.agent, '_download_lenovo_catalog', return_value='<xml>'):
+        with patch.object(self.agent, '_download_lenovo_catalog', return_value='<xml>'), \
+             patch.object(self.agent, '_resolve_target_os', return_value='Windows11'):
             result = self.agent._discover_lenovo_driver(self.job)
 
             self.assertFalse(result['update_available'])
 
     def test_find_lenovo_driver_with_matching_model(self):
-        """Test finding Lenovo driver with matching model"""
+        """Test finding the Lenovo SCCM pack for a matching model name"""
         result = self.agent._find_lenovo_driver(
             self.sample_catalog_data,
             'ThinkPad X1 Carbon Gen 9',
-            'chipset'
+            'chipset',
+            target_os='Windows11',
         )
 
         self.assertIsNotNone(result)
-        self.assertEqual(result['name'], 'Intel Chipset Driver')
-        self.assertEqual(result['version'], '10.1.18838.8283')
+        self.assertEqual(result['name'], 'ThinkPad X1 Carbon Gen 9')
+        self.assertEqual(result['os_code'], 'win11')
 
-    def test_find_lenovo_driver_filters_by_driver_type(self):
-        """Test filtering drivers by type"""
-        catalog_data = {
-            'Products': {
-                'Product': {
-                    '@name': 'ThinkPad X1 Carbon Gen 9',
-                    '@type': 'ThinkPad',
-                    'Driver': [
-                        {
-                            '@name': 'Intel Chipset Driver',
-                            '@version': '1.0.0',
-                            '@category': 'Chipset',
-                            '@date': '2024-01-15',
-                            '@size': '5242880',
-                            'URL': {'#text': 'https://example.com/chipset.exe'}
-                        },
-                        {
-                            '@name': 'Network Driver',
-                            '@version': '2.0.0',
-                            '@category': 'Network',
-                            '@date': '2024-01-15',
-                            '@size': '10485760',
-                            'URL': {'#text': 'https://example.com/network.exe'}
-                        }
-                    ]
-                }
-            }
-        }
-
-        result = self.agent._find_lenovo_driver(catalog_data, 'ThinkPad X1 Carbon Gen 9', 'chipset')
+    def test_find_lenovo_driver_matches_by_machine_type(self):
+        """Lenovo can match by machine Type code (e.g. 20XW), not just name."""
+        result = self.agent._find_lenovo_driver(
+            self.sample_catalog_data, '20XW', target_os='Windows11')
 
         self.assertIsNotNone(result)
-        self.assertEqual(result['name'], 'Intel Chipset Driver')
-        self.assertEqual(result['version'], '1.0.0')
+        self.assertEqual(result['name'], 'ThinkPad X1 Carbon Gen 9')
+        self.assertEqual(result['download_url'] if 'download_url' in result else result['url'],
+                         'https://download.lenovo.com/drivers/w11.exe')
 
-    def test_find_lenovo_driver_handles_multiple_products(self):
-        """Test handling of multiple products in catalog"""
+    def test_find_lenovo_driver_handles_multiple_models(self):
+        """Test selecting the right model among several in the ModelList."""
         catalog_data = {
-            'Products': {
-                'Product': [
+            'ModelList': {
+                'Model': [
                     {
                         '@name': 'ThinkPad T14',
-                        '@type': 'ThinkPad',
-                        'Driver': {
-                            '@name': 'Driver 1',
-                            '@version': '1.0.0',
-                            '@category': 'Chipset',
-                            'URL': {'#text': 'https://example.com/driver1.exe'}
-                        }
+                        'Types': {'Type': ['20S0']},
+                        'SCCM': {'@os': 'win11', '@version': '22H2', '@date': '2024-01-01',
+                                 '#text': 'https://example.com/t14.exe'},
                     },
                     {
                         '@name': 'ThinkPad X1 Carbon Gen 9',
-                        '@type': 'ThinkPad',
-                        'Driver': {
-                            '@name': 'Driver 2',
-                            '@version': '2.0.0',
-                            '@category': 'Chipset',
-                            'URL': {'#text': 'https://example.com/driver2.exe'}
-                        }
-                    }
+                        'Types': {'Type': ['20XW']},
+                        'SCCM': {'@os': 'win11', '@version': '22H2', '@date': '2024-01-01',
+                                 '#text': 'https://example.com/x1.exe'},
+                    },
                 ]
             }
         }
 
-        result = self.agent._find_lenovo_driver(catalog_data, 'ThinkPad X1 Carbon Gen 9')
+        result = self.agent._find_lenovo_driver(
+            catalog_data, 'ThinkPad X1 Carbon Gen 9', target_os='Windows11')
 
         self.assertIsNotNone(result)
-        self.assertEqual(result['name'], 'Driver 2')
+        self.assertEqual(result['url'], 'https://example.com/x1.exe')
 
     def test_find_lenovo_driver_returns_none_on_no_match(self):
         """Test that None is returned when no match found"""
