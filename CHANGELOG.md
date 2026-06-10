@@ -1,5 +1,40 @@
 ## [Unreleased]
 
+## [1.8.0] - 2026-06-10
+
+Catalog expansion from a real enterprise software inventory, plus a deployment-agent
+feature that unlocks **per-user installers** for fleet deployment. The deterministic
+four-stage pipeline is unchanged. Full suite: 784 tests passing.
+
+### Added
+
+- **Intune user-context Win32 support** (`CatalogEntry.install_context`). A catalog entry
+  may declare `install_context: user` (default `system`); `DeploymentAgent._prepare_app_data`
+  maps it to the Win32 `installExperience.runAsAccount`. Per-user installers — Squirrel apps
+  (Postman, Insomnia) and Inno installers that ignore `/ALLUSERS` (Greenshot) — write to
+  `%LOCALAPPDATA%` and an HKCU Uninstall key; published in the default system context Intune can
+  only detect/uninstall them for the profile that ran the install, so they never deploy cleanly to
+  a fleet. With `install_context: user` Intune installs in the logged-on user's context and
+  evaluates HKCU detection per-user. Verified live (Greenshot republished with `runAsAccount=user`).
+- **Catalog growth — Batch 1 & 2** (built from a 44,952-row enterprise inventory triaged to 2,955
+  unique products by packaging ease). New baseline entries, each with `canonical_download_url` +
+  agnostic install/uninstall/detection facts, live-verified on a real device (install → detect →
+  uninstall → publish → Ring-0 assign): **AWS CLI v2** (MSI), **WinSCP** (Inno; `/SILENT` uninstall),
+  **Audacity** (Inno, per-machine), **Greenshot** (Inno, per-user → user-context), **DBeaver CE**
+  (NSIS; silent switch is `/S /allusers`), **Power BI Desktop** (~640 MB MSI-bootstrapper; file-version
+  detection). Cataloged with codes/URL captured but live-publish deferred: **Microsoft Edge** (the
+  install→uninstall validation would remove the inbox system browser) and **AWS Session Manager
+  Plugin** (WiX Burn detached install — needs a validator settle-wait).
+
+### Changed
+
+- **`load_catalog()` merges baseline + overlay FIELD-BY-FIELD** instead of whole-entry replace by
+  `id`. A baseline-only agnostic field (e.g. `install_context`, or curated detection rules the
+  auto-appended overlay never captured) now survives when the overlay holds a same-id stub; the
+  env-specific fields the overlay does set (`use_count`, `verified_versions`, `first_seen`/
+  `last_used`, `version`) still win. Fixes a footgun where any baseline edit to an app that had
+  already been run once was silently shadowed by its overlay entry.
+
 ## [1.7.0] - 2026-06-08
 
 Phase 2 groundwork: an **operator-side AI research bridge** plus the discovery/queue machinery that uses it, surfaced through a **Mission Control demo console** — all additive under the removable `demo/` package and the new `software_delta` service, with the deterministic four-stage pipeline unchanged. Also includes the prior repository cleanup and documentation refresh. Full suite: 715 tests collected.

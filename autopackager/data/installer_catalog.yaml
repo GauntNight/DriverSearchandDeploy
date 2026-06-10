@@ -47,6 +47,14 @@
 #                         Use this when the MSI ships an icon as a PE
 #                         resource (the pure-Python extractor can't reach
 #                         those) and you want a real icon in the portal.
+#   install_context    -- Intune Win32 installExperience.runAsAccount:
+#                         "system" (default, per-machine) or "user"
+#                         (per-user). Set "user" for installers that write
+#                         to %LOCALAPPDATA% + an HKCU Uninstall key (Squirrel
+#                         apps like Postman/Insomnia; Inno installers that
+#                         ignore /ALLUSERS like Greenshot) -- a system-context
+#                         publish of those only detects/uninstalls for the
+#                         profile that ran the install.
 #
 # distribution         -- REQUIRED for new entries. One of:
 #                          standard, enterprise (see DISTRIBUTION_KINDS
