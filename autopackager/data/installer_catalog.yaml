@@ -828,6 +828,32 @@ entries:
       mode: generic
     notes: "PER-USER Squirrel installer (install_context=user); same class as Postman -- detached install, needs the validator settle-wait. canonical_download_url is the official 'latest stable win' redirector (resolves to the GitHub release; direct asset is github.com/Kong/insomnia/releases/download/core%40<ver>/Insomnia.Core-<ver>.exe). Verified live on ADMIN_BUILD_1 (v12.6.0, 2026-06-10): settle-wait caught the detached install, HKCU detection (Insomnia) fired uncorrected, installs to %LOCALAPPDATA%\\insomnia; published with runAsAccount=user + Ring-0 assigned. (~580MB installer.)"
 
+  - id: brave-browser
+    type: exe
+    installer_family: custom
+    distribution: standard
+    install_context: user
+    pe_company_name: "BraveSoftware Inc."
+    pe_product_name: "BraveSoftware Update"
+    install_command_template: "{installer_filename}"
+    uninstall_command_template: '"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\Installer\setup.exe" --uninstall --force-uninstall'
+    detection_rules:
+    - kind: registry_version
+      key: HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\BraveSoftware Brave-Browser
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://github.com/brave/brave-browser/releases/latest/download/BraveBrowserStandaloneSilentSetup.exe"
+    information_url: "https://brave.com/download/"
+    description: "Brave browser (per-user silent standalone installer). PER-USER (Omaha updater installs to %LOCALAPPDATA%\\BraveSoftware); deploy via Intune user-context (install_context=user)."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    supersedence:
+      line: brave-browser
+      mode: generic
+    notes: "PER-USER + DETACHED installer (needs install_context=user AND the validator settle-wait). BraveBrowserStandaloneSilentSetup.exe is the Omaha 'silent' variant -- PE identifies as 'BraveSoftware Update' (BraveUpdateSetup.exe stub, shared across channels); it installs Brave silently to %LOCALAPPDATA%\\BraveSoftware\\Brave-Browser and exits while the update engine finishes (not in the reaper denylist, so it lands). canonical_download_url is GitHub's /releases/latest/download/ (stable); winget id Brave.Brave resolves the current versioned link. HKCU Uninstall key + setup.exe --uninstall are best-guess; validator confirms/corrects on first publish. No clean SYSTEM-wide silent installer exists (brave-browser#33084). Verified live on ADMIN_BUILD_1 (Chromium 149 / v1.91.171, 2026-06-10): settle-wait caught the detached Omaha install, HKCU detection ('BraveSoftware Brave-Browser') fired uncorrected, published with runAsAccount=user + Ring-0 assigned."
+
   - id: r-for-windows
     type: exe
     installer_family: inno_setup
