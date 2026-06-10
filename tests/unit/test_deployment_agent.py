@@ -173,6 +173,27 @@ class TestDeploymentAgentCore(unittest.TestCase):
         app_data = self.agent._prepare_app_data(self.package, self.job)
         self.assertEqual(app_data['setupFilePath'], 'installer.exe')
 
+    def test_prepare_app_data_user_install_context_from_catalog(self):
+        """A catalog entry with install_context='user' -> runAsAccount='user'.
+
+        Per-user installers (Squirrel apps, Inno installers that ignore
+        /ALLUSERS) must publish in user context so HKCU detection and
+        %LOCALAPPDATA% uninstall evaluate in the logged-on user's profile.
+        """
+        from autopackager.utils.installer_catalog import CatalogEntry
+        entry = CatalogEntry(id='greenshot', type='exe', install_context='user')
+        with patch.object(self.agent, '_lookup_catalog_entry', return_value=entry):
+            app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertEqual(app_data['installExperience']['runAsAccount'], 'user')
+
+    def test_prepare_app_data_defaults_to_system_context(self):
+        """No install_context (or anything other than 'user') -> system context."""
+        from autopackager.utils.installer_catalog import CatalogEntry
+        entry = CatalogEntry(id='foo', type='exe')  # install_context defaults None
+        with patch.object(self.agent, '_lookup_catalog_entry', return_value=entry):
+            app_data = self.agent._prepare_app_data(self.package, self.job)
+        self.assertEqual(app_data['installExperience']['runAsAccount'], 'system')
+
     def test_prepare_app_data_derives_setup_file_from_install_command(self):
         """Test that setupFilePath is derived from install_command when installer_path is missing"""
         self.package.installer_path = None

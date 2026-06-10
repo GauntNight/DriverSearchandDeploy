@@ -645,6 +645,15 @@ class CatalogEntry:
     #   'vscodeusersetup', prefer_entry_id -> system) intercept the user installer
     #   while the system entry (no pattern) catches everything else.
     filename_pattern: Optional[str] = None
+    # install_context -- Intune Win32 installExperience.runAsAccount: 'system'
+    #   (default, per-machine) or 'user' (per-user). AGNOSTIC: a property of the
+    #   installer itself. Set 'user' for per-user installers (Squirrel apps like
+    #   Postman/Insomnia, or Inno installers that ignore /ALLUSERS like Greenshot)
+    #   that write to %LOCALAPPDATA% and an HKCU Uninstall key -- a system-context
+    #   publish of those only detects/uninstalls for the profile that ran the
+    #   install. With 'user', Intune installs in the logged-on user's context and
+    #   evaluates HKCU detection per-user. Default (None) -> 'system'.
+    install_context: Optional[str] = None
     # Lifecycle / usage
     notes: str = ""
     first_seen: str = ""
@@ -917,15 +926,38 @@ def _entry_from_dict(raw: dict) -> Optional[CatalogEntry]:
 
 
 def load_catalog() -> Catalog:
-    """Load baseline + local overlay; local entries override baseline by `id`."""
-    by_id: dict[str, CatalogEntry] = {}
+    """Load baseline + local overlay; local entries override baseline by `id`.
+
+    The override is FIELD-BY-FIELD, not whole-entry: an overlay entry overrides
+    only the keys it actually contains, so a baseline-only agnostic field (e.g.
+    ``install_context``, or curated detection rules the auto-appended overlay
+    never captured) SURVIVES instead of being dropped when the overlay holds a
+    same-id stub. Env-specific fields the overlay does set (``use_count``,
+    ``verified_versions``, ``first_seen``/``last_used``, ``version``) still win.
+    ``_write_local`` strips None/'' before writing, so the overlay can never
+    clobber a populated baseline field with a blank. (Before this, the overlay
+    whole-replaced the baseline entry, silently shadowing baseline edits to any
+    app that had already been run once -- a real footgun.)
+    """
+    raw_by_id: dict[str, dict] = {}
+    order: list[str] = []
     for path in (BASELINE_PATH, LOCAL_PATH):
         data = _load_yaml_file(path)
         for raw in data.get("entries") or []:
-            entry = _entry_from_dict(raw)
-            if entry:
-                by_id[entry.id] = entry
-    return Catalog(entries=list(by_id.values()))
+            eid = raw.get("id")
+            if not eid:
+                continue
+            if eid in raw_by_id:
+                raw_by_id[eid] = {**raw_by_id[eid], **raw}
+            else:
+                raw_by_id[eid] = dict(raw)
+                order.append(eid)
+    entries: list[CatalogEntry] = []
+    for eid in order:
+        entry = _entry_from_dict(raw_by_id[eid])
+        if entry:
+            entries.append(entry)
+    return Catalog(entries=entries)
 
 
 def _today_iso() -> str:

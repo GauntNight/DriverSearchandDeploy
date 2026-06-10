@@ -706,6 +706,15 @@ class DeploymentAgent:
         min_os = (catalog_entry.min_os_version if catalog_entry else None) or '1607'
         min_os_flag = _WIN_RELEASE_TO_FLAG.get(min_os, 'v10_1607')
 
+        # runAsAccount: per-machine 'system' by default; 'user' for per-user
+        # installers (Squirrel apps, Inno installers that ignore /ALLUSERS) the
+        # catalog marks install_context='user'. A system-context publish of a
+        # per-user installer only ever detects/uninstalls for the profile that
+        # ran it, so honouring this is what makes those apps deployable to a fleet.
+        run_as_account = 'system'
+        if catalog_entry and getattr(catalog_entry, 'install_context', None) == 'user':
+            run_as_account = 'user'
+
         app_data = {
             '@odata.type': '#microsoft.graph.win32LobApp',
             'displayName': package.name,
@@ -718,7 +727,7 @@ class DeploymentAgent:
             'installCommandLine': package.install_command,
             'uninstallCommandLine': package.uninstall_command or 'cmd /c exit 0',
             'installExperience': {
-                'runAsAccount': 'system',
+                'runAsAccount': run_as_account,
                 'deviceRestartBehavior': 'suppress'
             },
             'rules': rules,
