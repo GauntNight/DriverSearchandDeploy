@@ -8,6 +8,13 @@ four-stage pipeline is unchanged. Full suite: 784 tests passing.
 
 ### Added
 
+- **Detached-install settle-wait in the local validator.** After an install attempt returns, the
+  validator now POLLS detection over a settle window (`install_settle_seconds`, default 120) instead
+  of checking once. Detached/async installers — Squirrel stubs (Postman, Insomnia) and WiX Burn
+  bundles (AWS Session Manager Plugin) that exec the real install in a child and return immediately —
+  are caught once their child finishes, instead of being wrongly escalated. A synchronous install
+  still satisfies the first poll (no added latency). This unblocked **Postman**, **Insomnia**, and the
+  **AWS Session Manager Plugin** (all now published live).
 - **Intune user-context Win32 support** (`CatalogEntry.install_context`). A catalog entry
   may declare `install_context: user` (default `system`); `DeploymentAgent._prepare_app_data`
   maps it to the Win32 `installExperience.runAsAccount`. Per-user installers — Squirrel apps

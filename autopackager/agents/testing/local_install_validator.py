@@ -91,6 +91,15 @@ class LocalInstallValidator:
         cfg = (config or {})
         self.timeout = int(cfg.get("timeout_seconds", 600))
         self.uninstall_timeout = int(cfg.get("uninstall_timeout_seconds", 300))
+        # Detached/async installers (Squirrel stubs like Postman/Insomnia, WiX
+        # Burn bundles like the AWS SSM plugin) exec the real install in a child
+        # process and RETURN immediately — so a single post-install detection
+        # check sees nothing and the installer gets wrongly escalated. After an
+        # attempt returns we therefore POLL detection over a settle window
+        # instead of checking once: a synchronous install fires on the first
+        # poll (no added delay), a detached one is caught once its child lands.
+        self.settle_seconds = int(cfg.get("install_settle_seconds", 120))
+        self.settle_poll_seconds = int(cfg.get("install_settle_poll_seconds", 5))
         # emit(text, level) streams human progress lines (→ demo console). Optional.
         self._emit = emit or (lambda text, level="info": None)
 
@@ -189,10 +198,15 @@ class LocalInstallValidator:
             if rc not in (0, 3010):  # 3010 = success, reboot required
                 self.emit(f"Attempt {idx} installer exit code {rc} — verifying by "
                           "detection rather than exit code…", "info")
-            # Verify this attempt: configured rule fired OR a real ARP entry appeared.
-            fired, fired_detail = self._eval_rules(detection_rules)
-            after = self._snapshot_uninstall_keys()
-            discovered = self._discover_new_entry(before, after, package)
+            # Verify this attempt: configured rule fired OR a real ARP entry
+            # appeared. POLL over a settle window so a detached/async installer
+            # (Squirrel/Burn) that already returned is still caught once its
+            # child finishes. Attempt 1 (the intended command) gets the full
+            # window; later switch-probes settle briefly so a dud doesn't blow
+            # the budget x N.
+            settle = self.settle_seconds if idx == 1 else min(self.settle_seconds, 30)
+            fired, fired_detail, discovered = self._verify_with_settle(
+                detection_rules, before, package, settle)
             if discovered or fired:
                 chosen_cmd = cmd
                 result["log"].append(f"attempt {idx} verified (fired={fired}; {fired_detail})")
@@ -310,6 +324,34 @@ class LocalInstallValidator:
                             "path": r.get("path"), "file": r.get("fileOrFolderName"),
                             "operator": r.get("operator"), "value": r.get("comparisonValue")})
         return out
+
+    # -- post-install verification (with settle-wait) ---------------------
+
+    def _verify_with_settle(self, detection_rules, before, package, settle_seconds):
+        """Verify an install, polling over a settle window for detached installers.
+
+        Checks immediately, then re-checks every ``settle_poll_seconds`` until
+        either the configured detection rule fires / a new ARP entry appears, or
+        the settle deadline passes. A synchronous install satisfies the very
+        first check (no added latency); a detached/async one (Squirrel stub, WiX
+        Burn bundle) is caught once its child process finishes installing.
+        Returns ``(fired, fired_detail, discovered)``.
+        """
+        deadline = time.monotonic() + max(0, settle_seconds)
+        announced = False
+        while True:
+            fired, fired_detail = self._eval_rules(detection_rules)
+            after = self._snapshot_uninstall_keys()
+            discovered = self._discover_new_entry(before, after, package)
+            if fired or discovered or time.monotonic() >= deadline:
+                return fired, fired_detail, discovered
+            if not announced:
+                self.emit(
+                    "Installer returned but the app isn't detected yet — waiting "
+                    f"for a detached/async install to settle (up to {int(settle_seconds)}s)…",
+                    "info")
+                announced = True
+            time.sleep(self.settle_poll_seconds)
 
     # -- detection-rule evaluation ----------------------------------------
 

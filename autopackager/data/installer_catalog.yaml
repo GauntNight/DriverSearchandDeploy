@@ -724,7 +724,7 @@ entries:
     supersedence:
       line: aws-session-manager-plugin
       mode: generic
-    notes: "WiX Burn bundle. canonical_download_url is AWS's stable 'latest' S3 path. Detection is FILE-version on the installed binary (robust + version-agnostic) -- the inner-MSI ProductCode {CC3ABAB2-...} changes per version. MANUALLY VERIFIED 2026-06-10: running the setup installs silently and drops session-manager-plugin.exe at the detection path; MsiExec /X{CC3ABAB2-...} cleanly removed it. BUT the automated local-install validator ESCALATES this (job 44 -> needs_engineer_review): like other WiX Burn bundles it relaunches elevated as a DETACHED child, so the installer returns before the bundle finishes and the synchronous detect check sees nothing (the retry ladder then exhausts). NOT auto-published pending validator support for detached/Burn installs (a post-install settle-wait or process-tree follow). Entry fields (install/detect/uninstall) are correct for manual or improved-validator use."
+    notes: "WiX Burn bundle. canonical_download_url is AWS's stable 'latest' S3 path. Detection is FILE-version on the installed binary (robust + version-agnostic) -- the inner-MSI ProductCode {CC3ABAB2-...} changes per version. Verified live on ADMIN_BUILD_1 (v1.2.814, 2026-06-10): the Burn bundle relaunches elevated as a DETACHED child and returns before the install lands, so it relies on the validator's settle-wait (which polls the file-version detection until session-manager-plugin.exe appears); detection fired, MsiExec /X{CC3ABAB2-...} cleanly uninstalled, published + Ring-0 assigned (system context, per-machine). The uninstall ProductCode is version-specific."
 
   - id: dbeaver-ce
     type: exe
@@ -775,6 +775,58 @@ entries:
       line: power-bi-desktop
       mode: generic
     notes: "Large (~640MB) self-contained Microsoft installer (MSI-based bootstrapper). Silent: -quiet -norestart ACCEPT_EULA=1 (documented). Detection is FILE-version on the installed PBIDesktop.exe (robust; inner-MSI ProductCode changes per version). Verified live on ADMIN_BUILD_1 (v2.154.1260.0, 2026-06-10): installs silently (no UI), file detection fired, validator discovered the inner-MSI ProductCode {c7945219-...} and the PUBLISHED app's uninstall uses it; published + Ring-0 assigned. The uninstall GUID is VERSION-SPECIFIC -- the validator re-discovers it per version, so this baseline value is just the last-known; rely on the validator's correction. canonical_download_url path GUID (880BCA75-...) is stable; the dated filename (PBIDesktopSetup-YYYY-MM_x64.exe) changes monthly -- winget id Microsoft.PowerBI resolves the current direct link; download-center page id=58494 is the always-latest entry point."
+
+  - id: postman
+    type: exe
+    installer_family: custom
+    distribution: standard
+    install_context: user
+    pe_company_name: "Postman"
+    pe_product_name: "Postman"
+    install_command_template: "{installer_filename}"
+    uninstall_command_template: '"%LOCALAPPDATA%\Postman\Update.exe" --uninstall -s'
+    detection_rules:
+    - kind: registry_version
+      key: HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Postman
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://dl.pstmn.io/download/latest/win64"
+    information_url: "https://www.postman.com/downloads/"
+    description: "Postman -- API development and testing client. PER-USER Squirrel installer (installs to %LOCALAPPDATA%\\Postman); deploy via Intune user-context (install_context=user)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: postman
+      mode: generic
+    notes: "PER-USER Squirrel installer (install_context=user). Installs silently to %LOCALAPPDATA%\\Postman on run (no switches) and LAUNCHES the app; HKCU Uninstall key 'Postman'. Squirrel uninstall is Update.exe --uninstall -s. canonical_download_url is Postman's stable 'latest win64' link. Verified live on ADMIN_BUILD_1 (v12.14.3, 2026-06-10): the Squirrel stub detaches its install, so the validator's settle-wait polled ~12s until the HKCU detection fired (uncorrected), then uninstalled; published with runAsAccount=user + Ring-0 assigned. Requires both the user-context publish AND the validator settle-wait (detached install)."
+
+  - id: insomnia
+    type: exe
+    installer_family: custom
+    distribution: standard
+    install_context: user
+    pe_company_name: "Kong"
+    pe_product_name: "Insomnia"
+    install_command_template: "{installer_filename}"
+    uninstall_command_template: '"%LOCALAPPDATA%\insomnia\Update.exe" --uninstall -s'
+    detection_rules:
+    - kind: registry_version
+      key: HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Insomnia
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://updates.insomnia.rest/downloads/release/latest?app=com.insomnia.app&channel=stable&platform=win"
+    information_url: "https://insomnia.rest/download"
+    description: "Insomnia -- open-source API client (Kong). PER-USER Squirrel installer; deploy via Intune user-context (install_context=user)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: insomnia
+      mode: generic
+    notes: "PER-USER Squirrel installer (install_context=user); same class as Postman -- detached install, needs the validator settle-wait. canonical_download_url is the official 'latest stable win' redirector (resolves to the GitHub release; direct asset is github.com/Kong/insomnia/releases/download/core%40<ver>/Insomnia.Core-<ver>.exe). Verified live on ADMIN_BUILD_1 (v12.6.0, 2026-06-10): settle-wait caught the detached install, HKCU detection (Insomnia) fired uncorrected, installs to %LOCALAPPDATA%\\insomnia; published with runAsAccount=user + Ring-0 assigned. (~580MB installer.)"
 
   - id: r-for-windows
     type: exe
