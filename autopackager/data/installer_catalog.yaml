@@ -718,6 +718,56 @@ entries:
       mode: generic
     notes: "WiX Burn bundle. canonical_download_url is AWS's stable 'latest' S3 path. Detection is FILE-version on the installed binary (robust + version-agnostic) -- the inner-MSI ProductCode {CC3ABAB2-...} changes per version. MANUALLY VERIFIED 2026-06-10: running the setup installs silently and drops session-manager-plugin.exe at the detection path; MsiExec /X{CC3ABAB2-...} cleanly removed it. BUT the automated local-install validator ESCALATES this (job 44 -> needs_engineer_review): like other WiX Burn bundles it relaunches elevated as a DETACHED child, so the installer returns before the bundle finishes and the synchronous detect check sees nothing (the retry ladder then exhausts). NOT auto-published pending validator support for detached/Burn installs (a post-install settle-wait or process-tree follow). Entry fields (install/detect/uninstall) are correct for manual or improved-validator use."
 
+  - id: dbeaver-ce
+    type: exe
+    installer_family: nsis
+    distribution: standard
+    pe_company_name: "DBeaver Corp"
+    pe_product_name: "DBeaver Community"
+    install_command_template: "{installer_filename} /S /allusers"
+    uninstall_command_template: '"C:\Program Files\DBeaver\Uninstaller.exe" /S /allusers'
+    detection_rules:
+    - kind: registry_version
+      key: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\DBeaver
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://dbeaver.io/files/dbeaver-ce-latest-x86_64-setup.exe"
+    information_url: "https://dbeaver.io/download/"
+    description: "DBeaver Community Edition -- free universal database tool / SQL client (NSIS, per-machine; bundles OpenJDK 21)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: dbeaver-ce
+      mode: generic
+    notes: "NSIS, 64-bit (bundles its own JRE since v23 -- no external Java dependency). canonical_download_url is DBeaver's stable 'latest' link. SILENT SWITCH GOTCHA: DBeaver's NSIS installer requires '/S /allusers' (per-machine) -- bare /S is insufficient and /VERYSILENT pops the UI (don't use). Uninstaller is 'Uninstaller.exe' (capital U). Verified live on ADMIN_BUILD_1 (v26.1.0, 2026-06-10): /S /allusers installs silently per-machine, detection (HKLM\\...\\Uninstall\\DBeaver) fired uncorrected, published + Ring-0 assigned. Per DBeaver Windows-Silent-Install wiki."
+
+  - id: power-bi-desktop
+    type: exe
+    installer_family: custom
+    distribution: standard
+    pe_company_name: "Microsoft Corporation"
+    pe_product_name: "Microsoft PowerBI Desktop"
+    install_command_template: "{installer_filename} -quiet -norestart ACCEPT_EULA=1"
+    uninstall_command_template: 'MsiExec.exe /X{c7945219-9251-46e5-8524-0e0d75ae92dc} /qn /norestart'
+    detection_rules:
+    - kind: file_version
+      path: 'C:\Program Files\Microsoft Power BI Desktop\bin'
+      file: PBIDesktop.exe
+      operator: greaterThanOrEqual
+      value: "2.0.0.0"
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://download.microsoft.com/download/8/8/0/880BCA75-79DD-466A-927D-1ABF1F5454B0/PBIDesktopSetup_x64.exe"
+    information_url: "https://www.microsoft.com/en-us/download/details.aspx?id=58494"
+    description: "Microsoft Power BI Desktop (x64). Self-contained installer; silent via -quiet -norestart ACCEPT_EULA=1; installs per-machine to Program Files\\Microsoft Power BI Desktop."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    supersedence:
+      line: power-bi-desktop
+      mode: generic
+    notes: "Large (~640MB) self-contained Microsoft installer (MSI-based bootstrapper). Silent: -quiet -norestart ACCEPT_EULA=1 (documented). Detection is FILE-version on the installed PBIDesktop.exe (robust; inner-MSI ProductCode changes per version). Verified live on ADMIN_BUILD_1 (v2.154.1260.0, 2026-06-10): installs silently (no UI), file detection fired, validator discovered the inner-MSI ProductCode {c7945219-...} and the PUBLISHED app's uninstall uses it; published + Ring-0 assigned. The uninstall GUID is VERSION-SPECIFIC -- the validator re-discovers it per version, so this baseline value is just the last-known; rely on the validator's correction. canonical_download_url path GUID (880BCA75-...) is stable; the dated filename (PBIDesktopSetup-YYYY-MM_x64.exe) changes monthly -- winget id Microsoft.PowerBI resolves the current direct link; download-center page id=58494 is the always-latest entry point."
+
   - id: r-for-windows
     type: exe
     installer_family: inno_setup
