@@ -32,6 +32,23 @@
 # To promote a useful local entry to this baseline, copy the agnostic fields
 # only (drop usage counts and verified_versions) and open a PR.
 #
+# `validation` -- the durable "packaging work is DONE" marker, and the ONE
+# usage-related field that IS agnostic and DOES belong in the baseline.
+# Distinct from `verified_versions`: that tracks tenant-bound publish history
+# (a live Intune app GUID that DELETES on cleanup); `validation` asserts the
+# environment-agnostic FACT that this recipe was proven end-to-end at least
+# once (built -> published -> install confirmed). It survives both deletion of
+# the Intune object and a wipe of data/, precisely because it promotes here.
+# Machine-written to the overlay by the verify hook; copy it into the baseline
+# (alongside the other agnostic fields) when you promote an entry. Shape:
+#   validation:
+#     status:   validated            # only value today
+#     version:  "1.2.3"              # the version proven (nested; the baseline
+#                                    #   "no top-level version" rule is unaffected)
+#     date:     "2026-06-10"
+#     evidence: [published, install_confirmed, detection_fired, cleaned_up]
+#     note:     "free-text audit trail"
+#
 # Intune app-attribute override fields (all optional; each falls back to a
 # sensible MSI-derived default when unset):
 #   information_url    -- "Help and support" URL shown in the Intune portal.
@@ -975,3 +992,138 @@ entries:
     supersedence:
       mode: none
     notes: "Per-user installer, disambiguated from the system build ONLY by filename (identical PE metadata) via filename_pattern 'vscodeusersetup'. Carried to detect the per-user mistake and redirect to code-system. Intentionally NO detection_rules -- it must never publish; the substitution intercepts first. supersedence.mode=none."
+
+  # --- Batch: catalog-expansion apps validated end-to-end 2026-06-10 ---
+  # Promoted from overlay; carry the durable validation marker. Env-specific
+  # fields (use_count, verified_versions, first_seen/last_used) stay local.
+  - id: vlc-media-player
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {5DFCA3BF-178E-42E2-9CEF-37A44B9FF90A} /qn /norestart
+    distribution: standard
+    upgrade_code: '{D2E0205B-0D3A-46E2-ADF7-0504FF48CF04}'
+    product_code: '{5DFCA3BF-178E-42E2-9CEF-37A44B9FF90A}'
+    product_name_pattern: VLC media player
+    publisher: VideoLAN
+    supersedence:
+      line: vlc-media-player
+      mode: generic
+    validation:
+      status: validated
+      version: 3.0.23.0
+      date: '2026-06-10'
+      evidence:
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion); app still resident in tenant.
+    notes: Auto-added by create-software-job (task c8cc9959-0e48-4287-93a8-d8c785e25d87)
+  - id: node-js
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {8E3EF5A2-585E-453B-B16C-B46E05A62DAC} /qn /norestart
+    distribution: standard
+    upgrade_code: '{47C07A3A-42EF-4213-A85D-8F5A59077C28}'
+    product_code: '{8E3EF5A2-585E-453B-B16C-B46E05A62DAC}'
+    product_name_pattern: Node.js
+    publisher: Node.js Foundation
+    supersedence:
+      line: node-js
+      mode: generic
+    validation:
+      status: validated
+      version: 24.16.0
+      date: '2026-06-10'
+      evidence:
+      - cleaned_up
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion), then removed during cleanup. DB wipe (crash) erased the verified_versions row; recipe is proven.
+    notes: Auto-added by create-software-job (task fde2ddbd-4e68-4969-b427-3f38b097a599)
+  - id: putty-release-0-83--64-bit
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {ED41CD4E-33BB-400C-AB20-B09388DC83EF} /qn /norestart
+    distribution: standard
+    upgrade_code: '{C9EAA861-2B72-4FAF-9FEE-EEB1AD5FD15E}'
+    product_code: '{ED41CD4E-33BB-400C-AB20-B09388DC83EF}'
+    product_name_pattern: PuTTY release 0.83 (64-bit)
+    publisher: Simon Tatham
+    supersedence:
+      line: putty-release-0-83--64-bit
+      mode: generic
+    validation:
+      status: validated
+      version: 0.84.0.0
+      date: '2026-06-10'
+      evidence:
+      - cleaned_up
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion), then removed during cleanup. DB wipe (crash) erased the verified_versions row; recipe is proven.
+    notes: Auto-added by create-software-job (task 546962ee-1768-44cf-9cc0-33611ebec9b3)
+  - id: keepass-2-61-1
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {33F0E718-1110-4F95-A59B-230A62C02DE5} /qn /norestart
+    distribution: standard
+    upgrade_code: '{F2F19898-4F86-4940-9BFA-426574CE03E1}'
+    product_code: '{33F0E718-1110-4F95-A59B-230A62C02DE5}'
+    product_name_pattern: KeePass 2.61.1
+    publisher: Dominik Reichl
+    supersedence:
+      line: keepass-2-61-1
+      mode: generic
+    validation:
+      status: validated
+      version: 2.61.1
+      date: '2026-06-10'
+      evidence:
+      - cleaned_up
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion), then removed during cleanup. DB wipe (crash) erased the verified_versions row; recipe is proven.
+    notes: Auto-added by create-software-job (task 66f3523b-9610-4074-bf48-221e1dc9f5e0)
+  - id: powershell-7-x64
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {7DB6AE45-EA0D-4E0A-A65A-2ECD74328B1E} /qn /norestart
+    distribution: standard
+    upgrade_code: '{31AB5147-9A97-4452-8443-D9709F0516E1}'
+    product_code: '{7DB6AE45-EA0D-4E0A-A65A-2ECD74328B1E}'
+    product_name_pattern: PowerShell 7-x64
+    publisher: Microsoft Corporation
+    supersedence:
+      line: powershell-7-x64
+      mode: generic
+    validation:
+      status: validated
+      version: 7.6.2.0
+      date: '2026-06-10'
+      evidence:
+      - cleaned_up
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion), then removed during cleanup. DB wipe (crash) erased the verified_versions row; recipe is proven.
+    notes: Auto-added by create-software-job (task 32ee3a86-16e5-4407-8b5c-7030b950b2f9)
+  - id: zoom-workplace--64-bit
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {3DC6B3F0-0AD7-4B51-AFA2-59605590EAC5} /qn /norestart
+    distribution: standard
+    upgrade_code: '{C819B794-A45C-4F27-9860-0C86492A52CC}'
+    product_code: '{3DC6B3F0-0AD7-4B51-AFA2-59605590EAC5}'
+    product_name_pattern: Zoom Workplace (64-bit)
+    publisher: Zoom
+    supersedence:
+      line: zoom-workplace--64-bit
+      mode: generic
+    validation:
+      status: validated
+      version: 7.0.38856
+      date: '2026-06-10'
+      evidence:
+      - cleaned_up
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion), then removed during cleanup. DB wipe (crash) erased the verified_versions row; recipe is proven.
+    notes: Auto-added by create-software-job (task 5fd71017-ef47-47e5-8b20-5a7d034dac98)

@@ -143,6 +143,28 @@ VERIFIED_VERSION_STATUSES = {
 }
 
 
+# Controlled vocabulary for the durable end-to-end validation marker.
+#
+# UNLIKE verified_versions (overlay-only, tenant-bound to a LIVE Intune app GUID
+# that dangles the moment the app is deleted), the ``validation`` block asserts
+# the AGNOSTIC fact that this packaging recipe was proven end-to-end at least
+# once. It answers "is the packaging work for this app DONE?" WITHOUT requiring
+# the object to still reside in Intune -- so it survives both deletion of the
+# Intune app (routine cleanup) and a wipe of the local overlay/DB, because it
+# promotes into the committed baseline via the normal snapshot/export path.
+VALIDATION_STATUSES = {
+    'validated',   # Proven end-to-end (built -> published -> install confirmed) at least once.
+}
+# What was actually observed during a validation. Machine-written by the verify
+# hook; operators may add 'cleaned_up' when they tear the object back down.
+VALIDATION_EVIDENCE = {
+    'published',          # A real Intune Win32 app reached publishingState == 'published'.
+    'install_confirmed',  # Installed on a real device (successful_installs > 0) or local install-validation passed.
+    'detection_fired',    # The detection rule evaluated true post-install.
+    'cleaned_up',         # The validation object was intentionally removed from the tenant afterwards.
+}
+
+
 class SupersedenceError(Exception):
     """Raised when supersedence is requested but the catalog explicitly forbids
     it (publishing entry has ``mode: none``). The CLI surfaces this as a
@@ -654,6 +676,28 @@ class CatalogEntry:
     #   install. With 'user', Intune installs in the logged-on user's context and
     #   evaluates HKCU detection per-user. Default (None) -> 'system'.
     install_context: Optional[str] = None
+    # ---- Durable end-to-end validation marker (AGNOSTIC, baseline-eligible) ----
+    # The durable "the packaging work for this app is DONE" bit. Asserts that the
+    # recipe was proven end-to-end at least once (built -> published -> install
+    # confirmed), independent of whether the Intune object still exists.
+    #
+    # WHY a separate field from verified_versions: verified_versions is
+    # OVERLAY-ONLY and tenant-bound -- each row carries a verified_intune_app_id
+    # that points at a live Win32 app. Routine cleanup DELETES those apps (and a
+    # crash can wipe the overlay/DB), leaving no record that the work was ever
+    # completed. ``validation`` is AGNOSTIC curated knowledge: machine-written to
+    # the overlay on verify, then promoted into the committed baseline by the
+    # operator's feat(catalog) commit. That git copy survives BOTH tenant-object
+    # deletion AND a wipe of data/. (Nested 'version' below is intentional -- the
+    # baseline "no top-level version" contract only inspects entry-level keys.)
+    #
+    # Shape (all under one nested dict; written by mark_validated/_apply_validation):
+    #   status   -- one of VALIDATION_STATUSES ('validated'). Required.
+    #   version  -- the product version that was proven (string).
+    #   date     -- ISO date (YYYY-MM-DD) of the latest validation.
+    #   evidence -- sorted list drawn from VALIDATION_EVIDENCE.
+    #   note     -- optional free-text audit trail.
+    validation: Optional[dict] = None
     # Lifecycle / usage
     notes: str = ""
     first_seen: str = ""
@@ -680,6 +724,15 @@ class CatalogEntry:
     # OVERLAY-ONLY -- carries tenant-bound GUIDs and per-tenant install
     # history.
     verified_versions: list = field(default_factory=list)
+
+    @property
+    def is_validated(self) -> bool:
+        """True when this entry's packaging recipe has been proven end-to-end at
+        least once. Durable and tenant-independent: stays True after the Intune
+        object is deleted and after a data/ wipe (the marker promotes into the
+        committed baseline). Distinct from "currently published in this tenant",
+        which is what verified_versions tracks."""
+        return bool(self.validation and self.validation.get('status') == 'validated')
 
     def render_install_command(self, installer_filename: str) -> str:
         return self.install_command_template.format(installer_filename=installer_filename)
@@ -1207,6 +1260,88 @@ def record_publish(
     )
 
 
+def _apply_validation(
+    entry: 'CatalogEntry',
+    product_version: Optional[str],
+    *,
+    evidence: Optional[list] = None,
+    note: str = "",
+    date: Optional[str] = None,
+) -> None:
+    """Mutate ``entry.validation`` in place to record an end-to-end validation.
+
+    Additive and idempotent-ish: re-validating UNIONS the evidence set, bumps the
+    proven ``version``/``date`` to the latest call, and appends a distinct
+    ``note`` to the audit trail. Unknown evidence tokens (not in
+    VALIDATION_EVIDENCE) are dropped. Does NOT write to disk -- callers persist
+    via _write_local so the verify hook can fold this into its existing write.
+    """
+    ev_in = {e for e in (evidence or []) if e in VALIDATION_EVIDENCE}
+    block = dict(entry.validation or {})
+    prior_ev = {e for e in (block.get('evidence') or []) if e in VALIDATION_EVIDENCE}
+    block['status'] = 'validated'
+    if product_version:
+        block['version'] = product_version
+    block['date'] = date or _today_iso()
+    block['evidence'] = sorted(prior_ev | ev_in)
+    prior_note = (block.get('note') or "").strip()
+    new_note = (note or "").strip()
+    prior_segments = [s.strip() for s in prior_note.split("|") if s.strip()]
+    if new_note and new_note not in prior_segments:
+        block['note'] = (prior_note + " | " if prior_note else "") + new_note
+    elif prior_note:
+        block['note'] = prior_note
+    entry.validation = block
+
+
+def mark_validated(
+    entry_id: str,
+    product_version: Optional[str] = None,
+    *,
+    evidence: Optional[list] = None,
+    note: str = "",
+    date: Optional[str] = None,
+) -> Optional['CatalogEntry']:
+    """Durably mark an entry's packaging recipe as proven end-to-end.
+
+    Writes the AGNOSTIC ``validation`` block to the local overlay (creating a
+    thin overlay copy from the baseline when the entry is baseline-only, exactly
+    like ``record_use`` / ``record_verification``). The block promotes into the
+    committed baseline via the normal snapshot/export path, so the "DONE" signal
+    survives tenant-object deletion AND a wipe of data/ -- it does NOT require the
+    Intune app to still exist.
+
+    Distinct from ``record_verification`` (which tracks the tenant-bound publish
+    history in verified_versions). Returns the updated entry, or None when
+    ``entry_id`` is unknown to both overlay and baseline.
+    """
+    overlay = _local_overlay_entries()
+    target = next((e for e in overlay if e.id == entry_id), None)
+    if target is None:
+        baseline_catalog = Catalog(entries=[
+            e for e in (
+                _entry_from_dict(r)
+                for r in (_load_yaml_file(BASELINE_PATH).get("entries") or [])
+            ) if e is not None
+        ])
+        base = baseline_catalog.by_id(entry_id)
+        if base is None:
+            logger.warning("mark_validated called for unknown entry", entry_id=entry_id)
+            return None
+        target = CatalogEntry(**asdict(base))
+        overlay.append(target)
+
+    _apply_validation(target, product_version, evidence=evidence, note=note, date=date)
+    _write_local(overlay)
+    logger.info(
+        "Catalog entry marked validated",
+        entry_id=entry_id,
+        product_version=product_version,
+        evidence=sorted({e for e in (evidence or []) if e in VALIDATION_EVIDENCE}),
+    )
+    return target
+
+
 def record_verification(
     entry_id: str,
     product_version: Optional[str],
@@ -1285,6 +1420,18 @@ def record_verification(
         if target.verified_versions is None:
             target.verified_versions = []
         target.verified_versions.append(new_record)
+
+    # Durable, tenant-independent "DONE" marker. record_verification fires when a
+    # deployment's successful_installs crosses zero -- end-to-end proof the recipe
+    # works (built -> published -> installed on a real device). Fold it into the
+    # agnostic ``validation`` block (same overlay write) so the fact survives this
+    # Intune app being deleted in cleanup and a wipe of the overlay: it promotes
+    # into the committed baseline, unlike the tenant-bound verified_versions row.
+    _apply_validation(
+        target, product_version,
+        evidence=['published', 'install_confirmed'],
+    )
+
     _write_local(overlay)
     logger.info(
         "Catalog entry verified",
