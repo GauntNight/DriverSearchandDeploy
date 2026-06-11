@@ -1342,6 +1342,41 @@ def mark_validated(
     return target
 
 
+def prune_stale_verified_versions(live_app_ids) -> int:
+    """Drop overlay ``verified_versions`` rows whose Intune app no longer exists.
+
+    Each verified_versions row is tenant-bound by ``verified_intune_app_id``.
+    When an app is deleted (routine cleanup, a superseded build, a re-published
+    duplicate), its row becomes a stale pointer that still poisons "newest
+    deployed version" calculations and the demo's version-state badges — e.g. a
+    long-deleted 26.01 making a live 26.00 look up-to-date. Given the set of app
+    ids CURRENTLY in the tenant, this removes rows referencing anything not in
+    that set. Rows with an empty/None app id (a publish in flight, no id yet) are
+    KEPT. Returns the number of rows pruned.
+
+    ``live_app_ids`` MUST be a real snapshot of the tenant (None/garbage would
+    wrongly delete live history) — callers pass it only after a successful Graph
+    list. A None argument is a no-op (returns 0).
+    """
+    if live_app_ids is None:
+        return 0
+    live = set(live_app_ids)
+    overlay = _local_overlay_entries()
+    pruned = 0
+    for e in overlay:
+        vvs = e.verified_versions or []
+        kept = [vv for vv in vvs
+                if not (vv.get("verified_intune_app_id") and
+                        vv.get("verified_intune_app_id") not in live)]
+        if len(kept) != len(vvs):
+            pruned += len(vvs) - len(kept)
+            e.verified_versions = kept
+    if pruned:
+        _write_local(overlay)
+        logger.info("Pruned stale verified_versions", count=pruned)
+    return pruned
+
+
 def record_verification(
     entry_id: str,
     product_version: Optional[str],

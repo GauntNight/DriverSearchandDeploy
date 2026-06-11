@@ -2,4 +2,4 @@
 {"text": "Locating the latest published release.", "level": "info", "delay_ms": 500}
 {"text": "Reconciling the vendor's version taxonomy against the deployed build.", "level": "info", "delay_ms": 450}
 {"text": "A newer version is available upstream.", "level": "info", "delay_ms": 400}
-{"version_result": {"latest_version": "9.9.9", "download_url": "", "is_newer": true}}
+{"version_result": {"latest_version": "", "download_url": "", "is_newer": true}}

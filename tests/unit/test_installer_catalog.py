@@ -478,6 +478,51 @@ class TestValidationMarker:
         assert {"published", "install_confirmed", "detection_fired", "cleaned_up"} <= ic.VALIDATION_EVIDENCE
 
 
+class TestPruneStaleVerifiedVersions:
+    """Reconcile overlay verified_versions against the live tenant: rows pointing
+    at deleted apps must be dropped so they can't baseline a version check on a
+    version no longer deployed (the '26.00 -> up to date (26.01)' bug)."""
+
+    def _seed(self, local):
+        _write_yaml(local, {"version": 1, "entries": [{
+            "id": "7-zip", "type": "msi",
+            "install_command_template": "msiexec /i {installer_filename} /qn",
+            "verified_versions": [
+                {"product_version": "26.00.00.0", "verified_intune_app_id": "LIVE-app", "status": "pending"},
+                {"product_version": "26.01.00.0", "verified_intune_app_id": "DELETED-app", "status": "pending"},
+                {"product_version": "27.00.00.0", "verified_intune_app_id": "", "status": "pending"},
+            ],
+        }]})
+
+    def test_drops_rows_for_deleted_apps_keeps_live_and_pending(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        self._seed(local)
+
+        pruned = ic.prune_stale_verified_versions({"LIVE-app"})
+
+        assert pruned == 1
+        e = ic.load_catalog().by_id("7-zip")
+        ids = {(vv.get("product_version"), vv.get("verified_intune_app_id")) for vv in e.verified_versions}
+        assert ("26.00.00.0", "LIVE-app") in ids       # live -> kept
+        assert ("27.00.00.0", "") in ids               # no id yet (in-flight) -> kept
+        assert ("26.01.00.0", "DELETED-app") not in ids  # deleted -> pruned
+
+    def test_none_live_ids_is_noop(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        self._seed(local)
+        assert ic.prune_stale_verified_versions(None) == 0
+        e = ic.load_catalog().by_id("7-zip")
+        assert len(e.verified_versions) == 3  # untouched
+
+    def test_does_not_touch_baseline(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+        self._seed(local)
+        original = baseline.read_bytes()
+        ic.prune_stale_verified_versions({"LIVE-app"})
+        assert baseline.read_bytes() == original
+
+
 class TestLoadMergeOrder:
     def test_local_entry_overrides_baseline_with_same_id(self, temp_catalog_paths):
         baseline, local = temp_catalog_paths

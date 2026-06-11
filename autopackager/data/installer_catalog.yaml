@@ -1048,6 +1048,7 @@ entries:
     product_code: '{ED41CD4E-33BB-400C-AB20-B09388DC83EF}'
     product_name_pattern: PuTTY release 0.83 (64-bit)
     publisher: Simon Tatham
+    canonical_download_url: "https://the.earth.li/~sgtatham/putty/latest/w64/putty-64bit-installer.msi"
     supersedence:
       line: putty-release-0-83--64-bit
       mode: generic
@@ -1114,6 +1115,7 @@ entries:
     product_code: '{3DC6B3F0-0AD7-4B51-AFA2-59605590EAC5}'
     product_name_pattern: Zoom Workplace (64-bit)
     publisher: Zoom
+    canonical_download_url: "https://zoom.us/client/latest/ZoomInstallerFull.msi?archType=x64"
     supersedence:
       line: zoom-workplace--64-bit
       mode: generic
