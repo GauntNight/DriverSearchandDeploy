@@ -364,20 +364,12 @@ def deployment_task(self, previous_result, job_id: int):
         return {"job_id": job_id, "intune_app_id": result.get('intune_app_id'), "completed": True}
 
     except Exception as e:
-        # Extract the real error from tenacity RetryError
-        original = e
-        if hasattr(e, 'last_attempt'):
-            try:
-                original = e.last_attempt.result()
-            except Exception as inner:
-                original = inner
+        # Format Graph/requests/tenacity failures into one clean operator line
+        # (no raw {'error': {...}} dicts on the UI). Unwrapping of tenacity
+        # RetryError + Graph error code/message extraction lives in the helper.
+        from autopackager.utils.graph_client import format_graph_error
 
-        error_detail = str(original)
-        if hasattr(original, 'response') and original.response is not None:
-            try:
-                error_detail = f"HTTP {original.response.status_code}: {original.response.json()}"
-            except Exception:
-                error_detail = f"HTTP {original.response.status_code}: {original.response.text}"
+        error_detail = format_graph_error(e, action="Deployment failed")
 
         logger.error("Deployment failed", job_id=job_id, error=error_detail)
 
@@ -386,8 +378,12 @@ def deployment_task(self, previous_result, job_id: int):
             logger.info("Retrying deployment", job_id=job_id, retry_count=retry_count)
             raise self.retry(exc=e, countdown=engine.retry_delay)
         else:
-            engine.mark_job_failed(job_id, f"Deployment failed: {error_detail}")
-            raise
+            engine.mark_job_failed(job_id, error_detail)
+            _demo_event(job_id, "error", error_detail, level="error")
+            # Raise a clean, picklable error — the original may be a tenacity
+            # RetryError that Celery can't pickle (UnpickleableExceptionWrapper
+            # noise in the worker). The job is already marked FAILED above.
+            raise RuntimeError(error_detail) from None
 
 
 @celery_app.task(bind=True, name='autopackager.poll_deployment_status')

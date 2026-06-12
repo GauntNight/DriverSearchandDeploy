@@ -255,6 +255,34 @@ class DeploymentAgent:
 
         graph_client = self._get_graph_client()
 
+        # Idempotent retry guard. deployment_task retries on any failure; without
+        # this, a retry re-enters here and mints ANOTHER app (the create path +
+        # _dedupe_display_name appends _01/_02/...), which is exactly how a single
+        # failed-assignment upgrade left 7-Zip _01/_03 and AWS CLI _01/_04 orphans.
+        # If a prior attempt of THIS job already published an app, reuse it and
+        # resume at assignment; if it created but never published one, delete that
+        # shell and start clean.
+        prior_app_id = (job.job_metadata or {}).get('deploy_app_id')
+        if prior_app_id:
+            state = self._published_state(graph_client, prior_app_id)
+            if state == 'published':
+                logger.info(
+                    "Reusing published app from a prior deploy attempt",
+                    app_id=prior_app_id, job_id=job.id,
+                )
+                return prior_app_id
+            if state is not None:
+                logger.warning(
+                    "Prior attempt's app is not published; deleting before recreate",
+                    app_id=prior_app_id, publishing_state=state, job_id=job.id,
+                )
+                try:
+                    graph_client.delete_win32_app(prior_app_id)
+                    time.sleep(3)
+                except Exception as exc:  # noqa: BLE001 -- best effort cleanup
+                    logger.warning("Could not delete prior shell app", app_id=prior_app_id, error=str(exc))
+            # state is None (deleted/not found) or we just deleted it -> create fresh
+
         # When the operator requested supersedence at create-software-job
         # time, this publish MUST land as a NEW Intune app -- not a PATCH
         # of the existing displayName match. Intune supersedence is a
@@ -311,6 +339,12 @@ class DeploymentAgent:
             logger.info("Creating new app", name=app_data['displayName'])
             new_app = graph_client.create_win32_app(app_data)
             app_id = new_app['id']
+
+        # Persist the app id on the job NOW, before any post-create step that
+        # could fail and trigger a retry (upload, supersedence, assignment). A
+        # retry re-reads the job and reuses this id (see the guard above) instead
+        # of creating a duplicate.
+        self._record_deploy_app_id(job, app_id)
 
         # Attach Intune categories from the catalog (best-effort -- failures
         # don't block content upload). Categories are a separate $ref
@@ -1036,7 +1070,21 @@ class DeploymentAgent:
             return self.deployment_rings[0]['name'] if self.deployment_rings else 'Ring 0'
 
         graph_client = self._get_graph_client()
-        settings = graph_client.win32_auto_update_settings(True) if auto_update else None
+        # NOTE: the `autoUpdateSettings` assignment block is ONLY valid for the
+        # `available` intent — Graph 400s ("auto-update superseded apps setting
+        # is only valid for available intents") if it's attached to a `required`
+        # assignment. We deploy upgrades as `required`, where the upgrade is
+        # already driven by the mobileAppSupersedence(update) relationship the
+        # deploy agent creates — so the assignment setting is both redundant and
+        # rejected here. Leave settings off for required; `auto_update` is
+        # honoured via supersedence, not the assignment block.
+        settings = None
+        if auto_update:
+            logger.debug(
+                "auto_update_superseded requested; relying on supersedence(update) "
+                "for the required assignment (assignment-level autoUpdateSettings "
+                "is available-intent only)"
+            )
         # Map known ring group ids back to their config ring dict for nice
         # Deployment records; unknown groups get a synthetic ring dict.
         ring_by_group = {r.get('entra_group_id'): r for r in self.deployment_rings}
@@ -1102,6 +1150,38 @@ class DeploymentAgent:
             )
             session.add(deployment)
             logger.info("Created deployment record", ring=ring['name'])
+
+    def _published_state(self, graph_client, app_id: str):
+        """Return the app's publishingState, or None if it no longer exists.
+
+        Used by the idempotent-retry guard to decide whether a prior attempt's
+        app can be reused ('published'), needs deleting first (any other state),
+        or is gone ('None' -> create fresh). Never raises.
+        """
+        try:
+            app = graph_client.get_win32_app(app_id)
+            return app.get('publishingState', 'unknown') if app else None
+        except Exception as exc:  # noqa: BLE001 -- 404/transient -> treat as gone
+            logger.info("Prior deploy app id not retrievable", app_id=app_id, error=str(exc))
+            return None
+
+    def _record_deploy_app_id(self, job: Job, app_id: str) -> None:
+        """Persist the created Intune app id on the job so a retry reuses it.
+
+        Writes to the Job row's metadata (a fresh dict, so SQLAlchemy detects
+        the change) AND mutates the in-memory ``job`` so the rest of this deploy
+        sees it. Best-effort: a failure here must not abort an otherwise-good
+        publish (worst case is the pre-fix behaviour — a retry makes a dup).
+        """
+        try:
+            with db_session_scope() as session:
+                row = session.query(Job).filter(Job.id == job.id).first()
+                if row:
+                    row.job_metadata = {**(row.job_metadata or {}), 'deploy_app_id': app_id}
+            # Keep the in-memory copy consistent for the remainder of deploy().
+            job.job_metadata = {**(job.job_metadata or {}), 'deploy_app_id': app_id}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not persist deploy_app_id on job", job_id=getattr(job, 'id', None), error=str(exc))
 
     def _update_package_deployment_status(self, package_id: int, intune_app_id: str):
         """Update package deployment status"""
