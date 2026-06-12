@@ -589,6 +589,48 @@ class TestDeploymentTask:
         assert 'permission' in error_msg.lower()
         assert '{' not in error_msg
 
+    @patch('autopackager.utils.azure_validator.AzureValidator')
+    @patch('autopackager.agents.deployment.DeploymentAgent')
+    @patch('autopackager.orchestration.tasks.OrchestrationEngine')
+    def test_deployment_task_holds_gated_unapproved(self, mock_engine_class, mock_agent_class, mock_validator_class):
+        """A gated job that hasn't been approved must NOT deploy (gate backstop)."""
+        mock_engine = Mock()
+        mock_engine_class.return_value = mock_engine
+        job = Mock(spec=Job)
+        job.job_metadata = {'demo_gate_deploy': True}  # no gate_approved
+        mock_engine.get_job.return_value = job
+        mock_agent = Mock()
+        mock_agent_class.return_value = mock_agent
+
+        result = deployment_task.apply(kwargs={
+            'previous_result': {'job_id': 1, 'test_passed': True}, 'job_id': 1,
+        }).get()
+
+        assert result.get('held_for_approval') is True
+        mock_agent.deploy.assert_not_called()              # nothing published
+        mock_engine.update_job_state.assert_not_called()    # not even marked deploying
+
+    @patch('autopackager.utils.azure_validator.AzureValidator')
+    @patch('autopackager.agents.deployment.DeploymentAgent')
+    @patch('autopackager.orchestration.tasks.OrchestrationEngine')
+    def test_deployment_task_proceeds_when_gate_approved(self, mock_engine_class, mock_agent_class, mock_validator_class):
+        """An approved gated job deploys normally."""
+        mock_engine = Mock()
+        mock_engine_class.return_value = mock_engine
+        job = Mock(spec=Job)
+        job.job_metadata = {'demo_gate_deploy': True, 'gate_approved': True}
+        mock_engine.get_job.return_value = job
+        mock_agent = Mock()
+        mock_agent_class.return_value = mock_agent
+        mock_agent.deploy.return_value = {'intune_app_id': 'x', 'status': 'deployed', 'ring': 'Ring 0'}
+
+        result = deployment_task.apply(kwargs={
+            'previous_result': {'job_id': 1, 'test_passed': True}, 'job_id': 1,
+        }).get()
+
+        mock_agent.deploy.assert_called_once()
+        assert result.get('completed') is True
+
 
 class TestPollDeploymentStatus:
     """Tests for poll_deployment_status Celery task"""

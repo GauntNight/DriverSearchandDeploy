@@ -430,6 +430,27 @@ async def api_upgrade(request: Request, background: BackgroundTasks):
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+def _live_app_label(app_id: Optional[str]):
+    """Return ``(displayName, publisher)`` for a tenant app id, trimmed — used to
+    give the upgrade's installer search a proper human product name. Best-effort:
+    returns ``(None, None)`` on any failure (caller falls back to the slug)."""
+    if not app_id:
+        return None, None
+    try:
+        from autopackager.utils.graph_client import GraphAPIClient
+
+        app = GraphAPIClient().get_win32_app(app_id) or {}
+        name = (app.get("displayName") or "").strip() or None
+        pub = (app.get("publisher") or "").strip() or None
+        return name, pub
+    except Exception as exc:  # noqa: BLE001
+        try:
+            logger.warning("Live app label lookup failed", app_id=app_id, error=str(exc))
+        except Exception:
+            pass
+        return None, None
+
+
 def _resolve_upgrade_source(app_id: Optional[str], mode: Optional[str]) -> dict:
     """Attempt to acquire a download URL for an upgrade BEFORE asking for a drop.
 
@@ -449,9 +470,14 @@ def _resolve_upgrade_source(app_id: Optional[str], mode: Optional[str]) -> dict:
         if entry:
             newest, _newest_app = intune_view.newest_verified_version(entry)
             version = newest or (row or {}).get("product_version")
+        # Search with the app's REAL display name + publisher, not the catalog
+        # slug. The slug ("sharex", empty publisher) is a degraded query — the
+        # agent web search needs the human product name ("ShareX", "ShareX Team")
+        # to find the official latest installer. Fall back to the slug/app_id.
+        disp_name, disp_pub = _live_app_label(app_id)
         candidate = {
-            "name": (entry.id if entry else None) or app_id or "application",
-            "publisher": (entry.publisher if entry else "") or "",
+            "name": (disp_name or (entry.id if entry else None) or app_id or "application"),
+            "publisher": (disp_pub or (entry.publisher if entry else "") or ""),
             "version": version,
             "in_catalog": entry.id if entry else None,
         }
@@ -730,9 +756,102 @@ def _run_substitution_pipeline(job_id: int, saved_path: str, gate: bool, mode: O
 async def api_approve(job_id: int):
     """Release the optional Ring 0 approval gate and dispatch deployment."""
     events.set_gate_approved(job_id)
+    # Persist the approval on the job BEFORE dispatching deployment so the
+    # pipeline-level gate backstop (deployment_task) lets this run through.
+    await asyncio.to_thread(_mark_gate_approved, job_id)
     events.publish_pipeline_event(job_id, "deploying", "Approved — promoting to Ring 0.")
     await asyncio.to_thread(intake.dispatch_deployment, job_id)
     return {"job_id": job_id, "approved": True}
+
+
+def _mark_gate_approved(job_id: int) -> None:
+    """Persist gate_approved=True on the job so deployment_task's gate backstop
+    permits the deploy. Best-effort (the Redis flag is the primary signal)."""
+    try:
+        from autopackager.orchestration.engine import OrchestrationEngine
+
+        engine = OrchestrationEngine()
+        job = engine.get_job(job_id)
+        if job and job.state:
+            engine.update_job_state(job_id, job.state, metadata_update={"gate_approved": True})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not persist gate_approved", job_id=job_id, error=str(exc))
+
+
+@demo_router.get("/api/demo/jobs/{job_id}/logs")
+async def api_job_logs(job_id: int):
+    """Human-readable diagnostic log for a job — error + escalation reason +
+    install attempts + the local-install validator log + smoke-test results. Lets
+    an engineer inspect a FAILED execution (the 'View logs' card action)."""
+    text = await asyncio.to_thread(_assemble_job_logs, job_id)
+    if text is None:
+        return JSONResponse({"error": f"job {job_id} not found"}, status_code=404)
+    return {"job_id": job_id, "logs": text}
+
+
+def _assemble_job_logs(job_id: int) -> Optional[str]:
+    from autopackager.orchestration.engine import OrchestrationEngine
+
+    job = OrchestrationEngine().get_job(job_id)
+    if not job:
+        return None
+    md = job.job_metadata or {}
+    out = [f"# Job {job_id} — {job.software_title or ''}".rstrip(),
+           f"state: {job.state.value if job.state else '?'}"]
+    if job.error_message:
+        out.append(f"\n## Error\n{job.error_message}")
+    diag_keys = ("install_command", "corrected_install_command", "needs_engineer_review",
+                 "escalation_reason", "install_attempts", "download_url", "sha256",
+                 "catalog_entry_id", "target_version")
+    diag = {k: md.get(k) for k in diag_keys if md.get(k) is not None}
+    if diag:
+        out.append("\n## Diagnostics")
+        out.extend(f"{k}: {v}" for k, v in diag.items())
+    pkg_id = md.get("package_id")
+    if pkg_id:
+        try:
+            from autopackager.utils.database import db_session_scope
+            from autopackager.models.package import Package
+
+            with db_session_scope() as s:
+                pkg = s.query(Package).filter(Package.id == pkg_id).first()
+                if pkg and pkg.test_logs:
+                    out.append("\n## Test logs\n" + str(pkg.test_logs))
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"\n(test logs unavailable: {exc})")
+    return "\n".join(out)
+
+
+@demo_router.post("/api/demo/jobs/{job_id}/retry")
+async def api_retry_job(job_id: int):
+    """Re-run a failed job's pipeline (the 'Retry' card action). Clears the
+    failure flags, resets to a fresh start, and re-dispatches — gating is
+    preserved so a queue item still holds at the approval gate."""
+    ok = await asyncio.to_thread(_retry_job, job_id)
+    if not ok:
+        return JSONResponse({"error": f"job {job_id} not found"}, status_code=404)
+    return {"job_id": job_id, "retried": True}
+
+
+def _retry_job(job_id: int) -> bool:
+    from autopackager.orchestration.engine import OrchestrationEngine
+    from autopackager.models.job import JobState
+
+    engine = OrchestrationEngine()
+    job = engine.get_job(job_id)
+    if not job:
+        return False
+    gate = bool((job.job_metadata or {}).get("demo_gate_deploy"))
+    # Clear the escalation flags so a fresh validator run isn't pre-judged, reset
+    # to a clean pipeline start, and re-dispatch.
+    engine.update_job_state(
+        job_id, JobState.PENDING,
+        metadata_update={"needs_engineer_review": False, "escalation_reason": None,
+                         "retry_requested": True},
+    )
+    events.publish_pipeline_event(job_id, "pending", "↻ Retry requested — re-running the pipeline…")
+    intake.dispatch_pipeline(job_id, gate=gate)
+    return True
 
 
 @demo_router.get("/api/demo/stream/{job_id}")
@@ -788,6 +907,68 @@ async def demo_index():
         # UI without a hard-refresh (the demo is actively developed against).
         return FileResponse(str(index), headers=_NO_CACHE)
     return JSONResponse({"error": "demo UI not found"}, status_code=404)
+
+
+@demo_router.get("/demo/stream")
+async def demo_stream_page():
+    """The batch-stream page: a live grid of all packages in a queue batch, each
+    independently actionable (approve / confirm-url / drop-installer). Opened
+    with ``?batch=<batch_id>`` from the console when a batch is queued."""
+    page = _STATIC / "stream.html"
+    if page.exists():
+        return FileResponse(str(page), headers=_NO_CACHE)
+    return JSONResponse({"error": "stream UI not found"}, status_code=404)
+
+
+@demo_router.get("/api/demo/queue/{batch_id}/snapshot")
+async def api_queue_snapshot(batch_id: str):
+    """Initial render data for the batch-stream page: one entry per queued job.
+
+    The live SSE (below) carries only deltas — this gives the page the full set
+    of cards (and their current state) on load / reconnect."""
+    jobs = await asyncio.to_thread(pkg_queue.jobs_for_batch, batch_id)
+    return {"batch_id": batch_id, "jobs": jobs}
+
+
+@demo_router.get("/api/demo/stream/batch/{batch_id}")
+async def api_stream_batch(batch_id: str):
+    """Fan-in SSE for a whole queue batch: every job's console + lamp + stepper
+    events on one stream, each tagged with its ``job_id`` so the page can route
+    it to the right card. Resolves the batch's job ids up front (the set is fixed
+    at batch creation)."""
+
+    async def event_gen():
+        jobs = await asyncio.to_thread(pkg_queue.jobs_for_batch, batch_id)
+        job_ids = [j["job_id"] for j in jobs]
+        yield _sse({"type": "hello", "batch_id": batch_id, "job_ids": job_ids})
+        # Seed each card with its current DB state (Redis pub/sub has no backlog).
+        for j in jobs:
+            yield _sse({"type": "state", "source": "pipeline",
+                        "job_id": j["job_id"], "state": j.get("state")})
+        if not job_ids:
+            yield _sse({"type": "end", "batch_id": batch_id})
+            return
+        try:
+            async for envelope in events.asubscribe_many(job_ids):
+                if envelope is None:
+                    yield ": keep-alive\n\n"
+                    continue
+                yield _sse(envelope)
+        except asyncio.CancelledError:  # client disconnected
+            raise
+        except Exception as exc:  # noqa: BLE001
+            yield _sse({"type": "console", "level": "error",
+                        "source": "system", "text": f"stream error: {exc}"})
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _current_job_state(job_id: int) -> Optional[str]:

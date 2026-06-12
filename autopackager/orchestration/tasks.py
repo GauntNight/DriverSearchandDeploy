@@ -317,9 +317,26 @@ def deployment_task(self, previous_result, job_id: int):
                     needs_engineer_review=previous_result.get('needs_engineer_review'))
         return previous_result
 
+    engine = OrchestrationEngine()
+
+    # Approval-gate enforcement (defense in depth). The demo's gate is primarily
+    # implemented by NOT chaining this task when gate=True (see
+    # intake.dispatch_pipeline); deployment is dispatched separately by /approve.
+    # But that left the tenant exposed if deployment_task were ever dispatched by
+    # any other path (a stray re-dispatch, a retry, a process_job chain) — it
+    # would publish without approval. This backstop makes a gated-and-unapproved
+    # job refuse to deploy no matter how it was dispatched. /approve persists
+    # gate_approved=True on the job before re-dispatching.
+    _gjob = engine.get_job(job_id)
+    _gmd = (_gjob.job_metadata or {}) if _gjob else {}
+    if _gmd.get('demo_gate_deploy') and not _gmd.get('gate_approved'):
+        logger.info("Deployment held at approval gate (not approved)", job_id=job_id)
+        _demo_event(job_id, "testing",
+                    "Held at the Ring 0 approval gate — click Approve to deploy.", gate=True)
+        return {"job_id": job_id, "gated": True, "held_for_approval": True}
+
     logger.info("Starting deployment phase", job_id=job_id)
 
-    engine = OrchestrationEngine()
     engine.update_job_state(job_id, JobState.DEPLOYING)
     _demo_event(job_id, "deploying", "Deploying — creating Win32 app + uploading content")
 

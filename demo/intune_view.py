@@ -198,7 +198,13 @@ def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
             row.setdefault("catalog_entry_id", None)
             row.setdefault("current_version", row.get("version") or None)
             row.setdefault("source_url_known", False)
-            row.setdefault("version_state", "")  # unplaceable → no badge, never "Current"
+            # Optimistic default: a row we can't yet place in a chain shows
+            # "Current" rather than a blank badge. The chain position isn't known
+            # until the catalog overlay is populated for this app — which happens
+            # on a version refresh (the per-app ↻, the daily version-check Beat,
+            # or a tenant sync). Defaulting to "Current" keeps every app badged
+            # meaningfully until that refresh resolves it to N-1/N-2 if older.
+            row.setdefault("version_state", "current")
 
 
 def _live_view(include_counts: bool = False) -> Dict[str, Any]:

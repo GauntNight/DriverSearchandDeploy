@@ -1,0 +1,113 @@
+/* Batch-stream page — reuses demo.css variables (cyan-on-dark theme). */
+
+.stream-body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  min-height: 100vh;
+}
+
+.stream-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; border-bottom: 1px solid var(--border);
+  background: var(--panel); position: sticky; top: 0; z-index: 10;
+}
+.stream-title { display: flex; align-items: baseline; gap: 8px; }
+.stream-title .brand { font-weight: 800; letter-spacing: .3px; }
+.stream-title .sep { color: var(--text-mute); }
+.stream-title .sub { color: var(--accent); font-weight: 700; }
+.batch-id { font-family: var(--mono); font-size: 11px; color: var(--text-mute); margin-left: 6px; }
+.stream-meta { display: flex; align-items: center; gap: 10px; }
+.counts { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+
+.stream-grid {
+  display: grid; gap: 14px; padding: 18px 20px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+.empty { grid-column: 1 / -1; color: var(--text-mute); padding: 40px; text-align: center; }
+.empty code { font-family: var(--mono); color: var(--text-dim); }
+
+.card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px; display: flex; flex-direction: column; gap: 10px;
+  transition: border-color .2s, box-shadow .2s;
+}
+.card[data-flash="gate"]   { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn) inset; }
+.card[data-flash="done"]   { border-color: var(--ready); }
+.card[data-flash="failed"] { border-color: var(--bad); }
+
+.card-head { display: flex; align-items: center; gap: 10px; }
+.card-head .lamp { width: 22px; height: 22px; }
+.card-id { flex: 1; min-width: 0; }
+.card-name { font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-job { font-family: var(--mono); font-size: 11px; color: var(--text-mute); }
+
+.card-badge {
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .4px;
+  padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border-2, var(--border));
+  color: var(--text-dim); flex: none;
+}
+.card-badge[data-state="running"]  { color: var(--accent); border-color: var(--accent-dim); }
+.card-badge[data-state="gate"]      { color: var(--warn); border-color: var(--warn); }
+.card-badge[data-state="awaiting"]  { color: var(--checking); border-color: var(--checking); }
+.card-badge[data-state="completed"] { color: var(--ready); border-color: var(--ready); }
+.card-badge[data-state="failed"]    { color: var(--bad); border-color: var(--bad); }
+
+.mini-stepper { list-style: none; display: flex; gap: 4px; padding: 0; margin: 0; }
+.mini-stepper li {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  font-size: 9px; color: var(--text-mute); text-align: center;
+}
+.mini-stepper li .tick {
+  width: 100%; height: 4px; border-radius: 3px; background: var(--border);
+}
+.mini-stepper li.active { color: var(--text); }
+.mini-stepper li.active .tick { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.mini-stepper li.done .tick { background: var(--ready); }
+.mini-stepper li.failed .tick { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+
+.card-line {
+  font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+  min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card-line.error { color: var(--bad); }
+
+.card-action { display: flex; flex-direction: column; gap: 8px; }
+.card-action:empty { display: none; }
+.card-action .url {
+  font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+  word-break: break-all; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 5px; padding: 6px 8px;
+}
+.card-action .prov { font-size: 10px; color: var(--text-mute); }
+.card-action .row { display: flex; gap: 8px; }
+.card-action .btn { flex: 1; }
+.card-action input[type=file] { font-size: 11px; color: var(--text-dim); }
+
+.btn.bad { background: transparent; border: 1px solid var(--bad); color: var(--bad); }
+.btn.small { padding: 5px 8px; font-size: 11px; }
+
+/* Failed-card actions: retry + view logs */
+.card-action .fail-row { display: flex; gap: 8px; }
+.btn.retry { background: transparent; border: 1px solid var(--accent-dim); color: var(--accent); }
+.btn.retry:hover { border-color: var(--accent); }
+
+/* Logs modal */
+.logs-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 50;
+  display: flex; align-items: center; justify-content: center; padding: 30px;
+}
+.logs-box {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  width: min(820px, 100%); max-height: 80vh; display: flex; flex-direction: column;
+}
+.logs-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+}
+#logs-title { font-weight: 700; font-family: var(--mono); font-size: 13px; color: var(--accent); }
+#logs-pre {
+  margin: 0; padding: 16px; overflow: auto; font-family: var(--mono); font-size: 11px;
+  line-height: 1.5; color: var(--text-dim); white-space: pre-wrap; word-break: break-word;
+}

@@ -1,5 +1,5 @@
 /* AutoPackager — Mission Control demo console.
-   One SSE stream per job multiplexes pipeline + Claude lines; the AI lamp and
+   One SSE stream per job multiplexes pipeline + AutoPackager research lines; the AI lamp and
    left stepper are styled consumers of the same stream. Center panel polls the
    real tenant (or fixtures) independently. */
 
@@ -125,15 +125,16 @@
   }
 
   // ---- Console -------------------------------------------------------------
-  // Source display labels. The research bridge's internal source is "claude"
-  // but the customer-facing brand is AutoPackager — never surface "Claude".
-  const SRC_LABELS = { claude: "AutoPackager", pipeline: "Pipeline", system: "System" };
+  // Source display labels. The research bridge's wire source is "autopackager"
+  // — the customer-facing brand. (Older payloads used "claude"; map it too so a
+  // mixed stream never surfaces the engine name.)
+  const SRC_LABELS = { autopackager: "AutoPackager", claude: "AutoPackager", pipeline: "Pipeline", system: "System" };
 
   function appendLine(env) {
     const con = $("console");
     const line = document.createElement("div");
     line.className = "cline " + (env.level || "info") +
-      (env.source === "claude" ? " claude" : "");
+      (env.source === "autopackager" || env.source === "claude" ? " autopackager" : "");
     const ts = (env.ts || "").slice(11, 19) || nowHHMMSS();
     const src = env.source || "system";
     const label = SRC_LABELS[src] || src;
@@ -414,6 +415,9 @@
 
     $("approve").addEventListener("click", async () => {
       if (!currentJob) return;
+      // Approval PUBLISHES to the tenant (Ring 0) — confirm to guard against an
+      // accidental click writing to Intune.
+      if (!window.confirm("Approve & publish this package to Ring 0? This deploys it to the tenant.")) return;
       $("gate-box").classList.add("hidden");
       await fetch(`/api/demo/jobs/${currentJob}/approve`, { method: "POST" });
     });
@@ -563,6 +567,19 @@
       if (data.error) { flashConsoleError(data.error); return; }
       const jobs = data.jobs || [];
       if (!jobs.length) { flashConsoleError("Nothing was queued."); return; }
+      // Multi-package batches go to the dedicated batch-stream page: a live
+      // grid where every package is watched AND approved independently, so the
+      // single-action console never becomes the bottleneck (gates/confirms for
+      // different items no longer interrupt each other). A single item stays on
+      // the console for the focused, full-detail view.
+      if (jobs.length > 1) {
+        const url = `/demo/stream?batch=${data.batch_id}`;
+        appendLine({ source: "system", text:
+          `Queued ${jobs.length} packages (gated · Ring 0). Opening the batch stream — watch & approve all of them there: ${url}` });
+        showBatchPill(data.batch_id);   // header pill to return to this batch anytime
+        window.open(url, "_blank", "noopener");
+        return;
+      }
       activeBatch = { jobs, idx: 0, job_ids: jobs.map((j) => j.job_id), batch_id: data.batch_id };
       appendLine({ source: "system", text:
         `Queued ${jobs.length} item(s) for packaging (gated · Ring 0). Processing one at a time…` });
@@ -701,7 +718,9 @@
   function badgeFromServerState(app) {
     switch (app.version_state) {
       case "pending":  return { state: "pending", label: "Pending" };
-      case "":         return null;
+      // Unknown/unplaceable defaults to "Current" until a refresh (per-app ↻,
+      // daily version-check, or tenant sync) resolves the real chain position.
+      case "":         return { state: "current", label: "Current" };
       case "current":  return { state: "current", label: "Current" };
       default:
         // "N-1", "N-2", … come through verbatim as superseded labels.
@@ -808,7 +827,7 @@
   async function postUpgrade(app, scope, force, overrideUrl) {
     const meta = appMeta.get(app.id) || {};
     if (!meta.download_url && !overrideUrl) {
-      appendLine({ source: "claude", level: "info", text:
+      appendLine({ source: "autopackager", level: "info", text:
         "Looking for the newer installer — checking the known source, then a web search…" });
     }
     try {
@@ -842,7 +861,7 @@
       if (data.awaiting_confirm) {
         const conf = data.confidence ? ` · confidence: ${data.confidence}` : "";
         const prov = data.provenance ? `\nProvenance: ${data.provenance}` : "";
-        appendLine({ source: "claude", level: "info", text:
+        appendLine({ source: "autopackager", level: "info", text:
           `Found a candidate source: ${data.proposed_url}${conf}` });
         const ok = window.confirm(
           `${data.message || "Confirm this source?"}\n\n${data.proposed_url}${prov}`);
@@ -884,11 +903,58 @@
     ));
   }
 
+  // ---- Batch-stream pill (header) ------------------------------------------
+  // A header button that appears whenever a queue batch exists, so the operator
+  // can jump (back) to the multiplexed batch-stream view at any time — while it
+  // runs AND after items succeed/fail (for review). Survives a console reload
+  // via localStorage; a live snapshot poll keeps the count/active dot honest.
+  const LS_BATCH = "ap_last_batch";
+  let batchPollTimer = null;
+
+  function openBatchStream(batchId) {
+    window.open(`/demo/stream?batch=${batchId}`, "_blank", "noopener");
+  }
+
+  function showBatchPill(batchId) {
+    if (!batchId) return;
+    try { localStorage.setItem(LS_BATCH, batchId); } catch (e) { /* private mode */ }
+    const pill = $("batch-pill");
+    pill.classList.remove("hidden");
+    pill.onclick = () => openBatchStream(batchId);
+    refreshBatchPill(batchId);
+    if (batchPollTimer) clearInterval(batchPollTimer);
+    batchPollTimer = setInterval(() => refreshBatchPill(batchId), 5000);
+  }
+
+  async function refreshBatchPill(batchId) {
+    const pill = $("batch-pill");
+    const label = pill.querySelector(".bp-label");
+    try {
+      const r = await fetch(`/api/demo/queue/${batchId}/snapshot`);
+      const data = await r.json();
+      const jobs = data.jobs || [];
+      if (!jobs.length) { label.textContent = "Batch stream"; pill.dataset.active = "false"; return; }
+      const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+      const active = jobs.filter((j) => !TERMINAL.has(j.state)).length;
+      pill.dataset.active = active > 0 ? "true" : "false";
+      label.textContent = active > 0
+        ? `Batch · ${active}/${jobs.length} running`
+        : `Batch · ${jobs.length} done`;
+    } catch (e) { /* keep last label on a transient error */ }
+  }
+
+  function restoreBatchPill() {
+    let batchId = null;
+    try { batchId = localStorage.getItem(LS_BATCH); } catch (e) { /* ignore */ }
+    if (batchId) showBatchPill(batchId);
+  }
+
   // ---- Boot ----------------------------------------------------------------
   function boot() {
     wireIntake();
     preflight();
     pollIntune();
+    restoreBatchPill();
     setInterval(pollIntune, 4000);
     setInterval(preflight, 30000); // keep readiness lights honest
   }
