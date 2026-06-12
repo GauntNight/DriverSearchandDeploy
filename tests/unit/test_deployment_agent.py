@@ -1778,5 +1778,76 @@ class TestDeploymentAgentPromotion(unittest.TestCase):
         mock_assign.assert_called_once_with(self.deployment.intune_app_id, mock_package, 2)
 
 
+class TestDeployIdempotentRetry(unittest.TestCase):
+    """The retry guard in _create_or_update_intune_app: a deployment_task retry
+    must REUSE the app a prior attempt already published, not mint a duplicate
+    (root cause of the _01/_02 orphan storms)."""
+
+    def setUp(self):
+        with patch('autopackager.agents.deployment.deployment_agent.get_config',
+                   return_value={'deployment_rings': []}):
+            self.agent = DeploymentAgent()
+        self.package = Mock(spec=Package)
+        self.package.id = 100
+        self.package.name = "AWS CLI v2"
+        self.package.version = "2.35.3.0"
+        self.job = Mock(spec=Job)
+        self.job.id = 72
+
+    def _graph(self):
+        g = Mock()
+        return g
+
+    def test_reuses_published_app_from_prior_attempt(self):
+        self.job.job_metadata = {'package_id': 100, 'deploy_app_id': 'app-prior'}
+        graph = self._graph()
+        with patch.object(self.agent, '_get_graph_client', return_value=graph), \
+             patch.object(self.agent, '_published_state', return_value='published') as mock_state:
+            app_id = self.agent._create_or_update_intune_app(self.package, self.job)
+        self.assertEqual(app_id, 'app-prior')
+        mock_state.assert_called_once_with(graph, 'app-prior')
+        graph.create_win32_app.assert_not_called()   # no duplicate minted
+        graph.get_win32_apps.assert_not_called()      # short-circuited before upsert lookup
+
+    def test_deletes_unpublished_prior_shell_then_creates_fresh(self):
+        self.job.job_metadata = {'package_id': 100, 'deploy_app_id': 'app-broken'}
+        graph = self._graph()
+        graph.get_win32_apps.return_value = {'value': []}
+        graph.create_win32_app.return_value = {'id': 'app-new'}
+        with patch.object(self.agent, '_get_graph_client', return_value=graph), \
+             patch.object(self.agent, '_published_state', return_value='notPublished'), \
+             patch.object(self.agent, '_find_existing_app_for_upsert', return_value=None), \
+             patch.object(self.agent, '_prepare_app_data', return_value={'displayName': 'AWS CLI v2'}), \
+             patch.object(self.agent, '_dedupe_display_name', side_effect=lambda g, n: n), \
+             patch.object(self.agent, '_record_deploy_app_id') as mock_record, \
+             patch.object(self.agent, '_lookup_catalog_entry', return_value=None), \
+             patch.object(self.agent, '_upload_and_publish'), \
+             patch.object(self.agent, '_apply_supersedence'), \
+             patch('autopackager.agents.deployment.deployment_agent.time.sleep'):
+            app_id = self.agent._create_or_update_intune_app(self.package, self.job)
+        graph.delete_win32_app.assert_called_once_with('app-broken')
+        graph.create_win32_app.assert_called_once()
+        self.assertEqual(app_id, 'app-new')
+        mock_record.assert_called_once_with(self.job, 'app-new')
+
+    def test_published_state_returns_none_when_app_gone(self):
+        graph = Mock()
+        graph.get_win32_app.side_effect = Exception("404 Not Found")
+        self.assertIsNone(self.agent._published_state(graph, 'missing'))
+
+    def test_record_deploy_app_id_writes_metadata(self):
+        self.job.job_metadata = {'package_id': 100}
+        row = Mock()
+        row.job_metadata = {'package_id': 100}
+        session = MagicMock()
+        session.query.return_value.filter.return_value.first.return_value = row
+        cm = MagicMock()
+        cm.__enter__.return_value = session
+        with patch('autopackager.agents.deployment.deployment_agent.db_session_scope', return_value=cm):
+            self.agent._record_deploy_app_id(self.job, 'app-xyz')
+        self.assertEqual(row.job_metadata.get('deploy_app_id'), 'app-xyz')
+        self.assertEqual(self.job.job_metadata.get('deploy_app_id'), 'app-xyz')
+
+
 if __name__ == '__main__':
     unittest.main()

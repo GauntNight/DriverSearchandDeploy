@@ -583,7 +583,11 @@ class TestDeploymentTask:
         # Verify error message includes HTTP details
         mock_engine.mark_job_failed.assert_called_once()
         error_msg = mock_engine.mark_job_failed.call_args[0][1]
-        assert 'HTTP 403' in error_msg
+        # Cleanly formatted (no raw {'error': ...} dict); surfaces the 403 as a
+        # missing-permission message via format_graph_error.
+        assert '403' in error_msg
+        assert 'permission' in error_msg.lower()
+        assert '{' not in error_msg
 
 
 class TestPollDeploymentStatus:

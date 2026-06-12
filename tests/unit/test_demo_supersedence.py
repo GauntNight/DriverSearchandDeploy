@@ -20,11 +20,11 @@ class TestAssignmentSettings(unittest.TestCase):
     def test_win32_auto_update_settings_enabled(self):
         s = GraphAPIClient.win32_auto_update_settings(True)
         self.assertEqual(s["@odata.type"], "#microsoft.graph.win32LobAppAssignmentSettings")
-        self.assertEqual(s["autoUpdateSettings"]["autoUpdateSupersededApps"], "enabled")
+        self.assertEqual(s["autoUpdateSettings"]["autoUpdateSupersededAppsState"], "enabled")
 
     def test_win32_auto_update_settings_disabled(self):
         s = GraphAPIClient.win32_auto_update_settings(False)
-        self.assertEqual(s["autoUpdateSettings"]["autoUpdateSupersededApps"], "notConfigured")
+        self.assertEqual(s["autoUpdateSettings"]["autoUpdateSupersededAppsState"], "notConfigured")
 
     def test_assign_includes_settings_when_provided(self):
         client = GraphAPIClient.__new__(GraphAPIClient)  # skip __init__/auth
@@ -288,9 +288,13 @@ class TestAssignDemoScope(unittest.TestCase):
         self.package = Mock()
         self.package.id = 100
 
-    def test_auto_update_settings_passed_for_all_scope(self):
+    def test_all_scope_assigns_required_without_autoupdate_settings(self):
+        # `autoUpdateSettings` is an AVAILABLE-intent-only assignment block;
+        # attaching it to a `required` assignment makes Graph 400. We deploy
+        # upgrades as `required`, where the upgrade is driven by the
+        # mobileAppSupersedence(update) relationship — so no settings are sent
+        # even when auto_update_superseded is requested.
         graph = Mock()
-        graph.win32_auto_update_settings.return_value = {"sentinel": True}
         with patch.object(self.agent, "_get_graph_client", return_value=graph), \
              patch.object(self.agent, "_create_deployment_record"):
             label = self.agent._assign_demo_scope(
@@ -300,7 +304,9 @@ class TestAssignDemoScope(unittest.TestCase):
             )
         graph.assign_app_to_group.assert_called_once()
         _, kwargs = graph.assign_app_to_group.call_args
-        self.assertEqual(kwargs["settings"], {"sentinel": True})
+        self.assertIsNone(kwargs["settings"])
+        self.assertEqual(kwargs["intent"], "required")
+        graph.win32_auto_update_settings.assert_not_called()
         self.assertIn("All existing users", label)
 
     def test_no_settings_for_test_scope(self):

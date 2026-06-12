@@ -13,6 +13,87 @@ from autopackager.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def format_graph_error(exc, *, action=None):
+    """Turn a Graph/requests/tenacity failure into one concise, human line.
+
+    Backend chokepoint for surfacing Graph errors to operators (the demo
+    console, job ``error_message``, logs) WITHOUT dumping the raw
+    ``{'error': {...}}`` dict. Handles the three shapes we actually raise:
+
+      * ``tenacity.RetryError`` — unwrapped to the underlying exception.
+      * ``requests.HTTPError`` — Graph error ``code``/``message`` pulled from
+        the JSON body (Intune sometimes nests a second JSON blob in
+        ``message`` whose real text is under ``Message`` — unwrapped too).
+      * anything else (network/auth/programming) — type + str, truncated.
+
+    Common failure classes get an actionable sentence:
+      * 403 / ``Authorization_RequestDenied`` / "insufficient privileges" →
+        names it as a missing service-principal role (e.g. creating a new ring
+        group needs ``Group.ReadWrite.All``).
+      * 400 ``ModelValidationFailure`` → "Intune rejected the request payload".
+      * 429 throttling, 404 not-found → labelled plainly.
+
+    Never raises — error formatting must not mask the original error.
+    """
+    err = exc
+    # Unwrap tenacity RetryError -> the last underlying exception.
+    last = getattr(err, "last_attempt", None)
+    if last is not None:
+        try:
+            err = last.exception() or err
+        except Exception:
+            pass
+
+    resp = getattr(err, "response", None)
+    status = getattr(resp, "status_code", None)
+    if not isinstance(status, int):
+        status = None
+    code = message = None
+    if resp is not None:
+        body = None
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict):
+            gerr = body.get("error")
+            if isinstance(gerr, dict):
+                code = gerr.get("code")
+                message = gerr.get("message")
+                # Intune nests a second JSON blob in `message`; its real text
+                # is under "Message" (see updateRelationships / assign 400s).
+                if isinstance(message, str) and message.lstrip().startswith("{"):
+                    try:
+                        message = json.loads(message).get("Message") or message
+                    except Exception:
+                        pass
+            elif isinstance(gerr, str):
+                message = gerr
+        if not isinstance(message, str) or not message:
+            # Fall back to the raw body text; str() guards Mock/None in tests.
+            message = str(getattr(resp, "text", "") or "")[:300] or None
+
+    prefix = f"{action}: " if action else ""
+    msg = (message or "").strip() if isinstance(message, str) else ""
+    low = msg.lower()
+
+    if status == 403 or (code and "Authorization" in code) or "privileg" in low:
+        hint = ("The AutoPackager service principal is missing a required Graph "
+                "role - grant it in Entra and retry "
+                "(creating a new deployment ring group needs Group.ReadWrite.All).")
+        return f"{prefix}Insufficient Graph permissions (403{f' {code}' if code else ''}). {hint}" + (f" Detail: {msg}" if msg else "")
+    if status == 400 and code == "ModelValidationFailure":
+        return f"{prefix}Intune rejected the request payload (400 ModelValidationFailure): {msg or 'invalid property in the request'}"
+    if status == 429:
+        return f"{prefix}Throttled by Graph (429) — backing off and retrying." + (f" Detail: {msg}" if msg else "")
+    if status == 404:
+        return f"{prefix}Graph resource not found (404): {msg or 'the target app or group no longer exists.'}"
+    if status is not None:
+        return f"{prefix}Graph API error (HTTP {status}{f' {code}' if code else ''}): {msg or 'see logs for the full response.'}"
+    return f"{prefix}{type(err).__name__}: {str(err)[:300]}"
+
+
 # 6 MB chunks for Azure block blob upload
 _AZURE_UPLOAD_CHUNK_SIZE = 6 * 1024 * 1024
 
@@ -431,7 +512,11 @@ class GraphAPIClient:
         return {
             "@odata.type": "#microsoft.graph.win32LobAppAssignmentSettings",
             "autoUpdateSettings": {
-                "autoUpdateSupersededApps": "enabled" if auto_update_superseded else "notConfigured",
+                # Graph property is `autoUpdateSupersededAppsState` (enum
+                # win32LobAutoUpdateSupersededAppsState). The shorter
+                # `autoUpdateSupersededApps` does not exist on the type and
+                # makes /assign 400 with ModelValidationFailure.
+                "autoUpdateSupersededAppsState": "enabled" if auto_update_superseded else "notConfigured",
             },
         }
 
