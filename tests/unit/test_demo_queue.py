@@ -480,5 +480,51 @@ class TestCliQueueUnmanaged(unittest.TestCase):
         self.assertEqual(crj.call_count, 1)  # only the unmanaged candidate
 
 
+# --- Upgrade endpoint: acquisition cascade before manual drop ---------------
+
+class TestUpgradeAcquisitionCascade(unittest.TestCase):
+    """The upgrade endpoint must ATTEMPT acquisition (catalog -> version-check ->
+    agentic) before falling back to a manual installer drop."""
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from autopackager.web import api
+        return TestClient(api.app)
+
+    def _post(self, **acq):
+        from unittest.mock import patch
+        client = self._client()
+        with patch("demo.router._inflight_upgrade_for_app", return_value=None), \
+             patch("demo.router._resolve_upgrade_source", return_value=acq) as res, \
+             patch("demo.router.intake.begin_upgrade_job", return_value=99), \
+             patch("demo.router._run_upgrade_pipeline"):
+            r = client.post("/api/demo/intune/upgrade",
+                            json={"app_id": "app-1", "scope": "test"})
+        return r.json(), res
+
+    def test_no_url_runs_cascade_then_proceeds_on_trusted_source(self):
+        data, res = self._post(download_url="https://vendor.example/app.msi",
+                               source="catalog", provenance=None, confidence=None)
+        res.assert_called_once()  # cascade WAS attempted
+        self.assertEqual(data.get("branch"), "upgrade")
+        self.assertEqual(data.get("job_id"), 99)
+        self.assertNotIn("awaiting_upload", data)
+
+    def test_agent_found_source_asks_for_confirm_not_auto_download(self):
+        data, _ = self._post(download_url="https://web.found/app.msi",
+                             source="agent-search", provenance="vendor site",
+                             confidence="medium")
+        self.assertTrue(data.get("awaiting_confirm"))
+        self.assertEqual(data.get("proposed_url"), "https://web.found/app.msi")
+        self.assertNotIn("job_id", data)  # not downloaded without confirm
+
+    def test_no_source_found_falls_back_to_manual_drop(self):
+        data, res = self._post(download_url=None, source=None,
+                               provenance=None, confidence=None)
+        res.assert_called_once()  # it TRIED first
+        self.assertTrue(data.get("awaiting_upload"))
+        self.assertIn("drop", (data.get("message") or "").lower())
+
+
 if __name__ == "__main__":
     unittest.main()

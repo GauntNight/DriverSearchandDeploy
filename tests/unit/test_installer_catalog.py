@@ -361,6 +361,168 @@ class TestRecordVerification:
         assert baseline.read_bytes() == original
 
 
+class TestValidationMarker:
+    """The durable, tenant-INDEPENDENT 'packaging work is DONE' marker.
+
+    Unlike verified_versions (overlay-only, tenant-bound to a live Intune app
+    GUID), the ``validation`` block is agnostic, promotes into the committed
+    baseline, and stays True after the Intune object is deleted and after a
+    data/ wipe.
+    """
+
+    def test_mark_validated_writes_block_to_overlay(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+
+        entry = ic.mark_validated(
+            "7-zip", "24.08.00.0",
+            evidence=["published", "install_confirmed"],
+            note="Ring-0 publish confirmed",
+        )
+
+        assert entry is not None and entry.is_validated
+        on_disk = yaml.safe_load(local.read_text(encoding="utf-8"))
+        block = next(e for e in on_disk["entries"] if e["id"] == "7-zip")["validation"]
+        assert block["status"] == "validated"
+        assert block["version"] == "24.08.00.0"
+        assert block["evidence"] == ["install_confirmed", "published"]  # sorted
+        assert block["date"]  # date present
+        assert block["note"] == "Ring-0 publish confirmed"
+
+    def test_mark_validated_creates_thin_overlay_copy_baseline_untouched(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+        original = baseline.read_bytes()
+
+        ic.mark_validated("7-zip", "24.08.00.0", evidence=["published"])
+
+        assert baseline.read_bytes() == original  # baseline pristine
+        assert local.exists()  # marker landed in the overlay
+
+    def test_mark_validated_unknown_entry_returns_none(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, {"version": 1, "entries": []})
+
+        assert ic.mark_validated("nope", "1.0") is None
+        assert not local.exists() or yaml.safe_load(local.read_text())["entries"] == []
+
+    def test_is_validated_false_without_block(self):
+        e = ic.CatalogEntry(id="x", type="msi", install_command_template="x")
+        assert e.is_validated is False
+        e.validation = {"status": "validated"}
+        assert e.is_validated is True
+        e.validation = {"status": "something-else"}
+        assert e.is_validated is False
+
+    def test_apply_validation_unions_evidence_and_bumps_version(self):
+        e = ic.CatalogEntry(id="x", type="msi", install_command_template="x")
+        ic._apply_validation(e, "1.0.0", evidence=["published"], note="first")
+        ic._apply_validation(e, "1.1.0", evidence=["install_confirmed"], note="second")
+        assert e.validation["version"] == "1.1.0"  # latest proven wins
+        assert e.validation["evidence"] == ["install_confirmed", "published"]  # unioned
+        assert e.validation["note"] == "first | second"
+
+    def test_apply_validation_dedups_notes_and_drops_unknown_evidence(self):
+        e = ic.CatalogEntry(id="x", type="msi", install_command_template="x")
+        ic._apply_validation(e, "1.0.0", evidence=["published", "bogus"], note="run")
+        ic._apply_validation(e, "1.0.0", evidence=["bogus"], note="run")  # repeat
+        assert e.validation["evidence"] == ["published"]  # 'bogus' dropped
+        assert e.validation["note"] == "run"  # not duplicated
+
+    def test_record_verification_auto_marks_validation(self, temp_catalog_paths):
+        """A real device install (record_verification) should durably mark the
+        recipe validated -- the auto-mark-on-verify wiring."""
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+
+        ic.record_verification("7-zip", "24.08.00.0", "app-1")
+
+        entry = ic.load_catalog().by_id("7-zip")
+        assert entry.is_validated
+        assert entry.validation["version"] == "24.08.00.0"
+        assert set(entry.validation["evidence"]) == {"published", "install_confirmed"}
+
+    def test_validation_promotes_to_baseline_but_tenant_fields_stripped(self, temp_catalog_paths):
+        """sanitize_entry_for_baseline keeps the agnostic validation block but
+        drops the tenant-bound verified_versions and per-tenant version."""
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+        ic.record_verification("7-zip", "24.08.00.0", "app-1")  # sets both vv + validation
+
+        entry = ic.load_catalog().by_id("7-zip")
+        base = ic.sanitize_entry_for_baseline(entry)
+        assert "validation" in base  # the DONE bit travels to git
+        assert "verified_versions" not in base  # tenant-bound, stripped
+        assert "version" not in base  # per-tenant, stripped
+        assert "validation" not in ic.OVERLAY_ONLY_FIELDS
+
+    def test_validation_survives_verified_versions_deletion(self, temp_catalog_paths):
+        """The whole point: deleting the Intune object (and its verified_versions
+        record) leaves the validated marker intact."""
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+        ic.record_verification("7-zip", "24.08.00.0", "app-1")
+
+        # Simulate tenant cleanup wiping the overlay's verified_versions rows.
+        data = yaml.safe_load(local.read_text(encoding="utf-8"))
+        for e in data["entries"]:
+            e.pop("verified_versions", None)
+        _write_yaml(local, data)
+
+        entry = ic.load_catalog().by_id("7-zip")
+        assert not entry.verified_versions  # tenant record gone
+        assert entry.is_validated  # but the recipe is still proven
+
+    def test_validation_statuses_controlled_vocabulary(self):
+        assert ic.VALIDATION_STATUSES == {"validated"}
+        assert {"published", "install_confirmed", "detection_fired", "cleaned_up"} <= ic.VALIDATION_EVIDENCE
+
+
+class TestPruneStaleVerifiedVersions:
+    """Reconcile overlay verified_versions against the live tenant: rows pointing
+    at deleted apps must be dropped so they can't baseline a version check on a
+    version no longer deployed (the '26.00 -> up to date (26.01)' bug)."""
+
+    def _seed(self, local):
+        _write_yaml(local, {"version": 1, "entries": [{
+            "id": "7-zip", "type": "msi",
+            "install_command_template": "msiexec /i {installer_filename} /qn",
+            "verified_versions": [
+                {"product_version": "26.00.00.0", "verified_intune_app_id": "LIVE-app", "status": "pending"},
+                {"product_version": "26.01.00.0", "verified_intune_app_id": "DELETED-app", "status": "pending"},
+                {"product_version": "27.00.00.0", "verified_intune_app_id": "", "status": "pending"},
+            ],
+        }]})
+
+    def test_drops_rows_for_deleted_apps_keeps_live_and_pending(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        self._seed(local)
+
+        pruned = ic.prune_stale_verified_versions({"LIVE-app"})
+
+        assert pruned == 1
+        e = ic.load_catalog().by_id("7-zip")
+        ids = {(vv.get("product_version"), vv.get("verified_intune_app_id")) for vv in e.verified_versions}
+        assert ("26.00.00.0", "LIVE-app") in ids       # live -> kept
+        assert ("27.00.00.0", "") in ids               # no id yet (in-flight) -> kept
+        assert ("26.01.00.0", "DELETED-app") not in ids  # deleted -> pruned
+
+    def test_none_live_ids_is_noop(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        self._seed(local)
+        assert ic.prune_stale_verified_versions(None) == 0
+        e = ic.load_catalog().by_id("7-zip")
+        assert len(e.verified_versions) == 3  # untouched
+
+    def test_does_not_touch_baseline(self, temp_catalog_paths):
+        baseline, local = temp_catalog_paths
+        _write_yaml(baseline, SEED_BASELINE)
+        self._seed(local)
+        original = baseline.read_bytes()
+        ic.prune_stale_verified_versions({"LIVE-app"})
+        assert baseline.read_bytes() == original
+
+
 class TestLoadMergeOrder:
     def test_local_entry_overrides_baseline_with_same_id(self, temp_catalog_paths):
         baseline, local = temp_catalog_paths

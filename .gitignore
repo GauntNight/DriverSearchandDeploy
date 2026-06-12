@@ -32,6 +32,10 @@ wheels/
 # Installer catalog local overlay (operator-private, never committed)
 data/installer_catalog.local.yaml
 
+# Packaging-candidate triage derived from real enterprise software inventory
+# (operator-private; contains owner inventory data -- never commit/publish).
+data/packaging_candidates.*
+
 # Third-party installer fixtures used by the verify_*.py harnesses.
 # Downloaded on demand by the scripts; not for distribution via this repo.
 # .zip covers wrapped_zip pilots (Foxit-style enterprise bundles).

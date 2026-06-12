@@ -73,6 +73,17 @@ def get_apps_view(include_counts: bool = False) -> Dict[str, Any]:
         logger.warning("Intune live view failed; using fixture", error=str(exc))
         view = _fixture_view()
         view["error"] = str(exc)
+    # Reconcile the catalog overlay against the LIVE tenant (live mode only — never
+    # prune against fixtures, which would delete real history). Removes stale
+    # verified_versions rows pointing at deleted apps so version-state badges and
+    # the version-check baseline reflect what's actually on the estate.
+    if view.get("mode") == "live":
+        try:
+            from autopackager.utils import installer_catalog
+            live_ids = {a.get("id") for a in (view.get("apps") or []) if a.get("id")}
+            installer_catalog.prune_stale_verified_versions(live_ids)
+        except Exception as exc:  # noqa: BLE001 — reconcile is best-effort
+            logger.warning("verified_versions reconcile failed", error=str(exc))
     try:
         _enrich_apps(view.get("apps") or [])
     except Exception as exc:  # noqa: BLE001 — enrichment is best-effort

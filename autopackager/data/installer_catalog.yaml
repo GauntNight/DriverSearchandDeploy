@@ -32,6 +32,23 @@
 # To promote a useful local entry to this baseline, copy the agnostic fields
 # only (drop usage counts and verified_versions) and open a PR.
 #
+# `validation` -- the durable "packaging work is DONE" marker, and the ONE
+# usage-related field that IS agnostic and DOES belong in the baseline.
+# Distinct from `verified_versions`: that tracks tenant-bound publish history
+# (a live Intune app GUID that DELETES on cleanup); `validation` asserts the
+# environment-agnostic FACT that this recipe was proven end-to-end at least
+# once (built -> published -> install confirmed). It survives both deletion of
+# the Intune object and a wipe of data/, precisely because it promotes here.
+# Machine-written to the overlay by the verify hook; copy it into the baseline
+# (alongside the other agnostic fields) when you promote an entry. Shape:
+#   validation:
+#     status:   validated            # only value today
+#     version:  "1.2.3"              # the version proven (nested; the baseline
+#                                    #   "no top-level version" rule is unaffected)
+#     date:     "2026-06-10"
+#     evidence: [published, install_confirmed, detection_fired, cleaned_up]
+#     note:     "free-text audit trail"
+#
 # Intune app-attribute override fields (all optional; each falls back to a
 # sensible MSI-derived default when unset):
 #   information_url    -- "Help and support" URL shown in the Intune portal.
@@ -47,6 +64,14 @@
 #                         Use this when the MSI ships an icon as a PE
 #                         resource (the pure-Python extractor can't reach
 #                         those) and you want a real icon in the portal.
+#   install_context    -- Intune Win32 installExperience.runAsAccount:
+#                         "system" (default, per-machine) or "user"
+#                         (per-user). Set "user" for installers that write
+#                         to %LOCALAPPDATA% + an HKCU Uninstall key (Squirrel
+#                         apps like Postman/Insomnia; Inno installers that
+#                         ignore /ALLUSERS like Greenshot) -- a system-context
+#                         publish of those only detects/uninstalls for the
+#                         profile that ran the install.
 #
 # distribution         -- REQUIRED for new entries. One of:
 #                          standard, enterprise (see DISTRIBUTION_KINDS
@@ -532,6 +557,46 @@ entries:
       mode: generic
     notes: "Clean per-machine MSI. ProductName includes the version (e.g. 'Go Programming Language amd64 go1.26.4'); match on the stable prefix. UpgradeCode is stable across versions for supersedence."
 
+  - id: aws-cli-v2
+    type: msi
+    installer_family: msi
+    distribution: standard
+    upgrade_code: "{E1C1971C-384E-4D6D-8D02-F1AC48281CF8}"
+    product_code: "{FF5D6931-BF28-403A-96C6-A313210E1CF8}"
+    product_name_pattern: "AWS Command Line Interface"
+    publisher: "Amazon Web Services"
+    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    uninstall_command_template: "msiexec /x {FF5D6931-BF28-403A-96C6-A313210E1CF8} /qn /norestart"
+    canonical_download_url: "https://awscli.amazonaws.com/AWSCLIV2.msi"
+    information_url: "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+    description: "AWS Command Line Interface v2 (per-machine MSI). Silent via msiexec /qn; UpgradeCode is stable across versions for supersedence."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: aws-cli
+      mode: generic
+    notes: "AWS publishes a version-agnostic 'latest' MSI at the canonical_download_url (awscli.amazonaws.com/AWSCLIV2.msi); the pipeline reads the real ProductCode from the MSI at packaging time. ProductCode changes per version; UpgradeCode {E1C1971C-...} is stable. Verified live: published + Ring-0 assigned + ProductCode detection, local install-validation install->detect->uninstall all passed on ADMIN_BUILD_1 (v2.35.1.0, 2026-06-10)."
+
+  - id: microsoft-edge
+    type: msi
+    installer_family: msi
+    distribution: enterprise
+    upgrade_code: "{883C2625-37F7-357F-A0F4-DFAF391B2B9C}"
+    product_code: "{FF9F162E-002F-337A-859C-0B4DF4B50FCD}"
+    product_name_pattern: "Microsoft Edge"
+    publisher: "Microsoft Corporation"
+    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
+    uninstall_command_template: "msiexec /x {FF9F162E-002F-337A-859C-0B4DF4B50FCD} /qn /norestart"
+    canonical_download_url: "https://go.microsoft.com/fwlink/?LinkID=2093437"
+    information_url: "https://www.microsoft.com/en-us/edge/business/download"
+    description: "Microsoft Edge for Business (Stable channel, per-machine x64 MSI). Silent via msiexec /qn; UpgradeCode is stable across versions for supersedence."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    supersedence:
+      line: microsoft-edge
+      mode: generic
+    notes: "canonical_download_url is the Microsoft fwlink (LinkID=2093437) that 302-redirects to the latest Edge Stable x64 enterprise MSI; the pipeline reads the real ProductCode from the MSI at packaging time (ProductCode is per-version; UpgradeCode {883C2625-...} is stable). CAUTION/NOT-YET-LIVE-VALIDATED (2026-06-10): Edge is the inbox system browser on Win10/11, so the local install->verify->UNINSTALL validation gate would transiently remove the system browser; deferred pending operator OK. Codes + URL captured from MSI v149.0.4022.62."
+
   - id: cmake
     type: msi
     installer_family: msi
@@ -577,6 +642,235 @@ entries:
   # self-corrects the registry_version rule + QuietUninstallString back
   # to the overlay on first publish. Promote the corrected agnostic
   # rule into this baseline afterward.
+  - id: winscp
+    type: exe
+    installer_family: inno_setup
+    distribution: standard
+    pe_company_name: "Martin Prikryl"
+    pe_product_name: "WinSCP"
+    install_command_template: "{installer_filename} /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /ALLUSERS"
+    uninstall_command_template: '"C:\Program Files (x86)\WinSCP\unins000.exe" /SILENT'
+    detection_rules:
+    - kind: registry_version
+      key: HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\winscp3_is1
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: true
+    canonical_download_url: "https://winscp.net/download/WinSCP-6.5.6-Setup.exe"
+    information_url: "https://winscp.net/eng/download.php"
+    description: "WinSCP -- free SFTP/FTP/WebDAV/SCP client for Windows (Inno Setup, per-machine via /ALLUSERS)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: winscp
+      mode: generic
+    notes: "Inno Setup, 32-bit installer (Uninstall key in WOW6432Node, AppId winscp3_is1). /ALLUSERS forces per-machine so Intune (SYSTEM context) can detect it. canonical_download_url is version-specific (WinSCP embeds the version in the filename; bump on new releases). Verified live on ADMIN_BUILD_1 (v6.5.6, 2026-06-10): detection rule (winscp3_is1) fired uncorrected; uninstall corrected by validator to unins000.exe /SILENT; published + Ring-0 assigned."
+
+  - id: greenshot
+    type: exe
+    installer_family: inno_setup
+    distribution: standard
+    pe_company_name: "Greenshot"
+    pe_product_name: "Greenshot"
+    install_command_template: "{installer_filename} /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-"
+    uninstall_command_template: '"%LOCALAPPDATA%\Programs\Greenshot\unins000.exe" /SILENT'
+    install_context: user
+    detection_rules:
+    - kind: registry_version
+      key: HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Greenshot_is1
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://github.com/greenshot/greenshot/releases/download/v1.3.315/Greenshot-INSTALLER-1.3.315-RELEASE.exe"
+    information_url: "https://getgreenshot.org/downloads/"
+    description: "Greenshot -- free open-source screenshot tool for Windows (Inno Setup). PER-USER installer."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    supersedence:
+      line: greenshot
+      mode: generic
+    notes: "PER-USER installer (LANDMINE): Greenshot 1.3.x Inno IGNORES /ALLUSERS and always installs to %LOCALAPPDATA%\\Programs\\Greenshot with an HKCU Uninstall key (Greenshot_is1) -- verified live 2026-06-10. install_context=user makes the deployment agent set Win32 installExperience.runAsAccount=user, so Intune installs in the logged-on user's context and evaluates the HKCU detection per-user. Verified live on ADMIN_BUILD_1 (v1.3.315, 2026-06-10): republished with runAsAccount=user, published + Ring-0 assigned. canonical_download_url is the official GitHub STABLE release (1.3.315; 1.4.x are UNSIGNED nightlies -- avoid). NOTE: the local validator currently re-discovers the uninstall as an absolute user-profile path; for true multi-user the validator should generalize per-user paths to %LOCALAPPDATA% (baseline carries the generalized form)."
+
+  - id: audacity
+    type: exe
+    installer_family: inno_setup
+    distribution: standard
+    pe_company_name: "Audacity Team"
+    pe_product_name: "Audacity"
+    install_command_template: "{installer_filename} /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-"
+    uninstall_command_template: '"C:\Program Files\Audacity\unins000.exe" /SILENT'
+    detection_rules:
+    - kind: registry_version
+      key: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Audacity_is1
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://github.com/audacity/audacity/releases/download/Audacity-3.7.7/audacity-win-3.7.7-64bit.exe"
+    information_url: "https://www.audacityteam.org/download/windows/"
+    description: "Audacity -- free open-source audio editor/recorder (Inno Setup, per-machine, 64-bit)."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    supersedence:
+      line: audacity
+      mode: generic
+    notes: "Inno Setup, 64-bit (HKLM 64-bit Uninstall key Audacity_is1; installs per-machine to Program Files\\Audacity when run elevated). canonical_download_url is the official GitHub release (tag Audacity-<ver>, asset audacity-win-<ver>-64bit.exe); bump on new releases. Verified live on ADMIN_BUILD_1 (v3.7.7, 2026-06-10): detection (Audacity_is1) fired uncorrected per-machine; uninstall corrected to unins000.exe /SILENT; published + Ring-0 assigned."
+
+  - id: aws-session-manager-plugin
+    type: exe
+    installer_family: wix_burn
+    distribution: standard
+    pe_company_name: "Amazon Web Services"
+    pe_product_name: "Session Manager Plugin"
+    install_command_template: "{installer_filename} /quiet /norestart"
+    uninstall_command_template: "MsiExec.exe /X{CC3ABAB2-ECDC-4A6F-B4CE-D9CA3A87AE47} /qn /norestart"
+    detection_rules:
+    - kind: file_version
+      path: 'C:\Program Files\Amazon\SessionManagerPlugin\bin'
+      file: session-manager-plugin.exe
+      operator: greaterThanOrEqual
+      value: "1.0.0.0"
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/windows/SessionManagerPluginSetup.exe"
+    information_url: "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
+    description: "AWS Session Manager Plugin -- companion to the AWS CLI for Systems Manager Session Manager (WiX Burn bundle; installs the session-manager-plugin.exe CLI per-machine)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: aws-session-manager-plugin
+      mode: generic
+    notes: "WiX Burn bundle. canonical_download_url is AWS's stable 'latest' S3 path. Detection is FILE-version on the installed binary (robust + version-agnostic) -- the inner-MSI ProductCode {CC3ABAB2-...} changes per version. Verified live on ADMIN_BUILD_1 (v1.2.814, 2026-06-10): the Burn bundle relaunches elevated as a DETACHED child and returns before the install lands, so it relies on the validator's settle-wait (which polls the file-version detection until session-manager-plugin.exe appears); detection fired, MsiExec /X{CC3ABAB2-...} cleanly uninstalled, published + Ring-0 assigned (system context, per-machine). The uninstall ProductCode is version-specific."
+
+  - id: dbeaver-ce
+    type: exe
+    installer_family: nsis
+    distribution: standard
+    pe_company_name: "DBeaver Corp"
+    pe_product_name: "DBeaver Community"
+    install_command_template: "{installer_filename} /S /allusers"
+    uninstall_command_template: '"C:\Program Files\DBeaver\Uninstaller.exe" /S /allusers'
+    detection_rules:
+    - kind: registry_version
+      key: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\DBeaver
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://dbeaver.io/files/dbeaver-ce-latest-x86_64-setup.exe"
+    information_url: "https://dbeaver.io/download/"
+    description: "DBeaver Community Edition -- free universal database tool / SQL client (NSIS, per-machine; bundles OpenJDK 21)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: dbeaver-ce
+      mode: generic
+    notes: "NSIS, 64-bit (bundles its own JRE since v23 -- no external Java dependency). canonical_download_url is DBeaver's stable 'latest' link. SILENT SWITCH GOTCHA: DBeaver's NSIS installer requires '/S /allusers' (per-machine) -- bare /S is insufficient and /VERYSILENT pops the UI (don't use). Uninstaller is 'Uninstaller.exe' (capital U). Verified live on ADMIN_BUILD_1 (v26.1.0, 2026-06-10): /S /allusers installs silently per-machine, detection (HKLM\\...\\Uninstall\\DBeaver) fired uncorrected, published + Ring-0 assigned. Per DBeaver Windows-Silent-Install wiki."
+
+  - id: power-bi-desktop
+    type: exe
+    installer_family: custom
+    distribution: standard
+    pe_company_name: "Microsoft Corporation"
+    pe_product_name: "Microsoft PowerBI Desktop"
+    install_command_template: "{installer_filename} -quiet -norestart ACCEPT_EULA=1"
+    uninstall_command_template: 'MsiExec.exe /X{c7945219-9251-46e5-8524-0e0d75ae92dc} /qn /norestart'
+    detection_rules:
+    - kind: file_version
+      path: 'C:\Program Files\Microsoft Power BI Desktop\bin'
+      file: PBIDesktop.exe
+      operator: greaterThanOrEqual
+      value: "2.0.0.0"
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://download.microsoft.com/download/8/8/0/880BCA75-79DD-466A-927D-1ABF1F5454B0/PBIDesktopSetup_x64.exe"
+    information_url: "https://www.microsoft.com/en-us/download/details.aspx?id=58494"
+    description: "Microsoft Power BI Desktop (x64). Self-contained installer; silent via -quiet -norestart ACCEPT_EULA=1; installs per-machine to Program Files\\Microsoft Power BI Desktop."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    supersedence:
+      line: power-bi-desktop
+      mode: generic
+    notes: "Large (~640MB) self-contained Microsoft installer (MSI-based bootstrapper). Silent: -quiet -norestart ACCEPT_EULA=1 (documented). Detection is FILE-version on the installed PBIDesktop.exe (robust; inner-MSI ProductCode changes per version). Verified live on ADMIN_BUILD_1 (v2.154.1260.0, 2026-06-10): installs silently (no UI), file detection fired, validator discovered the inner-MSI ProductCode {c7945219-...} and the PUBLISHED app's uninstall uses it; published + Ring-0 assigned. The uninstall GUID is VERSION-SPECIFIC -- the validator re-discovers it per version, so this baseline value is just the last-known; rely on the validator's correction. canonical_download_url path GUID (880BCA75-...) is stable; the dated filename (PBIDesktopSetup-YYYY-MM_x64.exe) changes monthly -- winget id Microsoft.PowerBI resolves the current direct link; download-center page id=58494 is the always-latest entry point."
+
+  - id: postman
+    type: exe
+    installer_family: custom
+    distribution: standard
+    install_context: user
+    pe_company_name: "Postman"
+    pe_product_name: "Postman"
+    install_command_template: "{installer_filename}"
+    uninstall_command_template: '"%LOCALAPPDATA%\Postman\Update.exe" --uninstall -s'
+    detection_rules:
+    - kind: registry_version
+      key: HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Postman
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://dl.pstmn.io/download/latest/win64"
+    information_url: "https://www.postman.com/downloads/"
+    description: "Postman -- API development and testing client. PER-USER Squirrel installer (installs to %LOCALAPPDATA%\\Postman); deploy via Intune user-context (install_context=user)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: postman
+      mode: generic
+    notes: "PER-USER Squirrel installer (install_context=user). Installs silently to %LOCALAPPDATA%\\Postman on run (no switches) and LAUNCHES the app; HKCU Uninstall key 'Postman'. Squirrel uninstall is Update.exe --uninstall -s. canonical_download_url is Postman's stable 'latest win64' link. Verified live on ADMIN_BUILD_1 (v12.14.3, 2026-06-10): the Squirrel stub detaches its install, so the validator's settle-wait polled ~12s until the HKCU detection fired (uncorrected), then uninstalled; published with runAsAccount=user + Ring-0 assigned. Requires both the user-context publish AND the validator settle-wait (detached install)."
+
+  - id: insomnia
+    type: exe
+    installer_family: custom
+    distribution: standard
+    install_context: user
+    pe_company_name: "Kong"
+    pe_product_name: "Insomnia"
+    install_command_template: "{installer_filename}"
+    uninstall_command_template: '"%LOCALAPPDATA%\insomnia\Update.exe" --uninstall -s'
+    detection_rules:
+    - kind: registry_version
+      key: HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Insomnia
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://updates.insomnia.rest/downloads/release/latest?app=com.insomnia.app&channel=stable&platform=win"
+    information_url: "https://insomnia.rest/download"
+    description: "Insomnia -- open-source API client (Kong). PER-USER Squirrel installer; deploy via Intune user-context (install_context=user)."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: insomnia
+      mode: generic
+    notes: "PER-USER Squirrel installer (install_context=user); same class as Postman -- detached install, needs the validator settle-wait. canonical_download_url is the official 'latest stable win' redirector (resolves to the GitHub release; direct asset is github.com/Kong/insomnia/releases/download/core%40<ver>/Insomnia.Core-<ver>.exe). Verified live on ADMIN_BUILD_1 (v12.6.0, 2026-06-10): settle-wait caught the detached install, HKCU detection (Insomnia) fired uncorrected, installs to %LOCALAPPDATA%\\insomnia; published with runAsAccount=user + Ring-0 assigned. (~580MB installer.)"
+
+  - id: brave-browser
+    type: exe
+    installer_family: custom
+    distribution: standard
+    install_context: user
+    pe_company_name: "BraveSoftware Inc."
+    pe_product_name: "BraveSoftware Update"
+    install_command_template: "{installer_filename}"
+    uninstall_command_template: '"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\Installer\setup.exe" --uninstall --force-uninstall'
+    detection_rules:
+    - kind: registry_version
+      key: HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\BraveSoftware Brave-Browser
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://github.com/brave/brave-browser/releases/latest/download/BraveBrowserStandaloneSilentSetup.exe"
+    information_url: "https://brave.com/download/"
+    description: "Brave browser (per-user silent standalone installer). PER-USER (Omaha updater installs to %LOCALAPPDATA%\\BraveSoftware); deploy via Intune user-context (install_context=user)."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    supersedence:
+      line: brave-browser
+      mode: generic
+    notes: "PER-USER + DETACHED installer (needs install_context=user AND the validator settle-wait). BraveBrowserStandaloneSilentSetup.exe is the Omaha 'silent' variant -- PE identifies as 'BraveSoftware Update' (BraveUpdateSetup.exe stub, shared across channels); it installs Brave silently to %LOCALAPPDATA%\\BraveSoftware\\Brave-Browser and exits while the update engine finishes (not in the reaper denylist, so it lands). canonical_download_url is GitHub's /releases/latest/download/ (stable); winget id Brave.Brave resolves the current versioned link. HKCU Uninstall key + setup.exe --uninstall are best-guess; validator confirms/corrects on first publish. No clean SYSTEM-wide silent installer exists (brave-browser#33084). Verified live on ADMIN_BUILD_1 (Chromium 149 / v1.91.171, 2026-06-10): settle-wait caught the detached Omaha install, HKCU detection ('BraveSoftware Brave-Browser') fired uncorrected, published with runAsAccount=user + Ring-0 assigned."
+
   - id: r-for-windows
     type: exe
     installer_family: inno_setup
@@ -698,3 +992,140 @@ entries:
     supersedence:
       mode: none
     notes: "Per-user installer, disambiguated from the system build ONLY by filename (identical PE metadata) via filename_pattern 'vscodeusersetup'. Carried to detect the per-user mistake and redirect to code-system. Intentionally NO detection_rules -- it must never publish; the substitution intercepts first. supersedence.mode=none."
+
+  # --- Batch: catalog-expansion apps validated end-to-end 2026-06-10 ---
+  # Promoted from overlay; carry the durable validation marker. Env-specific
+  # fields (use_count, verified_versions, first_seen/last_used) stay local.
+  - id: vlc-media-player
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {5DFCA3BF-178E-42E2-9CEF-37A44B9FF90A} /qn /norestart
+    distribution: standard
+    upgrade_code: '{D2E0205B-0D3A-46E2-ADF7-0504FF48CF04}'
+    product_code: '{5DFCA3BF-178E-42E2-9CEF-37A44B9FF90A}'
+    product_name_pattern: VLC media player
+    publisher: VideoLAN
+    supersedence:
+      line: vlc-media-player
+      mode: generic
+    validation:
+      status: validated
+      version: 3.0.23.0
+      date: '2026-06-10'
+      evidence:
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion); app still resident in tenant.
+    notes: Auto-added by create-software-job (task c8cc9959-0e48-4287-93a8-d8c785e25d87)
+  - id: node-js
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {8E3EF5A2-585E-453B-B16C-B46E05A62DAC} /qn /norestart
+    distribution: standard
+    upgrade_code: '{47C07A3A-42EF-4213-A85D-8F5A59077C28}'
+    product_code: '{8E3EF5A2-585E-453B-B16C-B46E05A62DAC}'
+    product_name_pattern: Node.js
+    publisher: Node.js Foundation
+    supersedence:
+      line: node-js
+      mode: generic
+    validation:
+      status: validated
+      version: 24.16.0
+      date: '2026-06-10'
+      evidence:
+      - cleaned_up
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion), then removed during cleanup. DB wipe (crash) erased the verified_versions row; recipe is proven.
+    notes: Auto-added by create-software-job (task fde2ddbd-4e68-4969-b427-3f38b097a599)
+  - id: putty-release-0-83--64-bit
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {ED41CD4E-33BB-400C-AB20-B09388DC83EF} /qn /norestart
+    distribution: standard
+    upgrade_code: '{C9EAA861-2B72-4FAF-9FEE-EEB1AD5FD15E}'
+    product_code: '{ED41CD4E-33BB-400C-AB20-B09388DC83EF}'
+    product_name_pattern: PuTTY release 0.83 (64-bit)
+    publisher: Simon Tatham
+    canonical_download_url: "https://the.earth.li/~sgtatham/putty/latest/w64/putty-64bit-installer.msi"
+    supersedence:
+      line: putty-release-0-83--64-bit
+      mode: generic
+    validation:
+      status: validated
+      version: 0.84.0.0
+      date: '2026-06-10'
+      evidence:
+      - cleaned_up
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion), then removed during cleanup. DB wipe (crash) erased the verified_versions row; recipe is proven.
+    notes: Auto-added by create-software-job (task 546962ee-1768-44cf-9cc0-33611ebec9b3)
+  - id: keepass-2-61-1
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {33F0E718-1110-4F95-A59B-230A62C02DE5} /qn /norestart
+    distribution: standard
+    upgrade_code: '{F2F19898-4F86-4940-9BFA-426574CE03E1}'
+    product_code: '{33F0E718-1110-4F95-A59B-230A62C02DE5}'
+    product_name_pattern: KeePass 2.61.1
+    publisher: Dominik Reichl
+    supersedence:
+      line: keepass-2-61-1
+      mode: generic
+    validation:
+      status: validated
+      version: 2.61.1
+      date: '2026-06-10'
+      evidence:
+      - cleaned_up
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion), then removed during cleanup. DB wipe (crash) erased the verified_versions row; recipe is proven.
+    notes: Auto-added by create-software-job (task 66f3523b-9610-4074-bf48-221e1dc9f5e0)
+  - id: powershell-7-x64
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {7DB6AE45-EA0D-4E0A-A65A-2ECD74328B1E} /qn /norestart
+    distribution: standard
+    upgrade_code: '{31AB5147-9A97-4452-8443-D9709F0516E1}'
+    product_code: '{7DB6AE45-EA0D-4E0A-A65A-2ECD74328B1E}'
+    product_name_pattern: PowerShell 7-x64
+    publisher: Microsoft Corporation
+    supersedence:
+      line: powershell-7-x64
+      mode: generic
+    validation:
+      status: validated
+      version: 7.6.2.0
+      date: '2026-06-10'
+      evidence:
+      - cleaned_up
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion), then removed during cleanup. DB wipe (crash) erased the verified_versions row; recipe is proven.
+    notes: Auto-added by create-software-job (task 32ee3a86-16e5-4407-8b5c-7030b950b2f9)
+  - id: zoom-workplace--64-bit
+    type: msi
+    install_command_template: msiexec /i {installer_filename} /qn /norestart
+    uninstall_command_template: msiexec /x {3DC6B3F0-0AD7-4B51-AFA2-59605590EAC5} /qn /norestart
+    distribution: standard
+    upgrade_code: '{C819B794-A45C-4F27-9860-0C86492A52CC}'
+    product_code: '{3DC6B3F0-0AD7-4B51-AFA2-59605590EAC5}'
+    product_name_pattern: Zoom Workplace (64-bit)
+    publisher: Zoom
+    canonical_download_url: "https://zoom.us/client/latest/ZoomInstallerFull.msi?archType=x64"
+    supersedence:
+      line: zoom-workplace--64-bit
+      mode: generic
+    validation:
+      status: validated
+      version: 7.0.38856
+      date: '2026-06-10'
+      evidence:
+      - cleaned_up
+      - install_confirmed
+      - published
+      note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion), then removed during cleanup. DB wipe (crash) erased the verified_versions row; recipe is proven.
+    notes: Auto-added by create-software-job (task 5fd71017-ef47-47e5-8b20-5a7d034dac98)

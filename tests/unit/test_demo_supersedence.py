@@ -74,6 +74,44 @@ class TestCheckVersion(unittest.TestCase):
         # Unparseable current → fall back to the model's claim.
         self.assertTrue(claude_bridge._decide_is_newer("24.08", None, True))
 
+    def test_bump_version_synthesizes_believable_next(self):
+        from demo import claude_bridge as cb
+
+        # Trailing .0 components are stripped so the bump lands meaningfully.
+        self.assertEqual(cb._bump_version("3.0.23.0"), "3.0.24")
+        self.assertEqual(cb._bump_version("2.61.1"), "2.61.2")
+        self.assertEqual(cb._bump_version("1"), "2")
+        # No parseable leading number → None (caller treats as inconclusive).
+        self.assertIsNone(cb._bump_version(None))
+        self.assertIsNone(cb._bump_version("abc"))
+
+    def test_replay_generic_fallback_synthesizes_not_placeholder(self):
+        """The generic fixture (no app-specific one) must NOT surface a fixed
+        placeholder like the old 9.9.9 — it derives a believable next version
+        from the deployed build."""
+        from demo import claude_bridge
+
+        with patch("demo.claude_bridge.time.sleep"):
+            out = claude_bridge.check_version(
+                "VLC media player", "3.0.23.0", None, mode="replay",
+                slug="vlc-media-player",  # no specific fixture -> generic
+            )
+        self.assertEqual(out["latest_version"], "3.0.24")
+        self.assertTrue(out["is_newer"])
+        self.assertNotEqual(out["latest_version"], "9.9.9")
+
+    def test_replay_generic_fallback_no_version_is_inconclusive(self):
+        """With no deployed version to bump, the generic fallback must not
+        invent a number — it reports not-newer rather than a placeholder."""
+        from demo import claude_bridge
+
+        with patch("demo.claude_bridge.time.sleep"):
+            out = claude_bridge.check_version(
+                "Mystery App", None, None, mode="replay", slug="mystery-app",
+            )
+        self.assertFalse(out["is_newer"])
+        self.assertIsNone(out["latest_version"])
+
 
 # --- Catalog ↔ Intune row enrichment ---------------------------------------
 

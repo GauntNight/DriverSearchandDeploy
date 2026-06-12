@@ -182,3 +182,35 @@ def test_validate_recovers_with_alternate_switch(monkeypatch, tmp_path):
     # The working alternate (second candidate = "App.exe /S") is recorded.
     assert res["corrected_install_command"] == "App.exe /S"
     assert res["install_attempts"] == 2
+
+
+def test_verify_with_settle_polls_until_detached_install_lands(monkeypatch):
+    """A detached installer (Squirrel/Burn) isn't detected on the first check but
+    lands during the settle window; _verify_with_settle must poll, not give up."""
+    v = LocalInstallValidator()
+    v.settle_poll_seconds = 0  # don't actually sleep in the test
+    monkeypatch.setattr(liv.time, "sleep", lambda s: None)
+    monkeypatch.setattr(LocalInstallValidator, "_snapshot_uninstall_keys", lambda self: {})
+    monkeypatch.setattr(LocalInstallValidator, "_discover_new_entry", lambda self, b, a, p: None)
+    seq = iter([(False, ""), (False, ""), (True, "detected")])
+    monkeypatch.setattr(LocalInstallValidator, "_eval_rules", lambda self, rules: next(seq))
+    fired, detail, discovered = v._verify_with_settle([{"kind": "registry_version"}], {}, Mock(), settle_seconds=30)
+    assert fired is True
+    assert detail == "detected"
+
+
+def test_verify_with_settle_returns_immediately_on_first_match(monkeypatch):
+    """A synchronous install fires on the first check — no settle delay incurred."""
+    v = LocalInstallValidator()
+    monkeypatch.setattr(LocalInstallValidator, "_snapshot_uninstall_keys", lambda self: {})
+    monkeypatch.setattr(LocalInstallValidator, "_discover_new_entry", lambda self, b, a, p: None)
+    calls = {"n": 0}
+
+    def eval_fn(self, rules):
+        calls["n"] += 1
+        return (True, "ok")
+
+    monkeypatch.setattr(LocalInstallValidator, "_eval_rules", eval_fn)
+    fired, _, _ = v._verify_with_settle([{"kind": "x"}], {}, Mock(), settle_seconds=120)
+    assert fired is True
+    assert calls["n"] == 1  # only one evaluation; never entered the poll loop

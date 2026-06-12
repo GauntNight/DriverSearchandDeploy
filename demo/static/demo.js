@@ -805,14 +805,18 @@
     await postUpgrade(app, scope, false);
   }
 
-  async function postUpgrade(app, scope, force) {
+  async function postUpgrade(app, scope, force, overrideUrl) {
     const meta = appMeta.get(app.id) || {};
+    if (!meta.download_url && !overrideUrl) {
+      appendLine({ source: "claude", level: "info", text:
+        "Looking for the newer installer — checking the known source, then a web search…" });
+    }
     try {
       const r = await fetch("/api/demo/intune/upgrade", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           app_id: app.id, scope,
-          download_url: meta.download_url || null,
+          download_url: overrideUrl || meta.download_url || null,
           old_entry_id: meta.entry_id || null,
           mode: $("mode").value || undefined,
           gate: gateMode,
@@ -833,10 +837,27 @@
         }
         return postUpgrade(app, scope, true);
       }
+      // Agent found a candidate source via web search — UNTRUSTED. Confirm
+      // before we download/install it (supply-chain guardrail).
+      if (data.awaiting_confirm) {
+        const conf = data.confidence ? ` · confidence: ${data.confidence}` : "";
+        const prov = data.provenance ? `\nProvenance: ${data.provenance}` : "";
+        appendLine({ source: "claude", level: "info", text:
+          `Found a candidate source: ${data.proposed_url}${conf}` });
+        const ok = window.confirm(
+          `${data.message || "Confirm this source?"}\n\n${data.proposed_url}${prov}`);
+        if (!ok) {
+          appendLine({ source: "system", level: "warn",
+            text: "Upgrade cancelled — agent-found source not confirmed." });
+          return;
+        }
+        return postUpgrade(app, scope, force, data.proposed_url);
+      }
       if (data.awaiting_upload) {
         pendingUpgrade = { app_id: app.id, scope };
         appendLine({ source: "system", level: "warn", text:
-          "Source unavailable — drop the newer installer onto the strip to continue the upgrade." });
+          data.message ||
+          "No source found automatically — drop the newer installer onto the strip to continue." });
         $("dropzone").classList.add("drag");
         return;
       }

@@ -213,8 +213,35 @@ async def api_check_version(request: Request):
     return await asyncio.to_thread(_check_version_sync, body, app_id)
 
 
+def _live_app_ids():
+    """Best-effort set of Intune Win32 app ids currently in the tenant; None on
+    any failure (so callers fall back to unreconciled behaviour rather than
+    wrongly treating every app as deleted)."""
+    try:
+        from autopackager.utils.graph_client import GraphAPIClient
+        apps = (GraphAPIClient().get_win32_apps() or {}).get("value", [])
+        return {a.get("id") for a in apps if a.get("id")}
+    except Exception as exc:  # noqa: BLE001
+        try:
+            logger.warning("Live app-id fetch failed; version check unreconciled", error=str(exc))
+        except Exception:
+            pass
+        return None
+
+
 def _check_version_sync(body: dict, app_id: Optional[str]) -> dict:
     from autopackager.utils import installer_catalog
+
+    # Reconcile the overlay against the live tenant FIRST: a stale
+    # verified_versions row (an app deleted in a prior demo/cleanup) would
+    # otherwise baseline the check on a version no longer deployed — e.g. a
+    # deleted 26.01 making a live 26.00 wrongly report "up to date".
+    live_ids = _live_app_ids()
+    if live_ids is not None:
+        try:
+            installer_catalog.prune_stale_verified_versions(live_ids)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("verified_versions reconcile failed", error=str(exc))
 
     catalog = installer_catalog.load_catalog()
     entry, row = intune_view.find_entry_for_app_id(catalog, app_id)
@@ -359,13 +386,37 @@ async def api_upgrade(request: Request, background: BackgroundTasks):
                                 f"(job #{existing}). Start another anyway?"),
                 }
         if not download_url or not intake.is_known_installer(download_url):
-            # No fetchable source — fall back to a manual drop.
-            return {
-                "awaiting_upload": True,
-                "app_id": app_id,
-                "scope": scope,
-                "message": "Source unavailable — awaiting manual upload.",
-            }
+            # No client-supplied URL — ATTEMPT acquisition before asking for a
+            # manual drop. Cascade (demo/queue.resolve_acquisition): catalog
+            # canonical URL -> version-check brain -> agentic web search (live
+            # only). "Always try first" before falling back to a drop.
+            acq = await asyncio.to_thread(_resolve_upgrade_source, app_id, mode)
+            cand_url = acq.get("download_url")
+            src = acq.get("source")
+            if cand_url and src in ("catalog", "version-check"):
+                download_url = cand_url  # trusted source -> fetch below
+            elif cand_url and src == "agent-search":
+                # Agent-found URL is UNTRUSTED (supply-chain guardrail): surface
+                # it for an operator confirm rather than auto-downloading. The
+                # client re-POSTs with this URL as download_url to proceed.
+                return {
+                    "awaiting_confirm": True,
+                    "app_id": app_id,
+                    "scope": scope,
+                    "proposed_url": cand_url,
+                    "provenance": acq.get("provenance"),
+                    "confidence": acq.get("confidence"),
+                    "message": "Found a candidate source via web search — confirm to fetch it.",
+                }
+            else:
+                # Tried the known source (and, in live mode, a web search) and
+                # found nothing fetchable — NOW ask for a manual drop.
+                return {
+                    "awaiting_upload": True,
+                    "app_id": app_id,
+                    "scope": scope,
+                    "message": "No source found automatically — drop the newer installer to continue.",
+                }
         job_id = await asyncio.to_thread(intake.begin_upgrade_job, app_id, scope, gate=gate)
         background.add_task(
             _run_upgrade_pipeline, job_id, app_id, scope, download_url, gate, old_entry_id,
@@ -379,6 +430,40 @@ async def api_upgrade(request: Request, background: BackgroundTasks):
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+def _resolve_upgrade_source(app_id: Optional[str], mode: Optional[str]) -> dict:
+    """Attempt to acquire a download URL for an upgrade BEFORE asking for a drop.
+
+    Resolves the app to its catalog entry and runs the demo/queue acquisition
+    cascade (catalog ``canonical_download_url`` -> version-check brain -> agentic
+    web search, live only). Returns ``resolve_acquisition``'s dict
+    (``{download_url, source, provenance, confidence}``). Never raises -- any
+    failure resolves to "no URL" so the caller falls back to a manual drop.
+    """
+    try:
+        from autopackager.utils import installer_catalog
+        from demo import queue as demo_queue
+
+        catalog = installer_catalog.load_catalog()
+        entry, row = intune_view.find_entry_for_app_id(catalog, app_id)
+        version = None
+        if entry:
+            newest, _newest_app = intune_view.newest_verified_version(entry)
+            version = newest or (row or {}).get("product_version")
+        candidate = {
+            "name": (entry.id if entry else None) or app_id or "application",
+            "publisher": (entry.publisher if entry else "") or "",
+            "version": version,
+            "in_catalog": entry.id if entry else None,
+        }
+        return demo_queue.resolve_acquisition(candidate, mode=mode)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            logger.warning("Upgrade source resolution failed", app_id=app_id, error=str(exc))
+        except Exception:
+            pass
+        return {"download_url": None, "source": None, "provenance": None, "confidence": None}
+
+
 def _run_upgrade_pipeline(
     job_id: int, old_app_id: str, scope: str, download_url: str,
     gate: bool, old_entry_id: Optional[str],
@@ -386,22 +471,35 @@ def _run_upgrade_pipeline(
     """Background: fetch the newer installer, attach upgrade metadata, dispatch.
 
     Mirrors ``_run_miss_pipeline`` — runs in the threadpool and narrates to the
-    job's SSE channel throughout.
+    job's SSE channel throughout. The fetch is retried a few times before
+    failing (transient network blips shouldn't sink an upgrade).
     """
     time.sleep(1.2)  # let the browser's SSE subscription come up first
     events.publish_pipeline_event(
         job_id, "pending", f"Fetching the newer version… ({download_url})",
     )
-    try:
-        saved = intake.download_to_sandbox(download_url)
-    except Exception as exc:  # noqa: BLE001
+    saved = None
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, 4):  # a few tries before giving up
+        try:
+            saved = intake.download_to_sandbox(download_url)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < 3:
+                events.publish_pipeline_event(
+                    job_id, "pending",
+                    f"Fetch attempt {attempt}/3 failed ({exc}); retrying…", level="warn")
+                time.sleep(min(attempt * 1.5, 4))
+    if saved is None:
         events.publish_pipeline_event(
-            job_id, "failed", f"Could not fetch the newer installer: {exc}", level="error")
+            job_id, "failed",
+            f"Could not fetch the newer installer after 3 tries: {last_exc}", level="error")
         try:
             from autopackager.orchestration.engine import OrchestrationEngine
             from autopackager.models.job import JobState
             OrchestrationEngine().update_job_state(
-                job_id, JobState.FAILED, error_message=f"upgrade download failed: {exc}")
+                job_id, JobState.FAILED, error_message=f"upgrade download failed: {last_exc}")
         except Exception:
             pass
         return
@@ -679,11 +777,16 @@ async def api_stream(job_id: int):
     )
 
 
+_NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+
+
 @demo_router.get("/demo")
 async def demo_index():
     index = _STATIC / "index.html"
     if index.exists():
-        return FileResponse(str(index))
+        # No-cache so an operator iterating on the demo always gets the latest
+        # UI without a hard-refresh (the demo is actively developed against).
+        return FileResponse(str(index), headers=_NO_CACHE)
     return JSONResponse({"error": "demo UI not found"}, status_code=404)
 
 
@@ -715,5 +818,19 @@ def mount_demo(app) -> None:
     """
     app.include_router(demo_router)
     if _STATIC.exists():
-        app.mount("/demo/static", StaticFiles(directory=str(_STATIC)), name="demo_static")
+        app.mount("/demo/static", _NoCacheStatic(directory=str(_STATIC)), name="demo_static")
     logger.info("Demo console mounted at /demo")
+
+
+class _NoCacheStatic(StaticFiles):
+    """StaticFiles that tells the browser never to cache demo assets. The demo
+    is actively iterated on; cached demo.js/css otherwise leaves an operator
+    staring at a stale UI after a fix until they hard-refresh."""
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:  # noqa: D401
+        return False  # never serve a 304 — always send the current bytes
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers.update(_NO_CACHE)
+        return response

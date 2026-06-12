@@ -497,6 +497,40 @@ def _version_fixture_for(slug: str) -> Optional[Path]:
     return None
 
 
+def _specific_version_fixture_exists(slug: str) -> bool:
+    """True when an APP-SPECIFIC version-check fixture exists for ``slug`` (i.e.
+    the replay won't fall back to the generic placeholder fixture)."""
+    clean = re.sub(r"[^a-z0-9]+", "-", (slug or "").lower()).strip("-")
+    return bool(clean and (_FIXTURES / f"version_check_{clean}.ndjson").exists())
+
+
+def _bump_version(current: Optional[str]) -> Optional[str]:
+    """Synthesize a believable 'next' version from a deployed version.
+
+    Used by REPLAY mode's GENERIC fallback: the generic fixture can't know an
+    app's real upstream version, so instead of surfacing a placeholder (the old
+    behaviour showed a nonsense ``9.9.9``), we bump the deployed version by one.
+    Trailing ``.0`` components are stripped so the increment lands on a
+    meaningful place (``3.0.23.0`` -> ``3.0.24``; ``2.61.1`` -> ``2.61.2``).
+    Returns None when ``current`` has no leading numeric component (caller then
+    treats the check as inconclusive rather than inventing a version).
+    """
+    if not current:
+        return None
+    nums: list[int] = []
+    for part in current.strip().split("."):
+        if re.fullmatch(r"\d+", part):
+            nums.append(int(part))
+        else:
+            break
+    if not nums:
+        return None
+    while len(nums) > 2 and nums[-1] == 0:
+        nums.pop()
+    nums[-1] += 1
+    return ".".join(str(n) for n in nums)
+
+
 def _run_version_replay(job_id: Any, slug: str) -> Dict[str, Any]:
     """Stream a captured version-check run; final line carries version_result."""
     fixture = _version_fixture_for(slug)
@@ -625,6 +659,18 @@ def check_version(
     try:
         if mode == "replay":
             result = _run_version_replay(job_id, slug)
+            # Generic-fallback realism: with no app-specific fixture, the generic
+            # one can't know the real upstream version. Synthesize a believable
+            # 'next' version from what's actually DEPLOYED rather than surfacing
+            # the fixture's placeholder (this is what produced the bogus 9.9.9).
+            if not _specific_version_fixture_exists(slug):
+                bumped = _bump_version(current_version)
+                result = {
+                    **result,
+                    "latest_version": bumped or "",
+                    "is_newer": bool(bumped),
+                    "download_url": result.get("download_url") or "",
+                }
         else:  # live
             result = _run_version_live(job_id, app_label, current_version or "", source_url or "")
         latest = (result.get("latest_version") or "").strip() or None
