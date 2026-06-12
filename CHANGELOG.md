@@ -1,5 +1,59 @@
 ## [Unreleased]
 
+## [1.9.0] - 2026-06-12
+
+Demo Mission Control gains an interactive multi-package **batch-stream** view, the approval gate is
+hardened against accidental / stray tenant writes, and the supersedence-upgrade deploy path is made
+idempotent (a single new version no longer fans out into duplicate Intune apps). The deterministic
+four-stage pipeline is unchanged. Full suite: 827 tests passing.
+
+### Added
+
+- **Interactive batch-stream page (`/demo/stream`).** A live grid with one card per queued package,
+  each independently actionable (approve / confirm-url / drop-installer) — a multi-package queue no
+  longer funnels through the console's single-action lock, so prompts for different items can't
+  interrupt each other. Backed by a fan-in SSE (`events.asubscribe_many`, every event tagged with
+  `job_id`), a snapshot endpoint (`/api/demo/queue/{batch_id}/snapshot`) that reseeds a parked
+  action on reconnect/refresh from the persisted `queue_origin` state, and `queue.jobs_for_batch()`.
+  The console shows a header **Batch stream** pill (localStorage-persisted, with a live
+  running/done count) and opens the page automatically for any multi-item queue.
+- **Retry + View-logs on failed executions.** `GET /api/demo/jobs/{id}/logs` assembles a
+  human-readable diagnostic (error + escalation reason + install attempts + the local-install
+  validator / smoke-test logs); `POST /api/demo/jobs/{id}/retry` re-dispatches the pipeline (gating
+  preserved). Failed batch-stream cards expose both so an engineer can inspect and re-run.
+
+### Changed
+
+- **Approval-gate hardening (defense in depth).** `deployment_task` now refuses to deploy a *gated*
+  job unless `gate_approved` is persisted on it (set by `/approve` before it re-dispatches
+  deployment), so no stray dispatch path (a retry, a `process_job` chain) can publish a gated job to
+  the tenant. The **Approve** buttons (batch-stream cards + console) now confirm before publishing —
+  an accidental click can no longer write to Intune.
+- **Upgrade installer search uses the app's real display name + publisher** (resolved via Graph),
+  not the catalog slug. The degraded query (e.g. `"sharex"`, empty publisher) was making the upgrade
+  fall straight through to "drop an installer"; it now performs a valid web search.
+- **Version badge defaults to "Current"** for an app that can't yet be placed in a supersedence
+  chain, instead of showing no badge — resolved to `N-1`/`N-2` once a refresh populates the chain.
+- **Demo research bridge rebranded to AutoPackager.** The SSE event source and every surfaced string
+  are `autopackager` / "AutoPackager"; "Claude" is no longer surfaced (the third-party
+  `claude_agent_sdk` / `claude` CLI references stay accurate).
+
+### Fixed
+
+- **Supersedence-upgrade assignment 400 → duplicate apps.** `win32_auto_update_settings` emitted the
+  non-existent Graph property `autoUpdateSupersededApps` (correct name:
+  `autoUpdateSupersededAppsState`), and that block is `available`-intent only — so a `scope=all`
+  upgrade's `required` assignment 400'd, `deployment_task` retried, and each retry minted a fresh app
+  (`_01/_02/…`). Fixed the property name and stopped attaching auto-update settings to a `required`
+  assignment (the `mobileAppSupersedence(update)` relationship already drives the upgrade).
+- **Deploy is idempotent across retries.** The created Intune app id is persisted on the job before
+  any post-create step (upload / supersedence / assign); on retry the deploy reuses that published
+  app — or deletes a non-published shell — instead of creating a duplicate.
+- **Clean Graph errors.** `format_graph_error()` surfaces a single readable operator line (403 →
+  missing service-principal role incl. a `Group.ReadWrite.All` hint, 400 `ModelValidationFailure`,
+  429, 404) instead of a raw `{'error': {...}}` dict; `deployment_task` now raises a picklable error
+  and emits a demo error event.
+
 ## [1.8.0] - 2026-06-10
 
 Catalog expansion from a real enterprise software inventory, plus a deployment-agent

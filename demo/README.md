@@ -152,12 +152,36 @@ One JSON object per line:
 ## Endpoints (additive)
 
 ```
-GET  /demo                              three-panel console UI
-GET  /api/demo/preflight                readiness lights (AI/Redis/Graph/worker)
-POST /api/demo/jobs                     intake: multipart file | JSON {url} | JSON {vendor,model,...}
-GET  /api/demo/stream/{job_id}          SSE: pipeline + claude + lamp events
-GET  /api/demo/intune/apps              live tenant Win32 apps (fixture fallback)
-GET  /api/demo/intune/verify-url        deep-link to the Intune portal
-GET  /api/demo/intune/software-delta    installed-but-not-packaged gap (source=intune|local|both)
-POST /api/demo/jobs/{job_id}/approve    release the optional Ring 0 gate
+GET  /demo                                    three-panel console UI
+GET  /demo/stream                             batch-stream page (one card per queued package)
+GET  /api/demo/preflight                      readiness lights (AI/Redis/Graph/worker)
+POST /api/demo/jobs                           intake: multipart file | JSON {url} | JSON {vendor,model,...}
+GET  /api/demo/stream/{job_id}                SSE: pipeline + AutoPackager + lamp events (one job)
+GET  /api/demo/stream/batch/{batch_id}        SSE: fan-in for a whole queue batch (events tagged with job_id)
+GET  /api/demo/queue/{batch_id}/snapshot      batch cards + per-job state (initial render / reconnect)
+GET  /api/demo/intune/apps                     live tenant Win32 apps (fixture fallback)
+GET  /api/demo/intune/verify-url               deep-link to the Intune portal
+GET  /api/demo/intune/software-delta           installed-but-not-packaged gap (source=intune|local|both)
+POST /api/demo/jobs/{job_id}/approve           release the Ring 0 gate (UI confirms first) + deploy
+POST /api/demo/jobs/{job_id}/retry             re-run a failed job's pipeline (gating preserved)
+GET  /api/demo/jobs/{job_id}/logs              human-readable diagnostic log for a (failed) job
 ```
+
+### Batch-stream page (`/demo/stream?batch=<id>`)
+
+Queuing **more than one** package opens the batch-stream page (also reachable from the console's
+header **Batch stream** pill). It is a live grid — one card per package — fed by a single fan-in SSE
+(`/api/demo/stream/batch/{batch_id}`) that multiplexes every job's events and tags each with its
+`job_id`. Unlike the single-action console, **each card resolves its own prompt independently**
+(approve / confirm-url / drop-installer), so a batch never makes the operator wait on one keyhole.
+A **failed** card exposes **Retry** and **View logs**. The page is reconnect-safe: the snapshot
+endpoint reseeds a parked action from the persisted `queue_origin` state, since the live prompt
+events themselves have no Redis backlog.
+
+### Approval gate
+
+Queue items (and any job launched with the Ring 0 gate) are **held before deployment**: the gated
+pipeline runs discovery → packaging → testing only, and `/approve` dispatches deployment separately.
+Two backstops keep an un-approved job from reaching the tenant — `deployment_task` refuses to deploy
+unless `gate_approved` is persisted on the job (set by `/approve`), and the **Approve** buttons
+confirm before publishing so an accidental click can't write to Intune.
