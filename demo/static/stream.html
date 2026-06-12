@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoPackager — Batch Stream</title>
+  <link rel="stylesheet" href="/demo/static/demo.css">
+  <link rel="stylesheet" href="/demo/static/stream.css">
+</head>
+<body class="stream-body">
+  <header class="stream-header">
+    <div class="stream-title">
+      <span class="brand">AutoPackager</span>
+      <span class="sep">/</span>
+      <span class="sub">Batch Stream</span>
+      <span id="batch-id" class="batch-id"></span>
+    </div>
+    <div class="stream-meta">
+      <span class="counts" id="counts">0 packages</span>
+      <a class="btn ghost" href="/demo" target="_blank" rel="noopener">Console ↗</a>
+      <button class="btn ghost" id="cancel-batch">Cancel batch</button>
+    </div>
+  </header>
+
+  <main id="grid" class="stream-grid">
+    <div class="empty" id="empty">Waiting for a batch… open this page from the console after queuing packages, or add <code>?batch=&lt;id&gt;</code> to the URL.</div>
+  </main>
+
+  <!-- Card template -->
+  <template id="card-tpl">
+    <section class="card" data-job="">
+      <div class="card-head">
+        <span class="lamp" data-state="offline"><span class="orb"></span><span class="ring"></span></span>
+        <div class="card-id">
+          <div class="card-name"></div>
+          <div class="card-job"></div>
+        </div>
+        <span class="card-badge" data-state="">queued</span>
+      </div>
+      <ol class="mini-stepper">
+        <li data-step="pending"><span class="tick"></span>Queued</li>
+        <li data-step="discovering"><span class="tick"></span>Discovery</li>
+        <li data-step="packaging"><span class="tick"></span>Packaging</li>
+        <li data-step="testing"><span class="tick"></span>Testing</li>
+        <li data-step="deploying"><span class="tick"></span>Deploy</li>
+      </ol>
+      <div class="card-line"></div>
+      <div class="card-action"></div>
+    </section>
+  </template>
+
+  <!-- Logs modal (View logs on a failed card) -->
+  <div id="logs-modal" class="logs-modal hidden">
+    <div class="logs-box">
+      <div class="logs-head">
+        <span id="logs-title">Logs</span>
+        <button id="logs-close" class="btn ghost small">Close</button>
+      </div>
+      <pre id="logs-pre">Loading…</pre>
+    </div>
+  </div>
+
+  <script src="/demo/static/stream.js"></script>
+</body>
+</html>

@@ -187,9 +187,10 @@ class TestIntuneViewEnrichment(unittest.TestCase):
         self.assertEqual(apps[0]["catalog_entry_id"], "7-zip")
         self.assertEqual(apps[0]["version_state"], "N-1")
         self.assertTrue(apps[0]["source_url_known"])
-        # Unmatched app must NOT claim "Current" — it gets no badge.
+        # Unmatched app can't be placed in a chain yet → optimistic "current"
+        # default (resolved to N-1/N-2 once a refresh populates the overlay).
         self.assertIsNone(apps[1]["catalog_entry_id"])
-        self.assertEqual(apps[1]["version_state"], "")
+        self.assertEqual(apps[1]["version_state"], "current")
         self.assertFalse(apps[1]["source_url_known"])
 
 

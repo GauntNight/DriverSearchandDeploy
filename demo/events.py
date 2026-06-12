@@ -13,7 +13,7 @@ Event envelope (JSON, one per publish)::
     {
       "ts":     "2026-06-02T14:32:11.123Z",
       "type":   "console" | "lamp" | "state" | "hello" | "end",
-      "source": "pipeline" | "claude" | "system",
+      "source": "pipeline" | "autopackager" | "system",
       "level":  "info" | "warn" | "error",
       "state":  "packaging",          # job state, when known
       "text":   "Built .intunewin (84 MB)",
@@ -145,9 +145,14 @@ def publish_state(job_id: Any, state: str, **extra: Any) -> bool:
 
 
 def publish_claude_event(job_id: Any, text: str, level: str = "info", **extra: Any) -> bool:
-    """A line from the Claude research bridge."""
+    """A line from the AutoPackager research bridge.
+
+    The wire ``source`` is ``autopackager`` — the customer-facing brand. (The
+    function keeps its historical name to avoid churn across call sites; the
+    research engine underneath is never surfaced by name.)
+    """
     return publish_event(
-        job_id, type="console", source="claude", text=text, level=level, **extra,
+        job_id, type="console", source="autopackager", text=text, level=level, **extra,
     )
 
 
@@ -225,6 +230,58 @@ async def asubscribe(job_id: Any):
     finally:
         try:
             await pubsub.unsubscribe(channel_for(job_id))
+            await pubsub.aclose()
+            await client.aclose()
+        except Exception:
+            pass
+
+
+async def asubscribe_many(job_ids):
+    """Async generator multiplexing several jobs' channels into one stream.
+
+    Subscribes to ``demo:events:{job_id}`` for every id and yields each decoded
+    envelope with its ``job_id`` injected (resolved from the Redis channel the
+    message arrived on, which is authoritative). Yields ``None`` on idle ticks so
+    the SSE layer can emit keep-alives. Closes once EVERY subscribed job has sent
+    its ``end`` event (or the consumer stops iterating). Used by the batch-stream
+    page's fan-in SSE endpoint.
+    """
+    import redis.asyncio as aredis
+
+    job_ids = [j for j in (job_ids or [])]
+    client = aredis.Redis(decode_responses=True, **_redis_kwargs())
+    pubsub = client.pubsub()
+    channels = {channel_for(j): j for j in job_ids}
+    if channels:
+        await pubsub.subscribe(*channels.keys())
+    ended = set()
+    try:
+        while True:
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=1.0
+            )
+            if message is None:
+                yield None
+                continue
+            data = message.get("data")
+            if not data:
+                continue
+            try:
+                envelope = json.loads(data)
+            except (ValueError, TypeError):
+                continue
+            jid = channels.get(message.get("channel"))
+            if jid is not None:
+                envelope = {**envelope, "job_id": jid}
+            yield envelope
+            if envelope.get("type") == "end" and jid is not None:
+                ended.add(jid)
+                if channels and len(ended) >= len(channels):
+                    break
+    finally:
+        try:
+            if channels:
+                await pubsub.unsubscribe(*channels.keys())
             await pubsub.aclose()
             await client.aclose()
         except Exception:

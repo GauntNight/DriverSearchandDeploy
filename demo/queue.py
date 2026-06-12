@@ -162,6 +162,44 @@ def create_queue_job_row(
     )
 
 
+# --- Batch lookup (for the batch-stream page) ------------------------------
+
+def jobs_for_batch(batch_id: str) -> List[Dict[str, Any]]:
+    """Return the queue jobs belonging to ``batch_id``, newest-created first.
+
+    Each item: ``{job_id, name, publisher, version, state, origin_state,
+    proposed_url}``. ``state`` is the live DB job state (``pending`` |
+    ``discovering`` | ... | ``failed``); ``origin_state`` is the demo sub-state
+    persisted in the ``queue_origin`` marker (``acquiring`` |
+    ``awaiting_installer`` | ``awaiting_confirm`` | ``packaging`` | ...). The
+    latter is what lets the batch-stream page reseed a PARKED action (drop /
+    confirm) on a late-join or refresh, since those prompts arrive only as live
+    SSE events (Redis pub/sub has no backlog). Pure DB read — no Graph/Redis.
+    """
+    from autopackager.orchestration.engine import OrchestrationEngine
+
+    out: List[Dict[str, Any]] = []
+    try:
+        for job in OrchestrationEngine().get_all_jobs():
+            md = job.job_metadata or {}
+            origin = md.get(QUEUE_ORIGIN_KEY) or {}
+            if origin.get("batch_id") != batch_id:
+                continue
+            out.append({
+                "job_id": job.id,
+                "name": origin.get("name") or job.software_title or f"job {job.id}",
+                "publisher": origin.get("publisher"),
+                "version": origin.get("version"),
+                "state": job.state.value if job.state else "pending",
+                "origin_state": origin.get("state"),
+                "proposed_url": md.get("queue_proposed_url"),
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("jobs_for_batch failed", batch_id=batch_id, error=str(exc))
+    # get_all_jobs is ordered newest-first by id; keep that for a stable grid.
+    return out
+
+
 # --- Cancel ----------------------------------------------------------------
 
 def _is_cancelled(job_id: int) -> bool:

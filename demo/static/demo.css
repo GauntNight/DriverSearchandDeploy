@@ -74,6 +74,25 @@ body {
   border: 1px solid var(--accent-dim); border-radius: 4px; padding: 2px 8px;
 }
 
+/* Batch-stream pill: appears in the header when a queue batch is active so the
+   operator can jump (back) to the multiplexed batch view at any time. */
+.batch-pill {
+  display: inline-flex; align-items: center; gap: 7px; margin-left: 14px;
+  font-family: var(--mono); font-size: 12px; color: var(--text);
+  background: var(--panel-2, var(--panel)); border: 1px solid var(--accent-dim);
+  border-radius: 16px; padding: 5px 12px; cursor: pointer;
+  transition: border-color .2s, box-shadow .2s, filter .2s;
+}
+.batch-pill:hover { filter: brightness(1.15); border-color: var(--accent); }
+.batch-pill .bp-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--text-mute); flex: none;
+}
+.batch-pill[data-active="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim) inset; }
+.batch-pill[data-active="true"] .bp-dot {
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: ping 1.6s infinite;
+}
+.batch-pill[data-active="false"] .bp-dot { background: var(--ready); box-shadow: none; animation: none; }
+
 /* ---- Intake ---- */
 .intake {
   display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px;
@@ -226,12 +245,12 @@ body {
 .cline .src { flex: none; width: 92px; text-transform: none; font-size: 10px;
   letter-spacing: .3px; padding-top: 2px; font-weight: 600; }
 .cline .src.pipeline { color: var(--accent); }
-.cline .src.claude   { color: var(--thinking); }
+.cline .src.autopackager { color: var(--thinking); }
 .cline .src.system   { color: var(--text-mute); }
 .cline .msg { flex: 1; color: var(--text); }
 .cline.warn  .msg { color: var(--warn); }
 .cline.error .msg { color: var(--bad); }
-.cline.claude .msg { color: #bfe9da; }
+.cline.autopackager .msg { color: #bfe9da; }
 
 .hidden { display: none !important; }
 

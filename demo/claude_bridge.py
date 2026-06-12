@@ -151,7 +151,7 @@ def _apply_catalog_result(analysis: Analysis, result: Dict[str, Any]) -> Optiona
             entry = installer_catalog.add_msi_entry(
                 analysis.metadata or {},
                 install_command_template=template,
-                notes="Researched by Claude bridge (demo)",
+                notes="Researched by AutoPackager bridge (demo)",
             )
         else:
             detection_rules = result.get("detection_rules") or []
@@ -161,7 +161,7 @@ def _apply_catalog_result(analysis: Analysis, result: Dict[str, Any]) -> Optiona
                 installer_family=result.get("installer_family"),
                 detection_rules=detection_rules,
                 sha256=analysis.sha256,
-                notes="Researched by Claude bridge (demo)",
+                notes="Researched by AutoPackager bridge (demo)",
             )
         return entry.id
     except Exception as exc:  # noqa: BLE001

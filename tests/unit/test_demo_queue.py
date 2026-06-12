@@ -526,5 +526,124 @@ class TestUpgradeAcquisitionCascade(unittest.TestCase):
         self.assertIn("drop", (data.get("message") or "").lower())
 
 
+# --- jobs_for_batch + batch-stream endpoints -------------------------------
+
+class TestJobsForBatch(unittest.TestCase):
+    """jobs_for_batch: resolve the queue jobs in a batch for the stream page."""
+
+    def _job(self, jid, batch, name, state):
+        j = Mock()
+        j.id = jid
+        j.software_title = name
+        j.job_metadata = {"queue_origin": {
+            "batch_id": batch, "name": name, "publisher": "Pub", "version": "1.0",
+        }}
+        j.state = Mock(value=state)
+        return j
+
+    def test_filters_by_batch_id(self):
+        engine = MagicMock()
+        engine.get_all_jobs.return_value = [
+            self._job(1, "AAA", "VLC", "testing"),
+            self._job(2, "BBB", "Go", "pending"),
+            self._job(3, "AAA", "7-Zip", "completed"),
+        ]
+        with patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine):
+            out = pkg_queue.jobs_for_batch("AAA")
+        self.assertEqual({o["job_id"] for o in out}, {1, 3})
+        by_id = {o["job_id"]: o for o in out}
+        self.assertEqual(by_id[1]["name"], "VLC")
+        self.assertEqual(by_id[1]["state"], "testing")
+        self.assertEqual(by_id[3]["state"], "completed")
+
+    def test_ignores_non_queue_jobs(self):
+        engine = MagicMock()
+        plain = Mock(); plain.id = 9; plain.job_metadata = {}
+        plain.software_title = "manual"; plain.state = Mock(value="pending")
+        engine.get_all_jobs.return_value = [plain]
+        with patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine):
+            self.assertEqual(pkg_queue.jobs_for_batch("AAA"), [])
+
+    def test_never_raises_on_engine_failure(self):
+        engine = MagicMock()
+        engine.get_all_jobs.side_effect = RuntimeError("db down")
+        with patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine):
+            self.assertEqual(pkg_queue.jobs_for_batch("AAA"), [])
+
+
+class TestBatchStreamEndpoints(unittest.TestCase):
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from autopackager.web import api
+        return TestClient(api.app)
+
+    def test_snapshot_returns_batch_jobs(self):
+        rows = [{"job_id": 1, "name": "VLC", "publisher": "P", "version": "1", "state": "testing"}]
+        with patch("demo.queue.jobs_for_batch", return_value=rows):
+            r = self._client().get("/api/demo/queue/abc123/snapshot")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["batch_id"], "abc123")
+        self.assertEqual(body["jobs"], rows)
+
+    def test_stream_page_served(self):
+        r = self._client().get("/demo/stream")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("text/html", r.headers.get("content-type", ""))
+        self.assertIn("Batch Stream", r.text)
+
+
+class TestJobLogsAndRetry(unittest.TestCase):
+    """The failed-card actions: GET /jobs/{id}/logs and POST /jobs/{id}/retry."""
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from autopackager.web import api
+        return TestClient(api.app)
+
+    def _job(self, jid, state="failed", error="boom", md=None):
+        j = Mock(); j.id = jid; j.software_title = "WinSCP"
+        j.state = Mock(value=state); j.error_message = error
+        j.job_metadata = md if md is not None else {
+            "escalation_reason": "no verifiable silent install", "install_attempts": 3,
+        }
+        return j
+
+    def test_logs_assembles_text(self):
+        engine = MagicMock(); engine.get_job.return_value = self._job(81)
+        with patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine):
+            r = self._client().get("/api/demo/jobs/81/logs")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["job_id"], 81)
+        self.assertIn("boom", body["logs"])              # error surfaced
+        self.assertIn("escalation_reason", body["logs"])  # diagnostics surfaced
+
+    def test_logs_404_when_missing(self):
+        engine = MagicMock(); engine.get_job.return_value = None
+        with patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine):
+            r = self._client().get("/api/demo/jobs/999/logs")
+        self.assertEqual(r.status_code, 404)
+
+    def test_retry_redispatches_with_gate_preserved(self):
+        engine = MagicMock()
+        engine.get_job.return_value = self._job(81, md={"demo_gate_deploy": True})
+        with patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine), \
+             patch("demo.router.events"), \
+             patch("demo.router.intake.dispatch_pipeline") as disp:
+            r = self._client().post("/api/demo/jobs/81/retry")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["retried"])
+        disp.assert_called_once_with(81, gate=True)       # gating preserved
+        _, kwargs = engine.update_job_state.call_args
+        self.assertFalse(kwargs["metadata_update"]["needs_engineer_review"])
+
+    def test_retry_404_when_missing(self):
+        engine = MagicMock(); engine.get_job.return_value = None
+        with patch("autopackager.orchestration.engine.OrchestrationEngine", return_value=engine):
+            r = self._client().post("/api/demo/jobs/999/retry")
+        self.assertEqual(r.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
