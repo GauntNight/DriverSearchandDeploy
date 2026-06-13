@@ -676,6 +676,18 @@ class CatalogEntry:
     #   install. With 'user', Intune installs in the logged-on user's context and
     #   evaluates HKCU detection per-user. Default (None) -> 'system'.
     install_context: Optional[str] = None
+    # ---- CVE / vulnerability intelligence key (AGNOSTIC, baseline-eligible) ----
+    # cpe -- the vendor:product half of an NVD CPE 2.3 name, WITHOUT a version,
+    #   e.g. 'cpe:2.3:a:videolan:vlc_media_player'. AGNOSTIC curated knowledge
+    #   (the same identifier for every operator), so it belongs in the baseline.
+    #   The CVE intelligence service (services/cve_intel.py) appends the deployed
+    #   and target versions at query time to ask the NVD CVE API "which CVEs does
+    #   upgrading this product fix?" -- driving the demo console's risk-sorted
+    #   "patch by severity" view. When unset, cve_intel falls back to a keyword
+    #   search by product name (less precise) or the AI research bridge. A short
+    #   'vendor:product' form (e.g. 'videolan:vlc_media_player') is also accepted
+    #   and normalized to the full cpe:2.3 prefix.
+    cpe: Optional[str] = None
     # ---- Durable end-to-end validation marker (AGNOSTIC, baseline-eligible) ----
     # The durable "the packaging work for this app is DONE" bit. Asserts that the
     # recipe was proven end-to-end at least once (built -> published -> install

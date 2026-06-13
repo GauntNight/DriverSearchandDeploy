@@ -178,6 +178,7 @@ entries:
     product_code: "{23170F69-40C1-2702-2601-000001000000}"
     product_name_pattern: "7-Zip"
     publisher: "Igor Pavlov"
+    cpe: "cpe:2.3:a:7-zip:7-zip"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
     uninstall_command_template: "msiexec /x {23170F69-40C1-2702-2601-000001000000} /qn /norestart"
     installer_family: msi
@@ -207,6 +208,7 @@ entries:
       mode: generic
     pe_company_name: "Don HO"  # PE VS_VERSIONINFO ships "Don HO don.h@free.fr"; substring match
     pe_product_name: "Notepad++"
+    cpe: "cpe:2.3:a:notepad-plus-plus:notepad++"
     install_command_template: "{installer_filename} /S"
     uninstall_command_template: '"C:\Program Files\Notepad++\uninstall.exe" /S'
     detection_rules:
@@ -546,6 +548,7 @@ entries:
     product_code: "{DE47EEF9-51FE-4DE0-BB80-B2FC787772A3}"
     product_name_pattern: "Go Programming Language"
     publisher: "Google Inc."
+    cpe: "cpe:2.3:a:golang:go"
     install_command_template: "msiexec /i {installer_filename} /qn /norestart"
     uninstall_command_template: "msiexec /x {DE47EEF9-51FE-4DE0-BB80-B2FC787772A3} /qn /norestart"
     information_url: "https://go.dev/dl/"
@@ -1005,6 +1008,7 @@ entries:
     product_code: '{5DFCA3BF-178E-42E2-9CEF-37A44B9FF90A}'
     product_name_pattern: VLC media player
     publisher: VideoLAN
+    cpe: "cpe:2.3:a:videolan:vlc_media_player"
     supersedence:
       line: vlc-media-player
       mode: generic

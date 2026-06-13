@@ -88,7 +88,44 @@ def get_apps_view(include_counts: bool = False) -> Dict[str, Any]:
         _enrich_apps(view.get("apps") or [])
     except Exception as exc:  # noqa: BLE001 — enrichment is best-effort
         logger.warning("Intune view enrichment failed", error=str(exc))
+    try:
+        enrich_cves(view.get("apps") or [])
+    except Exception as exc:  # noqa: BLE001 — CVE enrichment is best-effort
+        logger.warning("Intune CVE enrichment failed", error=str(exc))
     return view
+
+
+def enrich_cves(apps: List[Dict[str, Any]]) -> None:
+    """Attach a ``cve`` risk block to each app row in place (best-effort).
+
+    Resolves each app against the CVE intelligence service by its catalog CPE
+    when known (precise, drives the live NVD path) and always by display name
+    (the curated-fixture path resolves by name alias). Uses the deployed
+    version as the baseline so an outdated app surfaces the CVEs a newer release
+    fixes, and a current app comes back clean. Honours ``CVE_INTEL_MODE`` — the
+    default ``cache`` keeps this fully offline and stage-reliable.
+    """
+    if not apps:
+        return
+    from autopackager.services import cve_intel
+    from autopackager.utils import installer_catalog
+
+    catalog = installer_catalog.load_catalog()
+    for row in apps:
+        cpe = None
+        eid = row.get("catalog_entry_id")
+        if eid:
+            entry = catalog.by_id(eid)
+            cpe = getattr(entry, "cpe", None) if entry else None
+        try:
+            row["cve"] = cve_intel.lookup(
+                row.get("name"),
+                cpe=cpe,
+                current_version=row.get("current_version") or row.get("version"),
+            )
+        except Exception as exc:  # noqa: BLE001 — never break a row on CVE lookup
+            logger.warning("CVE lookup failed", app=row.get("name"), error=str(exc))
+            row["cve"] = cve_intel.empty_block()
 
 
 # --- Supersedence-demo enrichment ------------------------------------------

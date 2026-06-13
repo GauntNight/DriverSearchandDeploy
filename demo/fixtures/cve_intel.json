@@ -1,0 +1,91 @@
+{
+  "_comment": "Curated CVE intelligence for the demo's 'patch by risk' view. The DEFAULT (offline, stage-reliable) source for autopackager/services/cve_intel.py. Every entry is a REAL public CVE with its REAL NVD CVSS v3.1 base score and the upstream version that fixes it ('fixed_in'). A CVE only counts against a deployed app when fixed_in is NEWER than what's deployed, so a current app shows green and an outdated one lights up. To stage the demo: deploy a deliberately-old build (see fixed_in) and it goes red; upgrade clears it. Update against https://nvd.nist.gov as scores/fixes change. Keyed by product; resolved via cpe (catalog 'cpe' field) or any 'aliases' name slug.",
+  "products": {
+    "vlc": {
+      "cpe": "cpe:2.3:a:videolan:vlc_media_player",
+      "aliases": ["VLC", "VLC media player", "VideoLAN VLC"],
+      "cves": [
+        {
+          "id": "CVE-2024-46461",
+          "cvss": 8.0,
+          "severity": "high",
+          "summary": "Integer overflow while parsing a crafted MMS stream leads to a heap-based buffer overflow — a malicious stream can crash VLC or run code with the user's privileges.",
+          "fixed_in": "3.0.21",
+          "published": "2024-09-11"
+        }
+      ]
+    },
+    "7-zip": {
+      "cpe": "cpe:2.3:a:7-zip:7-zip",
+      "aliases": ["7-Zip", "7 Zip", "7zip"],
+      "cves": [
+        {
+          "id": "CVE-2024-11477",
+          "cvss": 7.8,
+          "severity": "high",
+          "summary": "Integer underflow in the Zstandard (Zstd) decompression path allows remote code execution via a crafted archive opened in 7-Zip.",
+          "fixed_in": "24.07",
+          "published": "2024-11-22"
+        },
+        {
+          "id": "CVE-2025-0411",
+          "cvss": 7.0,
+          "severity": "high",
+          "summary": "Mark-of-the-Web bypass: files extracted from a crafted nested archive do not inherit MotW, letting attacker content execute without the SmartScreen warning (exploited in the wild).",
+          "fixed_in": "24.09",
+          "published": "2025-01-25"
+        }
+      ]
+    },
+    "notepad++": {
+      "cpe": "cpe:2.3:a:notepad-plus-plus:notepad++",
+      "aliases": ["Notepad++", "Notepad plus plus"],
+      "cves": [
+        {
+          "id": "CVE-2025-49144",
+          "cvss": 7.3,
+          "severity": "high",
+          "summary": "Notepad++ installer privilege escalation via an uncontrolled executable search path — run from a user-writable folder it loads a planted system binary, giving a local user SYSTEM.",
+          "fixed_in": "8.8.2",
+          "published": "2025-06-24"
+        }
+      ]
+    },
+    "python": {
+      "cpe": "cpe:2.3:a:python:python",
+      "aliases": ["Python", "Python 3", "CPython"],
+      "cves": [
+        {
+          "id": "CVE-2024-12718",
+          "cvss": 10.0,
+          "severity": "critical",
+          "summary": "tarfile extraction-filter bypass: a crafted tar archive can modify file metadata and escape the destination directory despite the 'data' filter, an RCE-class flaw. (Fixed across the 3.9.23 / 3.10.18 / 3.11.13 / 3.12.3 branches.)",
+          "fixed_in": "3.12.3",
+          "published": "2025-06-03"
+        },
+        {
+          "id": "CVE-2025-8194",
+          "cvss": 7.5,
+          "severity": "high",
+          "summary": "tarfile denial of service: a tar archive with a negative header offset drives the extraction routine into an infinite loop / deadlock.",
+          "fixed_in": "3.13.4",
+          "published": "2025-07-25"
+        }
+      ]
+    },
+    "go": {
+      "cpe": "cpe:2.3:a:golang:go",
+      "aliases": ["Go", "Golang", "Go Programming Language"],
+      "cves": [
+        {
+          "id": "CVE-2025-22874",
+          "cvss": 7.5,
+          "severity": "high",
+          "summary": "crypto/x509: setting ExtKeyUsageAny in VerifyOptions.KeyUsages unintentionally disables policy validation, weakening certificate-chain verification for chains carrying policy constraints.",
+          "fixed_in": "1.24.4",
+          "published": "2025-06-11"
+        }
+      ]
+    }
+  }
+}
