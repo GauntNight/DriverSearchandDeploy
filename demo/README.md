@@ -149,6 +149,33 @@ One JSON object per line:
   the real tenant when Graph is configured — run a credential-less laptop in
   fixture mode for safe UI rehearsal.
 
+### Responsiveness — stale-while-revalidate cache
+
+Building the center view live is a Graph fan-out (list + per-app beta GET +
+per-app assignments) that takes seconds; re-running it on every 4 s poll made the
+panel feel like it was perpetually searching. `intune_view.get_apps_view_cached`
+fixes that:
+
+- The last good view is served **instantly** from memory (~4 ms vs ~9 s live) and
+  **refreshed in the background** once it ages past 25 s (stale-while-revalidate).
+- A **disk snapshot** (`data/demo_cache/apps_snapshot.json`) makes even the first
+  paint after a server restart instant, then revalidates.
+- Background polls stay cached; only a **tenant write** (publish/approve) or the
+  manual **Refresh ⟳** button forces a synchronous live reload
+  (`?refresh=1`). The header shows a freshness badge — "live · just now" /
+  "cached · 12 s", pulsing while a background refresh runs.
+
+### EXE installers (including metadata-less ones)
+
+EXE is a first-class intake type. Most installers carry PE `VS_VERSIONINFO`
+(ShareX, Notepad++) and resolve normally. Some ship **none at all** — VLC's NSIS
+`.exe` returns blank ProductName/Version (Windows' own Properties tab agrees) — so
+they're matched by a catalog entry's **`filename_pattern`**, which also supplies
+the name/publisher; the version is parsed from the filename. An EXE that is both
+unidentifiable **and** matches no catalog entry **escalates** (a clean failure with
+a "use the vendor MSI" message) rather than publishing an app Intune can never
+detect. Prefer the `.msi` when a vendor ships both (cleaner ProductCode detection).
+
 ## Endpoints (additive)
 
 ```
@@ -159,7 +186,7 @@ POST /api/demo/jobs                           intake: multipart file | JSON {url
 GET  /api/demo/stream/{job_id}                SSE: pipeline + AutoPackager + lamp events (one job)
 GET  /api/demo/stream/batch/{batch_id}        SSE: fan-in for a whole queue batch (events tagged with job_id)
 GET  /api/demo/queue/{batch_id}/snapshot      batch cards + per-job state (initial render / reconnect)
-GET  /api/demo/intune/apps                     live tenant Win32 apps (fixture fallback; each row carries a `cve` risk block)
+GET  /api/demo/intune/apps                     live tenant Win32 apps (stale-while-revalidate cached; each row carries a `cve` risk block). ?refresh=1 forces a synchronous live reload
 GET  /api/demo/intune/{app_id}/cves            CVE risk detail for one app (?mode=live re-scans NVD)
 GET  /api/demo/intune/verify-url               deep-link to the Intune portal
 GET  /api/demo/intune/software-delta           installed-but-not-packaged gap (source=intune|local|both; rows carry `cve`)
@@ -211,6 +238,15 @@ still resolve by display-name alias against the curated fixture.
 > 4-second poll the badge clears — the whole "vulnerable → one click → patched"
 > arc on stage. Keep `CVE_INTEL_MODE=cache` for a guaranteed-offline run, or
 > `live` to show a real NVD query (have a backup in case the feed is slow).
+
+> **"Patch now" — use replay for the version check.** The version-check step
+> (`DEMO_CLAUDE_MODE`) is separate from `CVE_INTEL_MODE`. In **replay** it returns
+> a deterministic latest build from a `version_check_<slug>.ndjson` fixture (with a
+> real download URL). In **live** the agent web-searches, which is unreliable for a
+> fine-grained bump — and for VLC it returns the vendor's default **`.exe`**, which
+> ships no metadata. For a predictable on-stage upgrade, run "Patch now" in replay.
+> (VLC trivia worth knowing: **3.0.21 was `.exe`-only**; the newest VLC with a
+> managed `.msi` is **3.0.23**, which the bundled VLC fixture targets.)
 
 ### Approval gate
 
