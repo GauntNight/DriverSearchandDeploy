@@ -249,6 +249,39 @@ class TestIntuneViewEnrichment(unittest.TestCase):
         self.assertEqual(iv._normalize_product_name("AWS Command Line Interface v2"),
                          "aws command line interface v2")
 
+    def test_aggregate_install_counts(self):
+        from demo import intune_view as iv
+        statuses = [
+            {"installState": "installed"}, {"installState": "installed"},
+            {"installState": "failed"}, {"installState": "pending"},
+            {"installState": "notApplicable"}, {"installState": "unknown"},
+        ]
+        agg = iv._aggregate_install_counts(statuses)
+        self.assertEqual(agg["installed"], 2)
+        self.assertEqual(agg["failed"], 1)
+        self.assertEqual(agg["pending"], 1)
+        self.assertEqual(agg["not_applicable"], 1)
+        self.assertEqual(agg["total"], 6)
+        self.assertEqual(iv._aggregate_install_counts([])["total"], 0)
+
+    def test_enrich_apps_clean_flag(self):
+        # clean = 0 confirmed installs; None when counts are unavailable.
+        from demo import intune_view
+        from autopackager.utils.installer_catalog import Catalog
+
+        apps = [
+            {"id": "a", "name": "Old App", "version": "1.0", "installed": 0},
+            {"id": "b", "name": "Busy App", "version": "2.0", "installed": 3},
+            {"id": "c", "name": "Unknown App", "version": "3.0"},  # no count fetched
+        ]
+        with patch("autopackager.utils.installer_catalog.load_catalog",
+                   return_value=Catalog(entries=[])):
+            intune_view._enrich_apps(apps)
+        by_id = {a["id"]: a for a in apps}
+        self.assertIs(by_id["a"]["clean"], True)
+        self.assertIs(by_id["b"]["clean"], False)
+        self.assertIsNone(by_id["c"]["clean"])
+
 
 # --- Upgrade-job metadata builders -----------------------------------------
 

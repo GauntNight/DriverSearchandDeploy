@@ -438,6 +438,11 @@ def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
     _assign_version_states(apps)
     for row in apps:
         row.pop("_product_key", None)
+        # "clean" = zero confirmed installs (the retirement signal). int 0 -> True;
+        # None (counts unavailable / not fetched) -> None so the UI shows "no data"
+        # rather than a false "clean".
+        inst = row.get("installed")
+        row["clean"] = (inst == 0) if isinstance(inst, int) else None
 
 
 def _live_view(include_counts: bool = False) -> Dict[str, Any]:
@@ -505,14 +510,42 @@ def _live_view(include_counts: bool = False) -> Dict[str, Any]:
             "pending": None,
         }
         if include_counts and app.get("id"):
+            # The legacy /installSummary nav property is retired in this tenant
+            # (HTTP error), like /deviceStatuses was. Use the modern report
+            # action and aggregate it ourselves. A successful empty report = 0
+            # installs (clean); an ERROR leaves None (unknown) so the UI can
+            # distinguish "clean" from "no data".
             try:
-                summary = client.get_app_install_summary(app["id"])
-                row["installed"] = summary.get("installedDeviceCount")
-                row["pending"] = summary.get("pendingInstallDeviceCount")
-            except Exception:
-                pass
+                agg = _aggregate_install_counts(client.get_app_device_statuses(app["id"]))
+                row["installed"] = agg["installed"]
+                row["failed"] = agg["failed"]
+                row["pending"] = agg["pending"]
+                row["total_devices"] = agg["total"]
+            except Exception as exc:  # noqa: BLE001 — counts are best-effort
+                logger.debug("install counts unavailable", app=app.get("id"), error=str(exc))
         rows.append(row)
     return {"mode": "live", "apps": rows, "error": None}
+
+
+def _aggregate_install_counts(statuses: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Roll per-device install statuses (from the modern report) into counts.
+
+    ``installState`` strings come from ``get_app_device_statuses``: installed /
+    failed / pending / notApplicable / unknown.
+    """
+    agg = {"installed": 0, "failed": 0, "pending": 0, "not_applicable": 0, "total": 0}
+    for s in statuses or []:
+        agg["total"] += 1
+        state = (s.get("installState") or "").lower()
+        if state == "installed":
+            agg["installed"] += 1
+        elif state == "failed":
+            agg["failed"] += 1
+        elif state in ("pending", "pendinginstall"):
+            agg["pending"] += 1
+        elif state in ("notapplicable", "not_applicable"):
+            agg["not_applicable"] += 1
+    return agg
 
 
 def _fixture_view() -> Dict[str, Any]:

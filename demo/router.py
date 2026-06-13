@@ -45,8 +45,12 @@ async def api_preflight():
 
 
 @demo_router.get("/api/demo/intune/apps")
-async def api_intune_apps(counts: bool = False, refresh: bool = False):
+async def api_intune_apps(counts: bool = True, refresh: bool = False):
     """Center-panel apps view, served stale-while-revalidate.
+
+    Includes per-app install counts by default (the lifecycle "clean" signal),
+    fetched via the modern installation-status report; the SWR cache + disk
+    snapshot keep the extra per-app calls off the hot path.
 
     Returns the cached snapshot instantly (memory, or a disk snapshot on a cold
     start) and refreshes in the background once stale, so the panel stays

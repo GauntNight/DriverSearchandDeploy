@@ -902,6 +902,35 @@
       b.addEventListener("click", () => openScopeDialog(app));
     }
     cell.appendChild(b);
+
+    // Install count — the lifecycle "clean" signal. For an old version (N-1/N-2)
+    // 0 installs means retire-eligible ("clean"); installs remaining are the
+    // drain target. For the Latest, the count is just rollout progress.
+    const inst = installLine(app);
+    if (inst) {
+      const el = document.createElement("span");
+      el.className = "inst-pill " + inst.cls;
+      el.textContent = inst.text;
+      if (inst.title) el.title = inst.title;
+      cell.appendChild(el);
+    }
+  }
+
+  // Returns {cls, text, title} for the install-count pill, or null when counts
+  // are unavailable (so we never show a false "clean").
+  function installLine(app) {
+    const n = app.installed;
+    if (n == null) return null;                       // counts unavailable
+    const isOld = /^N-\d+$/.test(app.version_state || "");
+    if (n === 0) {
+      return isOld
+        ? { cls: "clean", text: "✓ clean", title: "0 installs — safe to retire" }
+        : { cls: "zero",  text: "0 installs", title: "not yet on any device" };
+    }
+    const word = n === 1 ? "install" : "installs";
+    return isOld
+      ? { cls: "stale", text: `${n} ${word}`, title: `${n} device(s) still on this old version` }
+      : { cls: "ok",    text: `${n} ${word}`, title: `${n} device(s) have the latest` };
   }
 
   function rerender() { if (lastView) renderIntune(lastView); }
