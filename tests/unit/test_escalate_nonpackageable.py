@@ -71,3 +71,54 @@ def test_real_baseline_catalog_has_realplayer_escalate_entry():
     assert e is not None
     assert e.escalate_reason
     assert not e.detection_rules  # never publishes
+
+
+# --- Unidentifiable EXE (no readable VS_VERSIONINFO + no catalog match) -------
+# VLC's NSIS .exe yields all-empty PE metadata; with no catalog entry it must
+# escalate, not publish a malformed app (filename name, "unknown" version, a
+# placeholder detection rule Intune can never satisfy).
+
+def test_exe_has_identity_helper():
+    from demo import intake
+    assert intake._exe_has_identity({}) is False
+    assert intake._exe_has_identity(
+        {"product_name": "", "company_name": "", "file_version": ""}) is False
+    assert intake._exe_has_identity({"product_name": "VLC media player"}) is True
+    assert intake._exe_has_identity({"file_version": "3.0.20.0"}) is True
+
+
+def test_unreadable_exe_escalates(tmp_path):
+    from unittest import mock
+    from demo import intake
+
+    p = tmp_path / "vlc-3.0.20-win32.exe"
+    p.write_bytes(b"MZ not a real pe")
+    with mock.patch("autopackager.utils.pe_metadata.read_pe_metadata") as rp, \
+         mock.patch("autopackager.utils.pe_metadata.sha256_file", return_value="abc123"):
+        rp.return_value.to_dict.return_value = {
+            "product_name": "", "company_name": "", "product_version": "",
+            "file_version": "", "original_filename": "", "file_description": "",
+        }
+        a = intake.analyze(p)
+    assert a.escalate is True
+    assert a.escalate_reason and "MSI" in a.escalate_reason
+    assert a.blocker == a.escalate_reason
+
+
+def test_identifiable_exe_miss_does_not_escalate(tmp_path):
+    # An EXE we CAN read identity from is a normal miss (research path), not an
+    # escalation — only the fully-unreadable case escalates.
+    from unittest import mock
+    from demo import intake
+
+    p = tmp_path / "SomeApp-setup.exe"
+    p.write_bytes(b"MZ not a real pe")
+    with mock.patch("autopackager.utils.pe_metadata.read_pe_metadata") as rp, \
+         mock.patch("autopackager.utils.pe_metadata.sha256_file", return_value="abc123"):
+        rp.return_value.to_dict.return_value = {
+            "product_name": "Some App", "company_name": "Some Vendor",
+            "product_version": "1.2.3",
+        }
+        a = intake.analyze(p)
+    assert a.escalate is False
+    assert a.branch == "miss"

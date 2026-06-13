@@ -171,6 +171,18 @@ def substitute_with_enterprise(analysis: "Analysis") -> Optional["Analysis"]:
 
 # --- Identity + catalog match ----------------------------------------------
 
+def _exe_has_identity(pe_meta: Dict[str, Any]) -> bool:
+    """True when an EXE's PE metadata carries at least one identifying field.
+
+    An installer whose VS_VERSIONINFO yields none of these is unidentifiable —
+    we can neither name it nor derive a real detection rule, so it must not be
+    published as a guessed app. (NSIS installers like VLC's .exe hit this.)
+    """
+    return any((pe_meta or {}).get(k) for k in (
+        "product_name", "company_name", "file_version", "product_version",
+        "original_filename", "file_description"))
+
+
 def analyze(path: Path) -> Analysis:
     """Extract identity and resolve catalog hit/miss for an installer file.
 
@@ -232,6 +244,22 @@ def analyze(path: Path) -> Analysis:
                 analysis.blocker = (
                     f"catalog entry '{entry.id}' has no detection rules"
                 )
+        elif not _exe_has_identity(pe_meta):
+            # A MISS where we couldn't read ANY identity from the EXE's
+            # VS_VERSIONINFO (e.g. VLC's NSIS .exe returns all-empty strings) and
+            # that matches no catalog entry. There is nothing to research against
+            # and no way to derive a real detection rule — proceeding publishes a
+            # MALFORMED app (filename as the name, version "unknown", a
+            # placeholder registry rule Intune can never satisfy, so the IME
+            # re-installs forever). Escalate with an actionable message instead.
+            analysis.escalate = True
+            analysis.escalate_reason = (
+                f"Couldn't read any identity from '{path.name}' — no readable "
+                "version info (common for NSIS .exe installers like VLC's) and "
+                "no catalog match. Use the vendor MSI instead (e.g. the .msi "
+                "build), or add a catalog entry for this installer."
+            )
+            analysis.blocker = analysis.escalate_reason
         return analysis
 
     # MSI
