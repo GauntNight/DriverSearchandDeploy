@@ -221,6 +221,34 @@ class TestIntuneViewEnrichment(unittest.TestCase):
         self.assertEqual(by_id["v1"]["version_state"], "N-1")      # 3.0.20 = N-1
         self.assertEqual(by_id["np"]["version_state"], "current")  # lone product
 
+    def test_enrich_apps_groups_dedupe_suffix(self):
+        # The deploy agent appends '_01' on a duplicate publish, giving two apps
+        # different displayNames ("VLC media player" / "VLC media player_01").
+        # They must still group as one product line so they rank (this was a live
+        # bug: both showed Latest).
+        from demo import intune_view
+        from autopackager.utils.installer_catalog import Catalog
+
+        apps = [
+            {"id": "a", "name": "VLC media player", "version": "3.0.20.0"},
+            {"id": "b", "name": "VLC media player_01", "version": "3.0.23.0"},
+        ]
+        with patch("autopackager.utils.installer_catalog.load_catalog",
+                   return_value=Catalog(entries=[])):
+            intune_view._enrich_apps(apps)
+        by_id = {a["id"]: a for a in apps}
+        self.assertEqual(by_id["b"]["version_state"], "current")  # 3.0.23 = Latest
+        self.assertEqual(by_id["a"]["version_state"], "N-1")      # 3.0.20 = N-1
+
+    def test_normalize_product_name_strips_version_arch_dedupe(self):
+        from demo import intune_view as iv
+        self.assertEqual(iv._normalize_product_name("VLC media player_01"), "vlc media player")
+        self.assertEqual(iv._normalize_product_name("Python 3.14.5 (64-bit)"), "python")
+        self.assertEqual(iv._normalize_product_name("7-Zip 24.08 (x64)"), "7-zip")
+        # 'v2' with no dotted version is part of the product name, not a version.
+        self.assertEqual(iv._normalize_product_name("AWS Command Line Interface v2"),
+                         "aws command line interface v2")
+
 
 # --- Upgrade-job metadata builders -----------------------------------------
 

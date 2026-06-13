@@ -343,15 +343,21 @@ _PRODUCT_NAME_VERSION = _re.compile(r"\s+v?\d+(?:\.\d+){1,3}.*$")
 _PRODUCT_NAME_ARCH = _re.compile(
     r"\s*\((?:[^)]*\b(?:x64|x86|64-bit|32-bit|amd64|arm64|edition|user|machine)\b[^)]*)\)\s*$",
     _re.I)
+# The deploy agent's _dedupe_display_name appends '_01'/'_02'… on a displayName
+# collision (a duplicate publish of the same product). Strip it so the two apps
+# still group as one product line for ranking.
+_PRODUCT_NAME_DEDUP = _re.compile(r"_\d{1,3}$")
 
 
 def _normalize_product_name(name: Optional[str]) -> str:
-    """Collapse a display name to a product key — strip a trailing version and an
-    arch/edition parenthetical so 'VLC media player 3.0.20' and 'VLC media player
-    3.0.23 (x64)' share one key for version ranking."""
+    """Collapse a display name to a product key — strip a trailing version, an
+    arch/edition parenthetical, and a deploy-time '_NN' dedupe suffix so
+    'VLC media player 3.0.20', 'VLC media player 3.0.23 (x64)', and
+    'VLC media player_01' all share one key for version ranking."""
     if not name:
         return ""
-    n = _PRODUCT_NAME_ARCH.sub("", str(name).strip())
+    n = _PRODUCT_NAME_DEDUP.sub("", str(name).strip())
+    n = _PRODUCT_NAME_ARCH.sub("", n)
     n = _PRODUCT_NAME_VERSION.sub("", n)
     return _re.sub(r"\s+", " ", n).strip().lower()
 
