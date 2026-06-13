@@ -358,6 +358,90 @@ def _check_version_sync(body: dict, app_id: Optional[str]) -> dict:
     return result
 
 
+# --- Lifecycle: per-app autoupdate toggle + the discovery loop --------------
+
+@demo_router.post("/api/demo/intune/{app_id}/autoupdate")
+async def api_set_autoupdate(app_id: str, request: Request):
+    """Toggle Enable-Autoupdate for the app's product line. When on, a discovered
+    newer version is full-auto-upgraded; when off (default) it's a gated upgrade
+    held at the Ring-0 approval gate. Keyed by product line, so it applies to the
+    product across all its deployed versions."""
+    from demo import lifecycle_settings
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    line = await asyncio.to_thread(intune_view.product_line_for_app, app_id)
+    if not line:
+        return JSONResponse({"error": "app not found"}, status_code=404)
+    entry = await asyncio.to_thread(
+        lambda: lifecycle_settings.set_flags(line, auto_update=enabled))
+    return {"app_id": app_id, "product_line": line, "auto_update": entry["auto_update"]}
+
+
+@demo_router.post("/api/demo/intune/check-updates")
+async def api_check_updates(request: Request, background: BackgroundTasks):
+    """The discovery loop, on demand. For each Latest deployed app (optionally
+    filtered by ``app_ids``), check catalog → internet for a newer version (the
+    same cascade + no-duplicate guard as the per-app check); for each genuine
+    update, dispatch an upgrade — full-auto if the product's autoupdate is on,
+    otherwise gated (held at Ring 0). Returns the plan + what was dispatched.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — empty body = check everything
+        body = {}
+    app_ids = body.get("app_ids") or None
+    mode = body.get("mode") or None
+    plan = await asyncio.to_thread(_discover_updates, app_ids, mode)
+    dispatched = []
+    for item in plan:
+        if item.get("status") != "update":
+            continue
+        gate = not item["auto_update"]
+        job_id = await asyncio.to_thread(
+            intake.begin_upgrade_job, item["app_id"], "all", gate=gate)
+        background.add_task(
+            _run_upgrade_pipeline, job_id, item["app_id"], "all",
+            item["download_url"], gate, item.get("entry_id"))
+        item["job_id"] = job_id
+        item["action"] = "gated" if gate else "auto-upgrade"
+        dispatched.append(item)
+    return {"checked": len(plan), "dispatched": len(dispatched), "plan": plan}
+
+
+def _discover_updates(app_ids, mode):
+    """Run the version-check cascade over the Latest deployed apps and classify
+    each: ``update`` (genuine newer build with a source) / ``no-source`` /
+    ``already-deployed`` / ``up-to-date``. Pure — no dispatch."""
+    view = intune_view.get_apps_view_cached(True)
+    out = []
+    for app in view.get("apps") or []:
+        aid = app.get("id")
+        if not aid or (app_ids and aid not in app_ids):
+            continue
+        # Only upgrade FROM the Latest — an N-1/N-2 is already superseded.
+        if (app.get("version_state") or "").startswith("N-"):
+            continue
+        res = _check_version_sync(
+            {"app_label": app.get("name"), "current_version": app.get("version"),
+             "mode": mode}, aid)
+        item = {
+            "app_id": aid, "name": app.get("name"),
+            "current_version": app.get("version"),
+            "latest_version": res.get("latest_version"),
+            "download_url": res.get("download_url"),
+            "entry_id": res.get("entry_id"),
+            "auto_update": bool(app.get("auto_update")),
+        }
+        if res.get("already_deployed"):
+            item["status"] = "already-deployed"
+        elif res.get("is_newer") and res.get("latest_version"):
+            item["status"] = "update" if res.get("download_url") else "no-source"
+        else:
+            item["status"] = "up-to-date"
+        out.append(item)
+    return out
+
+
 _TERMINAL_JOB_STATES = {"completed", "failed", "cancelled"}
 
 

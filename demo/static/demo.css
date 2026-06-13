@@ -503,3 +503,15 @@ body.busy .ver-badge[data-state="available"] {
   color: var(--text-mute); border-color: var(--border-2);
   background: var(--panel-2); text-decoration: line-through;
 }
+
+/* ===== Lifecycle: per-product autoupdate toggle ========================= */
+.auto-toggle {
+  display: inline-block; margin-left: 6px; font-size: 10px;
+  font-family: var(--mono); padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--border-2); background: var(--panel-2);
+  color: var(--text-mute); cursor: pointer; white-space: nowrap; vertical-align: middle;
+}
+.auto-toggle:hover { filter: brightness(1.2); }
+.auto-toggle[data-on="1"] {
+  color: var(--accent); border-color: var(--accent-dim); background: rgba(52,209,230,.12);
+}

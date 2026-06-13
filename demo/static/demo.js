@@ -433,6 +433,7 @@
     // Software-gap delta modal + packaging queue.
     $("software-gap").addEventListener("click", openSoftwareGap);
     $("intune-refresh").addEventListener("click", () => pollIntune(true));
+    $("check-updates").addEventListener("click", checkAllUpdates);
     $("gap-cancel").addEventListener("click", () => $("gap-overlay").classList.add("hidden"));
     $("gap-overlay").addEventListener("click", (e) => {
       if (e.target === $("gap-overlay")) $("gap-overlay").classList.add("hidden");
@@ -926,6 +927,72 @@
       el.textContent = inst.text;
       if (inst.title) el.title = inst.title;
       cell.appendChild(el);
+    }
+
+    // Per-product autoupdate toggle — only on the Latest (it's the product's
+    // policy). On = full auto-upgrade when a newer version is found; off = gated.
+    if (isLatestVersion(app)) {
+      const tog = document.createElement("button");
+      tog.className = "auto-toggle";
+      tog.dataset.on = app.auto_update ? "1" : "0";
+      tog.textContent = app.auto_update ? "auto ⟳ on" : "auto ⟳ off";
+      tog.title = app.auto_update
+        ? "Autoupdate ON — new versions deploy automatically. Click to require approval (gated)."
+        : "Autoupdate OFF — new versions are packaged and held at the Ring 0 gate. Click to deploy automatically.";
+      tog.addEventListener("click", (e) => { e.stopPropagation(); setAutoupdate(app, !app.auto_update); });
+      cell.appendChild(tog);
+    }
+  }
+
+  async function setAutoupdate(app, enabled) {
+    if (!app.id) return;
+    try {
+      const r = await fetch(`/api/demo/intune/${encodeURIComponent(app.id)}/autoupdate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const res = await r.json();
+      if (res.error) throw new Error(res.error);
+      app.auto_update = !!res.auto_update;
+      appendLine({ source: "system", text:
+        `${app.name}: autoupdate ${app.auto_update ? "ENABLED (full auto)" : "disabled (gated)"}.` });
+      rerender();
+    } catch (e) {
+      appendLine({ source: "system", level: "error", text: `Autoupdate toggle failed: ${e}` });
+    }
+  }
+
+  // The discovery loop on demand: check every Latest app (catalog → internet)
+  // and act per its autoupdate setting (full-auto or gated). Surfaces a summary.
+  async function checkAllUpdates() {
+    if (busy) return;
+    const btn = $("check-updates");
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = "Checking…";
+    appendLine({ source: "system", text: "Checking catalog → internet for newer versions…" });
+    try {
+      const r = await fetch("/api/demo/intune/check-updates", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: $("mode").value || undefined }),
+      });
+      const res = await r.json();
+      const plan = res.plan || [];
+      const updates = plan.filter((p) => p.status === "update");
+      if (!updates.length) {
+        appendLine({ source: "system", text:
+          `Checked ${res.checked} app(s) — all up to date. Nothing to upgrade.` });
+      } else {
+        for (const u of updates) {
+          appendLine({ source: "system", text:
+            `${u.name}: ${u.current_version} → ${u.latest_version} — ${u.action === "auto-upgrade" ? "auto-upgrading" : "gated (awaiting approval)"} (job #${u.job_id}).` });
+        }
+        appendLine({ source: "system", text:
+          `${res.dispatched} upgrade(s) dispatched of ${res.checked} checked.` });
+      }
+      pollIntune(true);
+    } catch (e) {
+      appendLine({ source: "system", level: "error", text: `Update check failed: ${e}` });
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
     }
   }
 
