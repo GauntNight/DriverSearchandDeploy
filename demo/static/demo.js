@@ -218,7 +218,7 @@
   function settleCurrent(reason) {
     if (currentSettled) return;
     currentSettled = true;
-    pollIntune(); // refresh the center panel — the payoff shot
+    pollIntune(true); // force a live reload — the payoff shot
 
     if (activeBatch) {
       if (evtSource) { evtSource.close(); evtSource = null; }
@@ -244,7 +244,7 @@
     setBusy(false);
     if (n) appendLine({ source: "system", text:
       `Queue batch finished — ${n} item(s) processed. Approve any gated jobs to deploy to Ring 0.` });
-    pollIntune();
+    pollIntune(true);
   }
 
   function captureSideEffects(env) {
@@ -262,9 +262,9 @@
     // Capture the published Intune app id for the Verify deep-link.
     const m = text.match(/app\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
     if (m) lastAppId = m[1];
-    // A fresh tenant write is worth an immediate center-panel refresh.
+    // A fresh tenant write is worth an immediate center-panel reload.
     if (/Published to Intune|Assigned|Deployment complete/i.test(text)) {
-      pollIntune();
+      pollIntune(true);
     }
   }
 
@@ -432,6 +432,7 @@
 
     // Software-gap delta modal + packaging queue.
     $("software-gap").addEventListener("click", openSoftwareGap);
+    $("intune-refresh").addEventListener("click", () => pollIntune(true));
     $("gap-cancel").addEventListener("click", () => $("gap-overlay").classList.add("hidden"));
     $("gap-overlay").addEventListener("click", (e) => {
       if (e.target === $("gap-overlay")) $("gap-overlay").classList.add("hidden");
@@ -690,19 +691,50 @@
     } finally {
       if (bar) bar.disabled = false;
       setBusy(false);
-      pollIntune();
+      pollIntune(true);
     }
   }
 
   // ---- Intune center panel -------------------------------------------------
-  async function pollIntune() {
+  // Background polls are served from the server's stale-while-revalidate cache
+  // (instant). A FORCE poll (?refresh=1) does a full live reload — used after a
+  // tenant write (the payoff shot) and by the manual Refresh button. We never
+  // run two force-reloads at once.
+  let intuneForcing = false;
+  async function pollIntune(force = false) {
+    if (force && intuneForcing) return;
+    if (force) { intuneForcing = true; setIntuneRefreshing(true); }
     try {
-      const r = await fetch("/api/demo/intune/apps");
+      const url = force ? "/api/demo/intune/apps?refresh=1" : "/api/demo/intune/apps";
+      const r = await fetch(url);
       const view = await r.json();
       renderIntune(view);
     } catch (e) {
       // leave the last good render in place
+    } finally {
+      if (force) { intuneForcing = false; setIntuneRefreshing(false); }
     }
+  }
+
+  // Freshness indicator in the center header: "live · just now" / "cached 12s"
+  // and a spinning state while a background revalidate or forced reload runs.
+  function setIntuneRefreshing(on) {
+    const el = $("intune-fresh");
+    if (el) el.classList.toggle("refreshing", !!on);
+  }
+  function updateFreshness(view) {
+    const el = $("intune-fresh");
+    if (!el) return;
+    const c = view.cache || {};
+    let label;
+    if (c.source === "live" || c.hit === false) label = "live · just now";
+    else if (c.source === "snapshot") label = "restored · updating…";
+    else if (c.age_s == null) label = "cached";
+    else if (c.age_s < 2) label = "live · just now";
+    else label = `cached · ${Math.round(c.age_s)}s`;
+    el.textContent = label;
+    el.classList.toggle("refreshing", !!c.revalidating);
+    el.dataset.stale = (c.age_s != null && c.age_s >= 25) ? "1" : "0";
   }
 
   function renderIntune(view) {
@@ -710,6 +742,7 @@
     const badge = $("intune-mode");
     badge.textContent = view.mode === "live" ? "live tenant" : "fixture mode";
     badge.dataset.mode = view.mode;
+    updateFreshness(view);
     const body = $("intune-body");
     const apps = riskSorted(view.apps || []);
     if (!apps.length) {

@@ -45,8 +45,18 @@ async def api_preflight():
 
 
 @demo_router.get("/api/demo/intune/apps")
-async def api_intune_apps(counts: bool = False):
-    view = await asyncio.to_thread(intune_view.get_apps_view, counts)
+async def api_intune_apps(counts: bool = False, refresh: bool = False):
+    """Center-panel apps view, served stale-while-revalidate.
+
+    Returns the cached snapshot instantly (memory, or a disk snapshot on a cold
+    start) and refreshes in the background once stale, so the panel stays
+    responsive instead of blocking on a live Graph fan-out every poll. Pass
+    ``refresh=1`` for a synchronous full reload (the manual-refresh / post-publish
+    "whole load"). The result carries a ``cache`` block ``{hit, age_s,
+    revalidating, source}``.
+    """
+    view = await asyncio.to_thread(
+        intune_view.get_apps_view_cached, counts, force=refresh)
     return view
 
 

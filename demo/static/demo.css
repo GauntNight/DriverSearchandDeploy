@@ -467,3 +467,22 @@ body.busy .ver-badge[data-state="available"] {
 .risk-summary[data-sev="high"]     { color: #f0935a; border-color: #7a4a1f; background: rgba(230,126,34,.12); }
 .risk-summary[data-sev="medium"]   { color: #e0bd55; border-color: #6f5a1c; }
 .risk-summary[data-sev="none"]     { color: var(--ok); }
+
+/* ===== Apps-view freshness (SWR cache) =================================== */
+.fresh-badge {
+  font-family: var(--mono); font-size: 10.5px; color: var(--text-mute);
+  padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border);
+  white-space: nowrap; display: inline-flex; align-items: center; gap: 5px;
+}
+.fresh-badge[data-stale="1"] { color: var(--warn); border-color: #6f5a1c; }
+.fresh-badge::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ok); box-shadow: 0 0 5px var(--ok);
+}
+.fresh-badge[data-stale="1"]::before { background: var(--warn); box-shadow: 0 0 5px var(--warn); }
+.fresh-badge.refreshing::before {
+  background: var(--accent); box-shadow: 0 0 6px var(--accent);
+  animation: freshpulse .9s ease-in-out infinite;
+}
+@keyframes freshpulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+#intune-refresh.spin { opacity: .6; pointer-events: none; }

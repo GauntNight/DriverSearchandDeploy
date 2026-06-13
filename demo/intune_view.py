@@ -14,6 +14,8 @@ Group-id → ring-name mapping comes from the local ``deployment_rings`` config
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +25,21 @@ from autopackager.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+# --- Apps-view cache (stale-while-revalidate + disk snapshot) --------------
+# The center panel polls the apps view continuously, but each live build is a
+# fan-out of Graph calls (list + per-app beta GET + per-app assignments) that
+# takes seconds. Re-running it on every 4s poll makes the panel feel like it's
+# perpetually "searching". Instead we cache the last good view and serve it
+# instantly, refreshing in the background when it goes stale (SWR). A disk
+# snapshot makes even the first paint after a server restart instant.
+_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "demo_cache"
+_SNAPSHOT_PATH = _CACHE_DIR / "apps_snapshot.json"
+_APPS_TTL_S = 25.0  # serve cached within this; revalidate in the background after
+
+_apps_lock = threading.Lock()
+_apps_cache: Dict[str, Any] = {"data": None, "ts": 0.0, "counts": False}
+_apps_refreshing = False
 
 
 def _ring_name_map() -> Dict[str, str]:
@@ -126,6 +143,117 @@ def enrich_cves(apps: List[Dict[str, Any]]) -> None:
         except Exception as exc:  # noqa: BLE001 — never break a row on CVE lookup
             logger.warning("CVE lookup failed", app=row.get("name"), error=str(exc))
             row["cve"] = cve_intel.empty_block()
+
+
+# --- Apps-view cache: stale-while-revalidate -------------------------------
+
+def _persist_snapshot(data: Dict[str, Any]) -> None:
+    """Atomically write the latest apps view to disk so the next cold start
+    paints instantly (best-effort)."""
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _SNAPSHOT_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(_SNAPSHOT_PATH)
+    except OSError as exc:
+        logger.warning("apps snapshot persist failed", error=str(exc))
+
+
+def _load_snapshot() -> Optional[Dict[str, Any]]:
+    try:
+        if _SNAPSHOT_PATH.exists():
+            return json.loads(_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("apps snapshot load failed", error=str(exc))
+    return None
+
+
+def _store_apps(data: Dict[str, Any], include_counts: bool) -> None:
+    with _apps_lock:
+        _apps_cache.update(data=data, ts=time.monotonic(), counts=include_counts)
+    _persist_snapshot(data)
+
+
+def _spawn_apps_refresh(include_counts: bool) -> None:
+    """Kick a single background refresh of the apps cache (idempotent — at most
+    one in flight)."""
+    global _apps_refreshing
+    with _apps_lock:
+        if _apps_refreshing:
+            return
+        _apps_refreshing = True
+
+    def _work():
+        global _apps_refreshing
+        try:
+            data = get_apps_view(include_counts)
+            _store_apps(data, include_counts)
+        except Exception as exc:  # noqa: BLE001 — background; never raise
+            logger.warning("apps background refresh failed", error=str(exc))
+        finally:
+            with _apps_lock:
+                _apps_refreshing = False
+
+    threading.Thread(target=_work, name="apps-refresh", daemon=True).start()
+
+
+def get_apps_view_cached(include_counts: bool = False, *, force: bool = False,
+                         ttl: float = _APPS_TTL_S) -> Dict[str, Any]:
+    """Stale-while-revalidate wrapper around :func:`get_apps_view`.
+
+    Serves the last good view instantly (from memory, or a disk snapshot on a
+    cold start) and refreshes in the background once it ages past ``ttl`` — so
+    the center panel stays responsive instead of blocking on a live Graph
+    fan-out every poll. Pass ``force=True`` (the endpoint's ``?refresh=1``) for a
+    synchronous full reload — the "whole load" gesture after a publish or on a
+    manual refresh.
+
+    Adds a ``cache`` block to the result: ``{hit, age_s, revalidating, source}``.
+    """
+    now = time.monotonic()
+    with _apps_lock:
+        snap = _apps_cache.get("data")
+        ts = _apps_cache.get("ts", 0.0)
+        cached_counts = _apps_cache.get("counts", False)
+
+    # Cold memory cache: try the disk snapshot for an instant first paint, then
+    # revalidate in the background. Falls through to a sync load if none.
+    if snap is None and not force:
+        disk = _load_snapshot()
+        if disk is not None:
+            with _apps_lock:
+                # ts stays 0 so it's treated as stale and a refresh is kicked.
+                _apps_cache.update(data=disk, ts=0.0, counts=bool(include_counts))
+            _spawn_apps_refresh(include_counts)
+            out = dict(disk)
+            out["cache"] = {"hit": True, "age_s": None, "revalidating": True,
+                            "source": "snapshot"}
+            return out
+
+    # Forced, truly cold, or a counts upgrade the cache can't satisfy -> sync load.
+    if force or snap is None or (include_counts and not cached_counts):
+        data = get_apps_view(include_counts)
+        _store_apps(data, include_counts)
+        out = dict(data)
+        out["cache"] = {"hit": False, "age_s": 0.0, "revalidating": False,
+                        "source": "live"}
+        return out
+
+    age = now - ts
+    out = dict(snap)
+    out["cache"] = {"hit": True, "age_s": round(age, 1), "revalidating": False,
+                    "source": "memory"}
+    if age >= ttl:
+        _spawn_apps_refresh(include_counts)
+        out["cache"]["revalidating"] = True
+    return out
+
+
+def invalidate_apps_cache() -> None:
+    """Drop the in-memory apps cache so the next read does a fresh load (e.g.
+    right after a tenant write). The disk snapshot is left as a paint fallback."""
+    with _apps_lock:
+        _apps_cache.update(data=None, ts=0.0)
 
 
 # --- Supersedence-demo enrichment ------------------------------------------
