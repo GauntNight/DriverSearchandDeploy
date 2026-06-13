@@ -362,15 +362,17 @@ def _normalize_product_name(name: Optional[str]) -> str:
     return _re.sub(r"\s+", " ", n).strip().lower()
 
 
-def _product_key(entry, name: Optional[str] = None):
-    """Identity used to group multiple deployed versions of the SAME product so
-    they can be ranked Latest / N-1 / N-2. A catalog entry's supersedence ``line``
-    (shared across e.g. the VLC MSI and EXE entries) is the truest key; otherwise
-    fall back to the catalog id, else a normalized display name."""
+def _product_key(entry, name: Optional[str] = None) -> str:
+    """Stable string identity used to group multiple deployed versions of the
+    SAME product so they can be ranked Latest / N-1 / N-2 (and so an upgrade
+    won't re-offer a version already deployed in the line). A catalog entry's
+    supersedence ``line`` (shared across e.g. the VLC MSI and EXE entries) is the
+    truest key; otherwise the catalog id, else a normalized display name. A
+    string (not a tuple) so it survives the JSON cache/disk snapshot intact."""
     if entry is not None:
         line = (entry.supersedence or {}).get("line") if entry.supersedence else None
-        return ("line", (line or entry.id))
-    return ("name", _normalize_product_name(name))
+        return "line:" + (line or entry.id)
+    return "name:" + _normalize_product_name(name)
 
 
 def _assign_version_states(apps: List[Dict[str, Any]]) -> None:
@@ -389,7 +391,7 @@ def _assign_version_states(apps: List[Dict[str, Any]]) -> None:
 
     groups: Dict[Any, List[Dict[str, Any]]] = defaultdict(list)
     for row in apps:
-        groups[row.get("_product_key")].append(row)
+        groups[row.get("product_line")].append(row)
 
     for members in groups.values():
         def _ver(r):
@@ -428,21 +430,44 @@ def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
             row["current_version"] = (
                 row.get("version") or (matched or {}).get("product_version") or None
             )
-            row["_product_key"] = _product_key(entry)
+            row["product_line"] = _product_key(entry)
         else:
             row.setdefault("catalog_entry_id", None)
             row.setdefault("source_url_known", False)
             row["current_version"] = row.get("version") or None
-            row["_product_key"] = _product_key(None, row.get("name"))
+            row["product_line"] = _product_key(None, row.get("name"))
     # Pass 2 — rank each product line by deployed version → Latest / N-1 / N-2.
+    # (product_line is kept on each row so the upgrade flow can tell whether a
+    # found version already exists in the line — no duplicate apps.)
     _assign_version_states(apps)
     for row in apps:
-        row.pop("_product_key", None)
         # "clean" = zero confirmed installs (the retirement signal). int 0 -> True;
         # None (counts unavailable / not fetched) -> None so the UI shows "no data"
         # rather than a false "clean".
         inst = row.get("installed")
         row["clean"] = (inst == 0) if isinstance(inst, int) else None
+
+
+def deployed_versions_for_app(app_id: Optional[str]) -> List[str]:
+    """Versions currently deployed in the SAME product line as ``app_id``.
+
+    Read from the cached apps view (fast). Used by the upgrade/version-check flow
+    to avoid offering — and the pipeline to avoid creating — a duplicate of a
+    version that already exists in the tenant. Empty if the app isn't found.
+    """
+    if not app_id:
+        return []
+    try:
+        view = get_apps_view_cached(True)
+    except Exception:  # noqa: BLE001
+        return []
+    apps = view.get("apps") or []
+    target = next((a for a in apps if a.get("id") == app_id), None)
+    if not target:
+        return []
+    line = target.get("product_line")
+    return [a.get("version") for a in apps
+            if a.get("product_line") == line and a.get("version")]
 
 
 def _live_view(include_counts: bool = False) -> Dict[str, Any]:

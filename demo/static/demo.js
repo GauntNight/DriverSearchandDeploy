@@ -976,6 +976,12 @@
         });
         appendLine({ source: "system", text:
           `${app.name}: new version ${res.latest_version} available (deployed ${res.current_version || "?"}).` });
+      } else if (res.already_deployed && res.latest_version) {
+        // The "newer" build already exists in this product line — don't offer to
+        // create a duplicate of an app already in the tenant.
+        badgeOverride.delete(app.id);
+        appendLine({ source: "system", text:
+          `${app.name}: ${res.latest_version} is already in the tenant — not creating a duplicate.` });
       } else {
         badgeOverride.delete(app.id);
         appendLine({ source: "system", text:

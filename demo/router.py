@@ -339,6 +339,22 @@ def _check_version_sync(body: dict, app_id: Optional[str]) -> dict:
         mode=body.get("mode") or None, slug=slug,
     )
     result["entry_id"] = entry_id
+
+    # No duplicates: if the "newer" version already exists somewhere in this
+    # product line's deployed apps (same version, or older than the newest
+    # deployed), it is NOT an upgrade — suppress the option so we never create a
+    # duplicate of an app already in the tenant.
+    latest = result.get("latest_version")
+    if latest and result.get("is_newer"):
+        from autopackager.utils.version_comparison import compare_catalog_versions
+        deployed = intune_view.deployed_versions_for_app(app_id)
+        try:
+            already = any(compare_catalog_versions(latest, dv) <= 0 for dv in deployed)
+        except Exception:  # noqa: BLE001
+            already = latest in deployed
+        if already:
+            result["is_newer"] = False
+            result["already_deployed"] = True
     return result
 
 

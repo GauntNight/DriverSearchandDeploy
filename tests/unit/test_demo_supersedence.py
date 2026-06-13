@@ -537,3 +537,51 @@ class TestInflightUpgradeGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNoDuplicateUpgrade(unittest.TestCase):
+    """The upgrade/version-check must not offer a version that already exists in
+    the tenant (no duplicate apps)."""
+
+    def test_deployed_versions_for_app(self):
+        from demo import intune_view
+        view = {"apps": [
+            {"id": "a", "version": "3.0.20.0", "product_line": "name:vlc media player"},
+            {"id": "b", "version": "3.0.23.0", "product_line": "name:vlc media player"},
+            {"id": "c", "version": "8.9", "product_line": "name:notepad"},
+        ]}
+        with patch("demo.intune_view.get_apps_view_cached", return_value=view):
+            self.assertCountEqual(
+                intune_view.deployed_versions_for_app("a"), ["3.0.20.0", "3.0.23.0"])
+            self.assertEqual(intune_view.deployed_versions_for_app("zzz"), [])
+            self.assertEqual(intune_view.deployed_versions_for_app(None), [])
+
+    def test_already_deployed_version_is_not_offered(self):
+        from demo import router
+        body = {"app_label": "VLC media player", "current_version": "3.0.23.0", "mode": "replay"}
+        with patch("demo.router._live_app_ids", return_value=None), \
+             patch("autopackager.utils.installer_catalog.load_catalog",
+                   return_value=Catalog(entries=[])), \
+             patch("demo.claude_bridge.check_version",
+                   return_value={"latest_version": "3.0.23", "is_newer": True,
+                                 "download_url": "u", "current_version": "3.0.23.0"}), \
+             patch("demo.intune_view.deployed_versions_for_app",
+                   return_value=["3.0.23.0", "3.0.20.0"]):
+            res = router._check_version_sync(body, "app-x")
+        self.assertFalse(res["is_newer"])
+        self.assertTrue(res.get("already_deployed"))
+
+    def test_genuinely_newer_version_still_offered(self):
+        from demo import router
+        body = {"app_label": "VLC media player", "current_version": "3.0.20.0", "mode": "replay"}
+        with patch("demo.router._live_app_ids", return_value=None), \
+             patch("autopackager.utils.installer_catalog.load_catalog",
+                   return_value=Catalog(entries=[])), \
+             patch("demo.claude_bridge.check_version",
+                   return_value={"latest_version": "3.0.23", "is_newer": True,
+                                 "download_url": "u", "current_version": "3.0.20.0"}), \
+             patch("demo.intune_view.deployed_versions_for_app",
+                   return_value=["3.0.20.0"]):
+            res = router._check_version_sync(body, "app-x")
+        self.assertTrue(res["is_newer"])
+        self.assertFalse(res.get("already_deployed"))
