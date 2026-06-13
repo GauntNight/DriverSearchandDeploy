@@ -659,17 +659,17 @@ def check_version(
     try:
         if mode == "replay":
             result = _run_version_replay(job_id, slug)
-            # Generic-fallback realism: with no app-specific fixture, the generic
-            # one can't know the real upstream version. Synthesize a believable
-            # 'next' version from what's actually DEPLOYED rather than surfacing
-            # the fixture's placeholder (this is what produced the bogus 9.9.9).
+            # With no app-specific fixture there is no real upstream to compare
+            # against, so report UP TO DATE rather than fabricating a "+1" bump.
+            # (The old bump made every fixture-less app falsely show an update —
+            # e.g. Go 1.26.4 -> a made-up 1.26.5.) To demo a real update, stage
+            # demo/fixtures/version_check_<slug>.ndjson; live mode does the real
+            # web check.
             if not _specific_version_fixture_exists(slug):
-                bumped = _bump_version(current_version)
                 result = {
-                    **result,
-                    "latest_version": bumped or "",
-                    "is_newer": bool(bumped),
-                    "download_url": result.get("download_url") or "",
+                    "latest_version": current_version,
+                    "is_newer": False,
+                    "download_url": None,
                 }
         else:  # live
             result = _run_version_live(job_id, app_label, current_version or "", source_url or "")

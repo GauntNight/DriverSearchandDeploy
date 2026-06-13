@@ -85,19 +85,20 @@ class TestCheckVersion(unittest.TestCase):
         self.assertIsNone(cb._bump_version(None))
         self.assertIsNone(cb._bump_version("abc"))
 
-    def test_replay_generic_fallback_synthesizes_not_placeholder(self):
-        """The generic fixture (no app-specific one) must NOT surface a fixed
-        placeholder like the old 9.9.9 — it derives a believable next version
-        from the deployed build."""
+    def test_replay_no_fixture_reports_up_to_date(self):
+        """An app with NO specific fixture must report up-to-date in replay — not
+        a fabricated '+1' bump (which falsely showed every fixture-less app as
+        having an update, e.g. Go 1.26.4 -> a made-up 1.26.5) and not a
+        placeholder like 9.9.9."""
         from demo import claude_bridge
 
         with patch("demo.claude_bridge.time.sleep"):
             out = claude_bridge.check_version(
                 "Acme Widget", "3.0.23.0", None, mode="replay",
-                slug="acme-widget",  # no specific fixture -> generic fallback
+                slug="acme-widget",  # no specific fixture
             )
-        self.assertEqual(out["latest_version"], "3.0.24")
-        self.assertTrue(out["is_newer"])
+        self.assertFalse(out["is_newer"])
+        self.assertNotEqual(out["latest_version"], "3.0.24")
         self.assertNotEqual(out["latest_version"], "9.9.9")
 
     def test_replay_generic_fallback_no_version_is_inconclusive(self):
