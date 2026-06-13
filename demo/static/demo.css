@@ -134,7 +134,7 @@ body {
 
 /* ---- Panels ---- */
 .panels {
-  flex: 1; display: grid; grid-template-columns: 300px 1fr 520px; gap: 0;
+  flex: 1; display: grid; grid-template-columns: 230px 1fr 480px; gap: 0;
   min-height: 0;
 }
 .panel {
@@ -188,9 +188,11 @@ body {
 }
 .esc-title { font-size: 13px; font-weight: 700; color: var(--bad); margin-bottom: 6px; }
 .esc-msg { font-size: 12px; color: var(--text); line-height: 1.4; }
-.gate-box { margin: 0 16px 16px; padding: 14px; border: 1px solid var(--warn);
+.gate-box { margin: 0 16px 16px 22px; padding: 14px; border: 1px solid var(--warn);
   border-radius: 8px; background: rgba(186,117,23,.08); text-align: center; }
 .gate-msg { font-size: 12px; color: var(--warn); margin-bottom: 10px; }
+/* Left-pane action boxes share the indent so their buttons sit in from the edge. */
+.escalation-box, .confirm-box { margin-left: 22px; margin-right: 16px; }
 
 /* CENTER: table */
 .table-wrap { overflow: auto; flex: 1; }
@@ -198,9 +200,10 @@ body {
 .intune-table th {
   position: sticky; top: 0; background: var(--panel-2); color: var(--text-mute);
   text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase;
-  letter-spacing: 1px; padding: 10px 14px; border-bottom: 1px solid var(--border);
+  letter-spacing: 0.5px; padding: 9px 10px; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
 }
-.intune-table td { padding: 11px 14px; border-bottom: 1px solid var(--border); color: var(--text-dim); }
+.intune-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); color: var(--text-dim); vertical-align: middle; }
 .intune-table td.app-name { color: var(--text); font-weight: 600; }
 .intune-table .ring-chip {
   display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px;
@@ -257,12 +260,17 @@ body {
 @keyframes pulse { 0%,100% { box-shadow: 0 0 6px var(--accent); } 50% { box-shadow: 0 0 16px var(--accent); } }
 @keyframes ping { 0% { transform: scale(.9); opacity: .9; } 100% { transform: scale(1.35); opacity: 0; } }
 
-/* Version-state cell: refresh button + supersedence badge (spec §4) */
-.ver-cell { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+/* Version-state cell: refresh button + version badge + install pill + auto
+   toggle. IMPORTANT: keep this a real table-cell (NOT display:flex) — flex on a
+   <td> drops it out of the table's column sizing and the rows stop lining up.
+   Inline children on one line (nowrap) keep the column aligned. */
+.ver-cell { white-space: nowrap; }
+.ver-cell > * { vertical-align: middle; }
+.ver-cell > * + * { margin-left: 6px; }
 .ver-refresh {
   background: transparent; border: 1px solid var(--border-2); color: var(--accent);
   border-radius: 4px; cursor: pointer; font-size: 13px; line-height: 1;
-  padding: 3px 6px; flex: none;
+  padding: 3px 6px;
 }
 .ver-refresh:hover { border-color: var(--accent); filter: brightness(1.15); }
 .ver-refresh:disabled { opacity: .5; cursor: default; }
@@ -371,7 +379,7 @@ body.busy .ver-badge[data-state="available"] {
 ::-webkit-scrollbar-track { background: transparent; }
 
 @media (max-width: 1200px) {
-  .panels { grid-template-columns: 250px 1fr 420px; }
+  .panels { grid-template-columns: 200px 1fr 380px; }
   .intake { grid-template-columns: 1fr; }
 }
 
