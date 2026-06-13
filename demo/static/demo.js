@@ -822,6 +822,15 @@
     return { sev, score };
   }
 
+  // "Patch now" is only meaningful on the LATEST deployed version of a product.
+  // For an N-1/N-2 the fix already exists in the estate — the new version is
+  // confirmed/deployed (so patching is done) and a clean N-1 is retire-eligible,
+  // not patch-eligible. So we only offer Patch now on the current/Latest.
+  function isLatestVersion(app) {
+    const s = app && app.version_state;
+    return !/^N-\d+$/.test(s || "");
+  }
+
   function buildRiskCell(cell, app) {
     cell.innerHTML = "";
     const c = app.cve;
@@ -855,12 +864,16 @@
     count.textContent = `${c.cve_count} CVE${c.cve_count > 1 ? "s" : ""}`;
     cell.appendChild(count);
 
-    const patch = document.createElement("button");
-    patch.className = "risk-patch";
-    patch.textContent = "Patch now";
-    patch.title = "Check the vendor source and patch through the pipeline";
-    patch.addEventListener("click", () => patchNow(app));
-    cell.appendChild(patch);
+    // Patch now only on the Latest — an N-1/N-2 is already superseded by a newer
+    // deployed version (and a clean one is for retirement, not patching).
+    if (isLatestVersion(app)) {
+      const patch = document.createElement("button");
+      patch.className = "risk-patch";
+      patch.textContent = "Patch now";
+      patch.title = "Check the vendor source and patch through the pipeline";
+      patch.addEventListener("click", () => patchNow(app));
+      cell.appendChild(patch);
+    }
   }
 
   // ---- Version state: refresh + supersedence badge -------------------------
@@ -1020,7 +1033,8 @@
     // Patch-now / live re-scan act on a deployed Intune app (need its id); a row
     // opened from the software-gap modal has none — it's queued, not patched.
     const hasApp = !!app.id;
-    $("cve-patch").style.display = (hasApp && c.cve_count) ? "" : "none";
+    // Patch now only on the Latest (an N-1/N-2 is already superseded / retire-eligible).
+    $("cve-patch").style.display = (hasApp && c.cve_count && isLatestVersion(app)) ? "" : "none";
     $("cve-rescan").style.display = hasApp ? "" : "none";
     $("cve-overlay").classList.remove("hidden");
   }
