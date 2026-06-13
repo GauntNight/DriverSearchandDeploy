@@ -45,14 +45,67 @@ async def api_preflight():
 
 
 @demo_router.get("/api/demo/intune/apps")
-async def api_intune_apps(counts: bool = False):
-    view = await asyncio.to_thread(intune_view.get_apps_view, counts)
+async def api_intune_apps(counts: bool = False, refresh: bool = False):
+    """Center-panel apps view, served stale-while-revalidate.
+
+    Returns the cached snapshot instantly (memory, or a disk snapshot on a cold
+    start) and refreshes in the background once stale, so the panel stays
+    responsive instead of blocking on a live Graph fan-out every poll. Pass
+    ``refresh=1`` for a synchronous full reload (the manual-refresh / post-publish
+    "whole load"). The result carries a ``cache`` block ``{hit, age_s,
+    revalidating, source}``.
+    """
+    view = await asyncio.to_thread(
+        intune_view.get_apps_view_cached, counts, force=refresh)
     return view
 
 
 @demo_router.get("/api/demo/intune/verify-url")
 async def api_verify_url(app_id: Optional[str] = None):
     return {"url": intune_view.verify_in_intune_url(app_id)}
+
+
+@demo_router.get("/api/demo/intune/{app_id}/cves")
+async def api_app_cves(app_id: str, mode: Optional[str] = None):
+    """CVE risk detail for one Win32 app (the row's detail drawer).
+
+    Returns ``{app_id, name, version, cve: {max_cvss, severity, cve_count,
+    cves:[...], source, ...}}``. Pass ``mode=live`` to force a fresh NVD/AI
+    lookup for just this app (the default ``cache`` is the offline curated
+    path). Best-effort: an unresolvable app returns an empty CVE block, never an
+    error.
+    """
+    return await asyncio.to_thread(_app_cves, app_id, mode)
+
+
+def _app_cves(app_id: str, mode: Optional[str]) -> dict:
+    from autopackager.services import cve_intel
+
+    view = intune_view.get_apps_view(False)
+    row = next((a for a in (view.get("apps") or []) if a.get("id") == app_id), None)
+    if not row:
+        return {"app_id": app_id, "name": None, "version": None,
+                "cve": cve_intel.empty_block()}
+    # In cache mode the row already carries its CVE block from the view; only do
+    # a fresh lookup when a different mode is explicitly requested (e.g. live).
+    cve = row.get("cve")
+    if mode and mode != "cache":
+        cpe = None
+        eid = row.get("catalog_entry_id")
+        if eid:
+            from autopackager.utils import installer_catalog
+            entry = installer_catalog.load_catalog().by_id(eid)
+            cpe = getattr(entry, "cpe", None) if entry else None
+        cve = cve_intel.lookup(
+            row.get("name"), cpe=cpe,
+            current_version=row.get("current_version") or row.get("version"),
+            mode=mode)
+    return {
+        "app_id": app_id,
+        "name": row.get("name"),
+        "version": row.get("current_version") or row.get("version"),
+        "cve": cve or cve_intel.empty_block(),
+    }
 
 
 @demo_router.get("/api/demo/intune/software-delta")
@@ -78,7 +131,18 @@ def _build_software_delta(source: str) -> dict:
             graph_client = GraphAPIClient()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Graph client unavailable for software-delta", error=str(exc))
-    return software_delta.build_delta(source=source, graph_client=graph_client)
+    delta = software_delta.build_delta(source=source, graph_client=graph_client)
+    # Best-effort CVE risk on the actionable buckets, so the gap modal can badge
+    # known-vulnerable installed-but-unmanaged software by severity.
+    try:
+        if isinstance(delta, dict):
+            for key in ("candidates", "known_packageable"):
+                rows = delta.get(key)
+                if isinstance(rows, list):
+                    intune_view.enrich_cves(rows)
+    except Exception as exc:  # noqa: BLE001 — enrichment never blocks the delta
+        logger.warning("software-delta CVE enrichment failed", error=str(exc))
+    return delta
 
 
 # --- Packaging queue (from the software-delta backlog) ---------------------

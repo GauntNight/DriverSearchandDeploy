@@ -71,3 +71,123 @@ def test_real_baseline_catalog_has_realplayer_escalate_entry():
     assert e is not None
     assert e.escalate_reason
     assert not e.detection_rules  # never publishes
+
+
+# --- Unidentifiable EXE (no readable VS_VERSIONINFO + no catalog match) -------
+# VLC's NSIS .exe yields all-empty PE metadata; with no catalog entry it must
+# escalate, not publish a malformed app (filename name, "unknown" version, a
+# placeholder detection rule Intune can never satisfy).
+
+def test_exe_has_identity_helper():
+    from demo import intake
+    assert intake._exe_has_identity({}) is False
+    assert intake._exe_has_identity(
+        {"product_name": "", "company_name": "", "file_version": ""}) is False
+    assert intake._exe_has_identity({"product_name": "VLC media player"}) is True
+    assert intake._exe_has_identity({"file_version": "3.0.20.0"}) is True
+
+
+def test_unreadable_exe_escalates(tmp_path):
+    from unittest import mock
+    from demo import intake
+
+    # A filename matching NO catalog filename_pattern (so the identity-less
+    # filename match below can't rescue it) + all-blank PE metadata must escalate.
+    p = tmp_path / "mystery-setup.exe"
+    p.write_bytes(b"MZ not a real pe")
+    with mock.patch("autopackager.utils.pe_metadata.read_pe_metadata") as rp, \
+         mock.patch("autopackager.utils.pe_metadata.sha256_file", return_value="abc123"):
+        rp.return_value.to_dict.return_value = {
+            "product_name": "", "company_name": "", "product_version": "",
+            "file_version": "", "original_filename": "", "file_description": "",
+        }
+        a = intake.analyze(p)
+    assert a.escalate is True
+    assert a.escalate_reason and "MSI" in a.escalate_reason
+    assert a.blocker == a.escalate_reason
+
+
+def test_identifiable_exe_miss_does_not_escalate(tmp_path):
+    # An EXE we CAN read identity from is a normal miss (research path), not an
+    # escalation — only the fully-unreadable case escalates.
+    from unittest import mock
+    from demo import intake
+
+    p = tmp_path / "SomeApp-setup.exe"
+    p.write_bytes(b"MZ not a real pe")
+    with mock.patch("autopackager.utils.pe_metadata.read_pe_metadata") as rp, \
+         mock.patch("autopackager.utils.pe_metadata.sha256_file", return_value="abc123"):
+        rp.return_value.to_dict.return_value = {
+            "product_name": "Some App", "company_name": "Some Vendor",
+            "product_version": "1.2.3",
+        }
+        a = intake.analyze(p)
+    assert a.escalate is False
+    assert a.branch == "miss"
+
+
+# --- Upgrade path respects the escalate guard --------------------------------
+# A version-check (esp. live mode) can hand back a vendor UI .exe whose metadata
+# is unreadable. The upgrade must fail cleanly, NOT publish a malformed
+# superseding app.
+
+def test_finalize_upgrade_escalates_instead_of_publishing(tmp_path):
+    from unittest import mock
+    from demo import intake
+
+    inst = tmp_path / "vlc-3.0.23-win64.exe"
+    inst.write_bytes(b"MZ fake")
+    esc = intake.Analysis(
+        kind="exe", path=str(inst), filename=inst.name, branch="miss",
+        escalate=True, escalate_reason="no readable version info; use the MSI",
+    )
+    with mock.patch.object(intake, "analyze", return_value=esc), \
+         mock.patch.object(intake, "dispatch_pipeline") as dispatch, \
+         mock.patch.object(intake, "_apply_upgrade_metadata") as apply_md, \
+         mock.patch.object(intake, "OrchestrationEngine") as Engine, \
+         mock.patch("demo.events.publish_pipeline_event"), \
+         mock.patch("demo.events.publish_end"):
+        intake.finalize_upgrade_job(42, "old-app-id", str(inst), "all")
+        # The malformed installer must NOT be packaged/dispatched...
+        dispatch.assert_not_called()
+        apply_md.assert_not_called()
+        # ...and the job must be marked failed.
+        Engine.return_value.update_job_state.assert_called_once()
+
+
+# --- Identity-less EXE rescued by a filename catalog entry --------------------
+# VLC ships an NSIS .exe with NO VS_VERSIONINFO. A catalog entry keyed by
+# filename_pattern (with pe_product_name as the canonical name) must match it,
+# and analyze() must inherit name/publisher from the entry + parse the version
+# from the filename — so it packages as "VLC media player", not a malformed app.
+
+def test_match_exe_filename_only_for_identityless_installer():
+    from autopackager.utils.installer_catalog import Catalog, CatalogEntry
+    cat = Catalog(entries=[CatalogEntry(
+        id="vlc-exe", type="exe", installer_family="nsis",
+        filename_pattern="vlc-", pe_product_name="VLC media player",
+        publisher="VideoLAN", install_command_template='"{installer_filename}" /S',
+        detection_rules=[{"kind": "file_version", "path": r"C:\X", "file": "vlc.exe",
+                          "operator": "greaterThanOrEqual", "value": "3.0.0.0"}],
+    )])
+    # All-blank PE metadata (the real VLC .exe case) still matches by filename.
+    m = cat.match_exe(pe_metadata={"company_name": "", "product_name": ""},
+                      sha256=None, filename="vlc-3.0.20-win64.exe")
+    assert m is not None and m.id == "vlc-exe"
+    # A non-matching filename with blank PE does NOT match.
+    assert cat.match_exe(pe_metadata={}, sha256=None, filename="other.exe") is None
+
+
+def test_version_from_filename_helper():
+    from demo import intake
+    assert intake._version_from_filename("vlc-3.0.20-win64.exe") == "3.0.20"
+    assert intake._version_from_filename("vlc-3.0.21-win32.exe") == "3.0.21"
+    assert intake._version_from_filename("setup.exe") is None
+
+
+def test_real_baseline_has_vlc_exe_entry():
+    from autopackager.utils import installer_catalog
+    e = installer_catalog.load_catalog().by_id("vlc-media-player-exe")
+    assert e is not None and e.type == "exe"
+    assert e.filename_pattern and e.pe_product_name == "VLC media player"
+    assert e.detection_rules  # must publish with a real detection rule

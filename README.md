@@ -38,6 +38,8 @@ automatic promotion across rings and automatic rollback on high failure rates.
 
 - **Catalog-based discovery**: Detects new driver versions by parsing Dell, HP, and Lenovo OEM catalogs (HP support is currently partial — see [Current Status](#current-status))
 - **MSI software packaging**: Reads MSI metadata (product name, version, publisher, product code) directly from the file and auto-fills the Intune app, uninstall command, and product-code detection rule from an install command — no LLM required (see [Packaging MSI Software](#packaging-msi-software))
+- **EXE software packaging**: Catalog-driven detection + per-family silent-install switches; even installers that ship no PE version metadata (e.g. VLC's NSIS `.exe`) package via a filename-matched catalog entry, and truly unidentifiable installers fail cleanly rather than publishing an undetectable app
+- **CVE patch prioritization** (operator-side): Correlates installed apps with the CVEs a newer release fixes and a CVSS severity, so the Mission Control console surfaces a risk-sorted "patch by severity" worklist with one-click upgrade (NVD-backed, with an offline curated cache)
 - **Win32 packaging**: Downloads installers/driver packs and builds `.intunewin` packages (CAB driver packs are wrapped with a generated `pnputil` install script)
 - **Intune publishing**: Full Graph API content-upload flow (chunked Azure Blob upload, encryption metadata, publish)
 - **Basic validation**: Smoke checks on package files and commands, plus optional Hyper-V VM-based install testing
@@ -95,7 +97,8 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | Lenovo driver discovery | ✅ Working | Parses `catalogv2.xml` |
 | HP driver discovery | ⚠️ Partial | Catalog parsing returns placeholder SoftPaq URLs; not production-ready |
 | MSI software packaging | ✅ Working | Reads MSI metadata (OLE2/Property table, sub-storage-aware) to auto-fill name, version, publisher, product code; builds install/uninstall commands and product-code detection. Deterministic — no LLM |
-| **EXE software packaging** | ✅ Working | Reads PE `VS_VERSIONINFO` (`autopackager/utils/pe_metadata.py`); catalog matches by SHA-256 / `pe_company_name` + `pe_product_name`; install command from catalog `install_command_template` or `INSTALLER_FAMILY_SWITCHES` default; detection from catalog `detection_rules`. Refuses to enqueue without a catalog hit (no detection rule = perpetual reinstall) |
+| **EXE software packaging** | ✅ Working | Reads PE `VS_VERSIONINFO` (`autopackager/utils/pe_metadata.py`); catalog matches by SHA-256 / `pe_company_name` + `pe_product_name` / `filename_pattern`; install command from catalog `install_command_template` or `INSTALLER_FAMILY_SWITCHES` default; detection from catalog `detection_rules`. **Identity-less installers handled**: some EXEs ship no `VS_VERSIONINFO` at all (VLC's NSIS `.exe` — Windows itself reads blank), so a catalog entry can match by `filename_pattern` and supply the name/publisher, with the version parsed from the filename. An EXE that is unidentifiable AND matches no catalog entry **escalates** (clean failure, actionable message) rather than publishing an app Intune can never detect |
+| **CVE patch prioritization** | ✅ Working (operator-side, demo) | `autopackager/services/cve_intel.py` correlates each app with the CVEs a newer release fixes + a CVSS severity, so the Mission Control center panel reads as a risk worklist sorted worst-first. Layered + best-effort: curated offline cache (default, stage-reliable) → live **NVD CVE API 2.0** by CPE → optional AI-bridge fallback (`CVE_INTEL_MODE`). Drives a Risk column, a CVE detail drawer, and one-click "Patch now" into the existing upgrade pipeline |
 | **Wrapped installers (`wrapped_msi` / `wrapped_zip`)** | ⚠️ Mechanism wired, baseline entries unverified | `autopackager/utils/extractors.py` unwraps EXE bundlers (`-sfx_o`, `--extract_msi`) and ZIPs into the data/downloads/extracted/ cache; the rest of the pipeline runs against the inner MSI. PowerToys / Adobe Reader DC / Foxit Reader baseline entries seeded as documented placeholders |
 | Packaging → `.intunewin` | ✅ Working | Requires Windows + `IntuneWinAppUtil.exe`; produces a placeholder file if the tool is absent |
 | Intune publishing (Graph API) | ✅ Working | Full content-upload + publish flow. Win32 app payload now carries the full attribute set: `msiInformation`, `returnCodes`, `informationUrl`, `notes`, `largeIcon`, `categories` (via the $ref sub-collection), `minimumSupportedOperatingSystem` |
@@ -120,8 +123,8 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | **Unmanaged-software delta** | ✅ Working | `autopackager/services/software_delta.py` — combines installed inventory (Intune Detected Apps + local ARP) with the managed set (published Win32 apps + catalog) and classifies into `managed` / `known_packageable` / `standard_os_component` / `store_app` / `unmanaged_candidate` / `ignored`. Surfaces the actionable "installed but not packaged" gap; degrades to local-ARP-only if the SP can't read `detectedApps` |
 | **Packaging queue from the delta** | ✅ Working | `demo/queue.py` — turns selected delta candidates into gated packaging jobs one at a time. Acquisition cascade: curated catalog URL → version-check brain → agent web-search (unknown app → parked for an operator confirm). Always Ring-0-scoped and deploy-gated; single-action lock + responsive cancel |
 | **Pre-publish install validation** | ✅ Working | `local_install_validator.py` actually installs the package on the host and verifies by detection rule or a new ARP entry before publishing. Capped retry ladder probes alternate silent switches; a working one is recorded as the corrected command. Unrecoverable installers (non-silent / bundleware) are flagged ENGINEER ESCALATION instead of publishing an app Intune can never detect; detached consumer stubs are reaped |
-| **Mission Control demo console** | ✅ Working | `demo/` — single-screen three-panel console (pipeline status · live Intune view · AI agent console + lamp) showing intake → Intune → Ring 0 with the AI research narrating live over SSE. Fully removable (`demo/` + one mount line); the core is untouched |
-| Automated test suite | ✅ Working | 715 tests passing — unit, integration, CLI, API |
+| **Mission Control demo console** | ✅ Working | `demo/` — single-screen three-panel console (pipeline status · live Intune view + **CVE risk column** · AI agent console + lamp) showing intake → Intune → Ring 0 with the AI research narrating live over SSE. The center panel is served **stale-while-revalidate** (cached instantly, refreshed in the background; disk snapshot for an instant first paint) with a Refresh button and freshness badge. Fully removable (`demo/` + one mount line); the core is untouched |
+| Automated test suite | ✅ Working | 876 tests passing — unit, integration, CLI, API |
 
 ## Quick Start
 
@@ -661,7 +664,7 @@ This repository was sanitized for public release. Git history prior to the initi
 ## Credits
 
 Built with AI assistance.
-Version 1.7.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
+Version 1.11.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
 Intune publishing, deployment rings with automatic promotion and rollback, continuous
 catalog discovery, status polling, web dashboard, and CLI. Software packaging covers both
 MSI and EXE installers (catalog-driven detection/silent-install) plus operator-opt-in MSI
@@ -669,4 +672,7 @@ supersedence. Phase 2 is now underway: an operator-side **AI research bridge** (
 SDK / `claude -p`) fills catalog gaps, checks vendors for newer versions, and sources installer
 URLs; an **unmanaged-software delta** and **packaging queue** turn the "installed but not
 packaged" backlog into gated jobs; and a **Mission Control demo console** narrates it live.
-See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+The console now adds **CVE patch prioritization** (risk-sorted "patch by severity" with one-click
+upgrade) and a stale-while-revalidate cached center panel; EXE packaging handles metadata-less
+installers via filename-matched catalog entries, and non-packageable installers escalate cleanly
+instead of publishing undetectable apps. See [CHANGELOG.md](CHANGELOG.md) for the full release history.

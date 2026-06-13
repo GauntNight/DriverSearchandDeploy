@@ -1,5 +1,87 @@
 ## [Unreleased]
 
+## [1.11.0] - 2026-06-13
+
+Demo robustness + first-class EXE support for installers that carry no metadata. Hardens the
+intake and upgrade paths so a non-packageable installer can never publish a malformed Intune
+app, makes the center panel responsive under continuous polling, and closes the "identity-less
+EXE" gap through the catalog. The deterministic four-stage pipeline is unchanged. Full suite:
+876 tests passing.
+
+### Added
+
+- **First-class EXE support for identity-less installers.** Some EXE installers ship **no**
+  `VS_VERSIONINFO` at all — VLC's NSIS `.exe` returns blank ProductName/Version/Company (Windows'
+  own Properties tab reads the same), so PE-based matching and identity extraction both come up
+  empty. `Catalog.match_exe` gains a **filename-only pass** that matches purely on a catalog
+  entry's `filename_pattern` when PE product is blank (gated so it never overrides the PE-present
+  filename+product disambiguation, e.g. VS Code user vs system). On such a HIT, `analyze()` now
+  **inherits name/publisher from the catalog entry** and **parses the version from the filename**
+  (`vlc-3.0.20-win64.exe` → `3.0.20`), so the app publishes as "VLC media player" 3.0.20, not the
+  filename. New baseline entry `vlc-media-player-exe` (filename match, NSIS `/S`, file-version
+  detection on the installed `vlc.exe`, NSIS uninstaller, shared supersedence line, CVE CPE).
+- **Stale-while-revalidate cache for the center apps view** (`intune_view.get_apps_view_cached`).
+  The view is served from cache instantly (~4 ms vs a ~9 s live Graph fan-out) and refreshed in
+  the background once it ages past 25 s; a **disk snapshot** (`data/demo_cache/apps_snapshot.json`)
+  makes the first paint after a restart instant too. `GET /api/demo/intune/apps?refresh=1` forces a
+  synchronous full reload (manual **Refresh** button + the post-publish payoff). The console shows a
+  freshness badge ("live · just now" / "cached · 12 s", pulsing while revalidating).
+- **`CatalogEntry.cpe`** (added in 1.10.0) is now also set on the VLC `.exe` entry; the
+  `vlc-media-player` supersedence line is shared between the MSI and EXE entries (same product).
+
+### Fixed / hardened
+
+- **Intake escalates an unidentifiable EXE** instead of publishing a malformed app. An uploaded
+  `.exe` whose `VS_VERSIONINFO` is unreadable **and** that matches no catalog entry was flowing down
+  the catalog-MISS path and publishing a Win32 app with the filename as its display name, version
+  "unknown", and a placeholder registry detection rule Intune can never satisfy (so the IME
+  re-installs forever). `analyze()` now escalates that case with an actionable "use the vendor MSI"
+  message; the router's existing escalate branch fails the job cleanly without writing to the tenant.
+- **The upgrade / "Patch now" path now respects the escalate guard.** It previously called
+  `analyze()` but ignored `escalate`, so a version-check that handed back an unidentifiable installer
+  (live mode returning VLC's `.exe`) published a malformed *superseding* app and wired supersedence
+  to the real one. `finalize_upgrade_job` now fails the upgrade cleanly in that case.
+- **Deterministic VLC version-check fixture.** Replay now returns `3.0.23` (the newest VLC build with
+  a managed `.msi`) with the real download URL, instead of the generic bump to `3.0.21` — which
+  VideoLAN ships **`.exe`-only**, so it couldn't be fetched.
+
+## [1.10.0] - 2026-06-12
+
+Demo Mission Control gains **CVE-driven patch prioritization** — "patch by risk". Each Intune app is
+correlated with the public CVEs a newer release fixes and a CVSS severity score, so the console reads
+as a risk worklist sorted worst-first instead of an alphabetical app list (the capability gap relative
+to PatchMyPC's CVE Insights). The deterministic four-stage pipeline is unchanged; this is an
+operator-side enrichment + prioritization layer that hands the worst offenders straight into the
+existing version-check → supersedence → Ring 0 upgrade flow. Full suite: 863 tests passing.
+
+### Added
+
+- **CVE intelligence service (`autopackager/services/cve_intel.py`).** `lookup()` resolves, for a
+  product + deployed version, the CVEs a newer release fixes, with a CVSS base score and severity
+  bucket. Layered and best-effort (never raises): a curated offline **cache** (the default,
+  stage-reliable), then the live **NVD CVE API 2.0** by CPE (`virtualMatchString`, optional
+  `NVD_API_KEY`), then an optional **AI research-bridge** fallback. Precise version filtering — a
+  CVE counts only when its `fixed_in` is newer than what's deployed (and, when an upgrade target is
+  known, at or before it). Mode via `CVE_INTEL_MODE` (`cache` | `live` | `off`).
+- **Curated CVE fixture (`demo/fixtures/cve_intel.json`).** Real, sourced CVEs (real NVD CVSS +
+  fixed-in versions) for VLC, 7-Zip, Notepad++, Python (incl. the CVSS 10.0 tarfile RCE
+  CVE-2024-12718), and Go. Keyed by CPE or display-name alias.
+- **`CatalogEntry.cpe`** — an agnostic, baseline-eligible NVD CPE key (`vendor:product`, version
+  appended at query time), set on the VLC / 7-Zip / Notepad++ / Go baseline entries.
+- **Risk UI.** The center "Intune · Apps" table gains a **Risk** column (severity badge with CVSS
+  score, worst-first sort, a pulsing critical), a **CVE detail drawer** (per-CVE id → NVD link, score,
+  summary, fixed-in version, plus a live NVD re-scan), a one-click **Patch now** that runs the app
+  through the existing upgrade pipeline, and an **estate-risk roll-up** in the panel header. The
+  software-gap modal badges known-vulnerable unmanaged software too.
+- **Endpoints.** `GET /api/demo/intune/{app_id}/cves` (drawer detail; `?mode=live` forces a fresh
+  NVD lookup for one app). The apps view and software-delta now carry a per-row `cve` block.
+
+### Notes
+
+- For a demo with red badges, **pre-stage a deliberately-old build** (e.g. VLC 3.0.20, 7-Zip 24.08,
+  Notepad++ 8.8.1, Python 3.12.0 for the CRITICAL). A fully-current tenant correctly shows all-green.
+  "Patch now" on a staged-old app finds the newer build, supersedes it, and the badge clears.
+
 ## [1.9.0] - 2026-06-12
 
 Demo Mission Control gains an interactive multi-package **batch-stream** view, the approval gate is

@@ -1,0 +1,5 @@
+{"text": "Reading the known source for VLC media player…", "level": "info", "delay_ms": 450}
+{"text": "VideoLAN publishes Windows builds under download.videolan.org/pub/videolan/vlc/.", "level": "info", "delay_ms": 500}
+{"text": "Note: the 3.0.21 build shipped .exe-only — selecting the newest build with a managed .msi.", "level": "info", "delay_ms": 500}
+{"text": "Latest published stable with an MSI: 3.0.23 — newer than the deployed 3.0.20.", "level": "info", "delay_ms": 450}
+{"version_result": {"latest_version": "3.0.23", "download_url": "https://download.videolan.org/pub/videolan/vlc/3.0.23/win64/vlc-3.0.23-win64.msi", "is_newer": true}}

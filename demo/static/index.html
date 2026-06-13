@@ -105,7 +105,10 @@
       <div class="panel-title-row">
         <h2 class="panel-title">Intune · Apps › Windows</h2>
         <div class="center-actions">
+          <span class="risk-summary" id="risk-summary" title="Estate vulnerability exposure by CVSS severity"></span>
           <span class="src-badge" id="intune-mode">…</span>
+          <span class="fresh-badge" id="intune-fresh" title="Center panel is served from a cached snapshot and refreshed in the background — Refresh forces a live reload">cached</span>
+          <button id="intune-refresh" class="btn ghost" title="Force a live reload from Intune">Refresh ⟳</button>
           <button id="software-gap" class="btn ghost">Software gap ⌕</button>
           <button id="verify" class="btn ghost">Verify in Intune ↗</button>
         </div>
@@ -113,10 +116,12 @@
       <div class="table-wrap">
         <table class="intune-table" id="intune-table">
           <thead>
-            <tr><th>Name</th><th>Version</th><th>Publisher</th><th>Assignment</th><th>Created</th><th>State</th></tr>
+            <tr><th>Name</th><th>Version</th>
+                <th class="risk-th" title="Known CVEs a newer release fixes, by CVSS severity — worst first">Risk ⚠</th>
+                <th>Publisher</th><th>Assignment</th><th>Created</th><th>State</th></tr>
           </thead>
           <tbody id="intune-body">
-            <tr class="empty"><td colspan="6">Loading tenant apps…</td></tr>
+            <tr class="empty"><td colspan="7">Loading tenant apps…</td></tr>
           </tbody>
         </table>
       </div>
@@ -181,6 +186,28 @@
         nothing is written to the tenant until you approve each one.
       </div>
       <button class="modal-x" id="gap-cancel" title="Close">✕</button>
+    </div>
+  </div>
+
+  <!-- CVE risk detail drawer — the vulnerabilities an upgrade closes -->
+  <div class="modal-overlay hidden" id="cve-overlay">
+    <div class="modal cve-modal" role="dialog" aria-modal="true" aria-labelledby="cve-title">
+      <div class="cve-head">
+        <h3 id="cve-title">Security risk</h3>
+        <span class="cve-summary-badge" id="cve-summary-badge"></span>
+      </div>
+      <div class="cve-sub" id="cve-sub"></div>
+      <div class="cve-list" id="cve-list"></div>
+      <div class="cve-actions">
+        <button class="btn ghost" id="cve-rescan" title="Re-check live against the NVD feed">Re-scan live ↻</button>
+        <button class="btn primary" id="cve-patch">Patch now ▶</button>
+      </div>
+      <div class="cve-foot">
+        Severity is the CVSS v3.1 base score from the NVD. “Patch now” checks the
+        vendor source for a newer release and runs it through the same
+        package → test → Ring 0 pipeline.
+      </div>
+      <button class="modal-x" id="cve-cancel" title="Close">✕</button>
     </div>
   </div>
 

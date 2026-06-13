@@ -531,6 +531,24 @@ Controls automated installation testing. AutoPackager can optionally test packag
 | `snapshot_name` | string | `"clean_windows_11"` | **Deprecated — use `vm_config.hyperv.snapshot_name` instead.** Kept for backward compatibility. |
 | `timeout_minutes` | integer | `30` | **Deprecated — use `vm_config.timeout_minutes` instead.** Global timeout for test operations. |
 
+### Nested Section: `local_install_validation`
+
+Pre-publish validation that actually installs the package **on this build host** (no VM required), verifies it landed via the detection rule or a new ARP entry — correcting the detection rule / silent switch from a retry ladder if needed — then uninstalls, all **before** publishing to Intune. Publishing is gated on this passing; an installer that can't be made to install verifiably is flagged for engineer review rather than publishing an app Intune can never detect. Auto-skipped under pytest (`TESTING=true`).
+
+```yaml
+testing:
+  local_install_validation:
+    enabled: true
+    timeout_seconds: 240
+    uninstall_timeout_seconds: 180
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `true` | Run the on-host install/verify/uninstall gate before publishing. **Demo note:** temporarily set `false` to publish a deliberately-OLD build (e.g. for the CVE "patch by risk" demo) without the validator hitting a downgrade conflict against the build host's current version — the CVE story is tenant-side. Re-enable afterwards. |
+| `timeout_seconds` | integer | `240` | Max seconds for a single silent install attempt. A non-silent installer that opens a UI hangs until this fires, then its process tree is killed and that strategy fails. Keep tight so a bad command fails fast on stage. |
+| `uninstall_timeout_seconds` | integer | `180` | Max seconds for the post-validation uninstall. |
+
 ### Nested Section: `vm_config`
 
 The `vm_config` section contains provider-specific settings. Structure:

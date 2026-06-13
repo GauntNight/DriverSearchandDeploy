@@ -93,8 +93,8 @@ class TestCheckVersion(unittest.TestCase):
 
         with patch("demo.claude_bridge.time.sleep"):
             out = claude_bridge.check_version(
-                "VLC media player", "3.0.23.0", None, mode="replay",
-                slug="vlc-media-player",  # no specific fixture -> generic
+                "Acme Widget", "3.0.23.0", None, mode="replay",
+                slug="acme-widget",  # no specific fixture -> generic fallback
             )
         self.assertEqual(out["latest_version"], "3.0.24")
         self.assertTrue(out["is_newer"])

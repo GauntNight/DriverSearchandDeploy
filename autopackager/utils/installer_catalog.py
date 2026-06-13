@@ -676,6 +676,18 @@ class CatalogEntry:
     #   install. With 'user', Intune installs in the logged-on user's context and
     #   evaluates HKCU detection per-user. Default (None) -> 'system'.
     install_context: Optional[str] = None
+    # ---- CVE / vulnerability intelligence key (AGNOSTIC, baseline-eligible) ----
+    # cpe -- the vendor:product half of an NVD CPE 2.3 name, WITHOUT a version,
+    #   e.g. 'cpe:2.3:a:videolan:vlc_media_player'. AGNOSTIC curated knowledge
+    #   (the same identifier for every operator), so it belongs in the baseline.
+    #   The CVE intelligence service (services/cve_intel.py) appends the deployed
+    #   and target versions at query time to ask the NVD CVE API "which CVEs does
+    #   upgrading this product fix?" -- driving the demo console's risk-sorted
+    #   "patch by severity" view. When unset, cve_intel falls back to a keyword
+    #   search by product name (less precise) or the AI research bridge. A short
+    #   'vendor:product' form (e.g. 'videolan:vlc_media_player') is also accepted
+    #   and normalized to the full cpe:2.3 prefix.
+    cpe: Optional[str] = None
     # ---- Durable end-to-end validation marker (AGNOSTIC, baseline-eligible) ----
     # The durable "the packaging work for this app is DONE" bit. Asserts that the
     # recipe was proven end-to-end at least once (built -> published -> install
@@ -845,16 +857,29 @@ class Catalog:
                 if (e.sha256 or "").strip().lower() == sha:
                     return e
 
-        if not pe_metadata:
-            return None
         # PE VS_VERSIONINFO strings are often fixed-width padded with trailing
         # spaces (e.g. 'Visual Studio Code          '); strip before comparing
         # or the exact-match passes (and filename_pattern gate) silently fail.
+        pe_metadata = pe_metadata or {}
         company = (pe_metadata.get("company_name") or "").strip().lower()
         product = (pe_metadata.get("product_name") or "").strip().lower()
+        fname = (filename or "").strip().lower()
+
+        # Pass 1.5: filename-only match for IDENTITY-LESS installers. Some EXE
+        # installers ship NO VS_VERSIONINFO at all (VLC's NSIS .exe returns blank
+        # company/product -- confirmed against Windows' own properties tab), so
+        # none of the PE passes below can fire. Match purely on a catalog entry's
+        # filename_pattern. Gated to the no-PE-product case so it never overrides
+        # the precise filename+product disambiguation (e.g. VS Code user vs
+        # system) that relies on PE metadata being present.
+        if fname and not product:
+            for e in exe_entries:
+                fp = (e.filename_pattern or "").lower()
+                if fp and fp in fname:
+                    return e
+
         if not (company or product):
             return None
-        fname = (filename or "").strip().lower()
 
         # Pass 2: filename_pattern-gated exact-product match (most specific).
         if fname:

@@ -34,6 +34,7 @@
   const badgeOverride = new Map();     // app_id -> { state, label } (client-driven, e.g. after a check)
   let pendingUpgrade = null;           // { app_id, scope } awaiting a manual installer drop
   let scopeApp = null;                 // app the open scope dialog targets
+  let cveApp = null;                   // app the open CVE risk drawer targets
 
   // ---- Single-action lock + queue batch state ------------------------------
   // The console runs ONE action at a time. While an action is in flight, other
@@ -217,7 +218,7 @@
   function settleCurrent(reason) {
     if (currentSettled) return;
     currentSettled = true;
-    pollIntune(); // refresh the center panel — the payoff shot
+    pollIntune(true); // force a live reload — the payoff shot
 
     if (activeBatch) {
       if (evtSource) { evtSource.close(); evtSource = null; }
@@ -243,7 +244,7 @@
     setBusy(false);
     if (n) appendLine({ source: "system", text:
       `Queue batch finished — ${n} item(s) processed. Approve any gated jobs to deploy to Ring 0.` });
-    pollIntune();
+    pollIntune(true);
   }
 
   function captureSideEffects(env) {
@@ -261,9 +262,9 @@
     // Capture the published Intune app id for the Verify deep-link.
     const m = text.match(/app\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
     if (m) lastAppId = m[1];
-    // A fresh tenant write is worth an immediate center-panel refresh.
+    // A fresh tenant write is worth an immediate center-panel reload.
     if (/Published to Intune|Assigned|Deployment complete/i.test(text)) {
-      pollIntune();
+      pollIntune(true);
     }
   }
 
@@ -431,6 +432,7 @@
 
     // Software-gap delta modal + packaging queue.
     $("software-gap").addEventListener("click", openSoftwareGap);
+    $("intune-refresh").addEventListener("click", () => pollIntune(true));
     $("gap-cancel").addEventListener("click", () => $("gap-overlay").classList.add("hidden"));
     $("gap-overlay").addEventListener("click", (e) => {
       if (e.target === $("gap-overlay")) $("gap-overlay").classList.add("hidden");
@@ -451,6 +453,14 @@
     $("scope-cancel").addEventListener("click", closeScopeDialog);
     $("scope-overlay").addEventListener("click", (e) => {
       if (e.target === $("scope-overlay")) closeScopeDialog();
+    });
+
+    // CVE risk drawer.
+    $("cve-cancel").addEventListener("click", closeCveDrawer);
+    $("cve-rescan").addEventListener("click", rescanCveLive);
+    $("cve-patch").addEventListener("click", () => { if (cveApp) patchNow(cveApp); });
+    $("cve-overlay").addEventListener("click", (e) => {
+      if (e.target === $("cve-overlay")) closeCveDrawer();
     });
   }
 
@@ -509,6 +519,22 @@
         `<td>${gapChip(isKnown ? "known" : "candidate", isKnown ? "known-packageable" : "candidate")}</td>` +
         `<td>${a.device_count != null ? esc(String(a.device_count)) : "—"}</td>`;
       tr.querySelector(".app-name").textContent = a.name || "";
+      // Known-vulnerable installed-but-unmanaged software gets a severity chip,
+      // so the gap modal also reads as a risk worklist.
+      if (a.cve && a.cve.cve_count) {
+        const { sev, score } = sevMeta(a.cve);
+        const chip = document.createElement("button");
+        chip.className = "risk-badge inline";
+        chip.dataset.sev = sev;
+        chip.innerHTML = `<span class="risk-dot"></span>${sev.toUpperCase()} ${score}`;
+        chip.title = `${a.cve.cve_count} CVE${a.cve.cve_count > 1 ? "s" : ""} — click for detail`;
+        chip.addEventListener("click", (e) => {
+          e.stopPropagation();
+          openCveDrawer({ name: a.name, version: a.version, current_version: a.version,
+                          id: null, cve: a.cve });
+        });
+        tr.querySelector(".app-name").appendChild(chip);
+      }
       // Stash the identity the queue endpoint needs on the row's checkbox.
       const cb = tr.querySelector(".gap-row-check");
       cb._candidate = {
@@ -665,19 +691,50 @@
     } finally {
       if (bar) bar.disabled = false;
       setBusy(false);
-      pollIntune();
+      pollIntune(true);
     }
   }
 
   // ---- Intune center panel -------------------------------------------------
-  async function pollIntune() {
+  // Background polls are served from the server's stale-while-revalidate cache
+  // (instant). A FORCE poll (?refresh=1) does a full live reload — used after a
+  // tenant write (the payoff shot) and by the manual Refresh button. We never
+  // run two force-reloads at once.
+  let intuneForcing = false;
+  async function pollIntune(force = false) {
+    if (force && intuneForcing) return;
+    if (force) { intuneForcing = true; setIntuneRefreshing(true); }
     try {
-      const r = await fetch("/api/demo/intune/apps");
+      const url = force ? "/api/demo/intune/apps?refresh=1" : "/api/demo/intune/apps";
+      const r = await fetch(url);
       const view = await r.json();
       renderIntune(view);
     } catch (e) {
       // leave the last good render in place
+    } finally {
+      if (force) { intuneForcing = false; setIntuneRefreshing(false); }
     }
+  }
+
+  // Freshness indicator in the center header: "live · just now" / "cached 12s"
+  // and a spinning state while a background revalidate or forced reload runs.
+  function setIntuneRefreshing(on) {
+    const el = $("intune-fresh");
+    if (el) el.classList.toggle("refreshing", !!on);
+  }
+  function updateFreshness(view) {
+    const el = $("intune-fresh");
+    if (!el) return;
+    const c = view.cache || {};
+    let label;
+    if (c.source === "live" || c.hit === false) label = "live · just now";
+    else if (c.source === "snapshot") label = "restored · updating…";
+    else if (c.age_s == null) label = "cached";
+    else if (c.age_s < 2) label = "live · just now";
+    else label = `cached · ${Math.round(c.age_s)}s`;
+    el.textContent = label;
+    el.classList.toggle("refreshing", !!c.revalidating);
+    el.dataset.stale = (c.age_s != null && c.age_s >= 25) ? "1" : "0";
   }
 
   function renderIntune(view) {
@@ -685,12 +742,14 @@
     const badge = $("intune-mode");
     badge.textContent = view.mode === "live" ? "live tenant" : "fixture mode";
     badge.dataset.mode = view.mode;
+    updateFreshness(view);
     const body = $("intune-body");
-    const apps = view.apps || [];
+    const apps = riskSorted(view.apps || []);
     if (!apps.length) {
-      body.innerHTML = `<tr class="empty"><td colspan="6">No Win32 apps ${view.mode === "fixture" ? "in fixtures" : "in tenant"} yet</td></tr>`;
+      body.innerHTML = `<tr class="empty"><td colspan="7">No Win32 apps ${view.mode === "fixture" ? "in fixtures" : "in tenant"} yet</td></tr>`;
       return;
     }
+    renderRiskSummary(apps);
     body.innerHTML = "";
     for (const app of apps) {
       const tr = document.createElement("tr");
@@ -703,15 +762,105 @@
       tr.innerHTML =
         `<td class="app-name"></td>` +
         `<td>${esc(app.version || "")}</td>` +
+        `<td class="risk-cell"></td>` +
         `<td>${esc(app.publisher || "")}</td>` +
         `<td>${assign}</td>` +
         `<td>${esc(app.created || "")}</td>` +
         `<td class="ver-cell"></td>`;
       tr.querySelector(".app-name").textContent = app.name || "(unnamed)";
+      buildRiskCell(tr.querySelector(".risk-cell"), app);
       buildVersionCell(tr.querySelector(".ver-cell"), app);
       body.appendChild(tr);
     }
     firstIntuneLoad = false;
+  }
+
+  // ---- CVE risk: severity rank, sort, badge, drawer ------------------------
+  const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, none: 0, unknown: -1 };
+
+  // Estate exposure roll-up in the center-panel header.
+  function renderRiskSummary(apps) {
+    const el = $("risk-summary");
+    if (!el) return;
+    const tally = { critical: 0, high: 0, medium: 0, low: 0 };
+    let exposed = 0;
+    for (const a of apps) {
+      const c = a.cve;
+      if (c && c.cve_count && tally[c.severity] != null) { tally[c.severity]++; exposed++; }
+    }
+    if (!exposed) {
+      el.dataset.sev = "none";
+      el.textContent = "✓ no known exposure";
+      return;
+    }
+    el.dataset.sev = tally.critical ? "critical" : tally.high ? "high" : tally.medium ? "medium" : "low";
+    const parts = [];
+    for (const s of ["critical", "high", "medium", "low"]) {
+      if (tally[s]) parts.push(`${tally[s]} ${s}`);
+    }
+    el.textContent = `⚠ ${parts.join(" · ")}`;
+  }
+
+  function riskScore(app) {
+    const c = app && app.cve;
+    if (!c) return -1;
+    return (SEV_RANK[c.severity] ?? -1) * 100 + (c.max_cvss || 0);
+  }
+
+  // Worst-first, but keep the server's order as a stable tiebreak so equal-risk
+  // rows (and the "fresh" highlight) stay where the operator expects them.
+  function riskSorted(apps) {
+    return apps
+      .map((a, i) => [a, i])
+      .sort((x, y) => (riskScore(y[0]) - riskScore(x[0])) || (x[1] - y[1]))
+      .map((p) => p[0]);
+  }
+
+  function sevMeta(c) {
+    const sev = (c && c.severity) || "unknown";
+    const score = c && (c.max_cvss != null) ? c.max_cvss.toFixed(1) : "";
+    return { sev, score };
+  }
+
+  function buildRiskCell(cell, app) {
+    cell.innerHTML = "";
+    const c = app.cve;
+    if (!c || c.source === "none") {
+      const dash = document.createElement("span");
+      dash.className = "risk-none-data";
+      dash.textContent = "—";
+      dash.title = "No CVE data for this product (curated cache miss). Re-scan live to query NVD.";
+      cell.appendChild(dash);
+      return;
+    }
+    if (!c.cve_count) {
+      const ok = document.createElement("span");
+      ok.className = "risk-clean";
+      ok.textContent = "✓ no known CVEs";
+      ok.title = `Deployed ${app.current_version || app.version || ""} — no public CVEs a newer release fixes.`;
+      cell.appendChild(ok);
+      return;
+    }
+    const { sev, score } = sevMeta(c);
+    const badge = document.createElement("button");
+    badge.className = "risk-badge";
+    badge.dataset.sev = sev;
+    badge.innerHTML = `<span class="risk-dot"></span>${sev.toUpperCase()} ${score}`;
+    badge.title = `${c.cve_count} CVE${c.cve_count > 1 ? "s" : ""} fixed by upgrading — click for detail`;
+    badge.addEventListener("click", () => openCveDrawer(app));
+    cell.appendChild(badge);
+
+    const count = document.createElement("span");
+    count.className = "risk-count";
+    count.textContent = `${c.cve_count} CVE${c.cve_count > 1 ? "s" : ""}`;
+    cell.appendChild(count);
+
+    const patch = document.createElement("button");
+    patch.className = "risk-patch";
+    patch.textContent = "Patch now";
+    patch.title = "Check the vendor source and patch through the pipeline";
+    patch.addEventListener("click", () => patchNow(app));
+    cell.appendChild(patch);
   }
 
   // ---- Version state: refresh + supersedence badge (spec §4) ---------------
@@ -796,6 +945,94 @@
     } finally {
       if (btn) { btn.disabled = false; btn.classList.remove("spin"); }
       rerender();
+    }
+  }
+
+  // ---- CVE risk drawer -----------------------------------------------------
+  function openCveDrawer(app, cveOverride) {
+    cveApp = app;
+    const c = cveOverride || app.cve || {};
+    const { sev, score } = sevMeta(c);
+    $("cve-title").textContent = `${app.name || "App"} — security risk`;
+    const sb = $("cve-summary-badge");
+    sb.dataset.sev = sev;
+    sb.textContent = c.cve_count
+      ? `${sev.toUpperCase()} ${score}`
+      : (c.source === "none" ? "no data" : "clean");
+    const srcLabel = { cache: "curated CVE cache", nvd: "live NVD feed",
+                       bridge: "AI research", none: "no source" }[c.source] || c.source;
+    $("cve-sub").textContent = c.cve_count
+      ? `${c.cve_count} CVE${c.cve_count > 1 ? "s" : ""} that a newer release fixes · ` +
+        `deployed ${app.current_version || app.version || "?"} · source: ${srcLabel}`
+      : (c.source === "none"
+          ? "No CVE data for this product in the curated cache. Re-scan live to query NVD."
+          : `No public CVEs a newer release fixes for ${app.current_version || app.version || "this version"}.`);
+    const list = $("cve-list");
+    list.innerHTML = "";
+    for (const v of c.cves || []) {
+      const row = document.createElement("div");
+      row.className = "cve-row";
+      row.dataset.sev = v.severity || "unknown";
+      const fixed = v.fixed_in ? `<span class="cve-fixed">fixed in ${esc(v.fixed_in)}</span>` : "";
+      const link = v.url
+        ? `<a href="${esc(v.url)}" target="_blank" rel="noopener" class="cve-id">${esc(v.id)}</a>`
+        : `<span class="cve-id">${esc(v.id || "")}</span>`;
+      row.innerHTML =
+        `<div class="cve-row-head">` +
+          `<span class="cve-sev" data-sev="${esc(v.severity || "unknown")}">` +
+            `${(v.severity || "?").toUpperCase()} ${v.cvss != null ? v.cvss.toFixed(1) : ""}</span>` +
+          link + fixed +
+        `</div>` +
+        `<div class="cve-row-summary"></div>`;
+      row.querySelector(".cve-row-summary").textContent = v.summary || "";
+      list.appendChild(row);
+    }
+    // Patch-now / live re-scan act on a deployed Intune app (need its id); a row
+    // opened from the software-gap modal has none — it's queued, not patched.
+    const hasApp = !!app.id;
+    $("cve-patch").style.display = (hasApp && c.cve_count) ? "" : "none";
+    $("cve-rescan").style.display = hasApp ? "" : "none";
+    $("cve-overlay").classList.remove("hidden");
+  }
+  function closeCveDrawer() {
+    cveApp = null;
+    $("cve-overlay").classList.add("hidden");
+  }
+  async function rescanCveLive() {
+    if (!cveApp || !cveApp.id) return;
+    const btn = $("cve-rescan");
+    btn.disabled = true; btn.textContent = "Scanning…";
+    setLamp("thinking", "querying NVD…");
+    try {
+      const r = await fetch(`/api/demo/intune/${encodeURIComponent(cveApp.id)}/cves?mode=live`);
+      const res = await r.json();
+      if (res && res.cve) {
+        cveApp.cve = res.cve;            // cache on the row so the table re-badges
+        openCveDrawer(cveApp, res.cve);  // re-render the drawer with live data
+        rerender();
+      }
+      setLamp("ready", "authenticated · standing by");
+    } catch (e) {
+      setLamp("ready", "authenticated · standing by");
+      appendLine({ source: "system", level: "error", text: `Live CVE scan failed: ${e}` });
+    } finally {
+      btn.disabled = false; btn.textContent = "Re-scan live ↻";
+    }
+  }
+
+  // "Patch now": check the vendor source for a newer release; if one exists,
+  // open the existing package-and-deploy scope dialog (same supersedence → Ring 0
+  // pipeline). Reuses refreshVersion's check + badge, then hands off.
+  async function patchNow(app) {
+    if (busy) return;
+    closeCveDrawer();
+    await refreshVersion(app);
+    const meta = appMeta.get(app.id) || {};
+    if (meta.latest_version) {
+      openScopeDialog(app);
+    } else {
+      appendLine({ source: "system", text:
+        `${app.name}: no newer build found upstream to patch the reported CVEs (already at the latest the source offers).` });
     }
   }
 
