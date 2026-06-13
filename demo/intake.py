@@ -659,6 +659,27 @@ def finalize_upgrade_job(
         sub = substitute_with_enterprise(analysis)
         if sub:
             analysis = sub
+    if analysis.escalate:
+        # The fetched newer installer can't be identified/packaged — e.g. a
+        # version-check (often live mode) handed back a vendor's UI .exe whose
+        # VS_VERSIONINFO is unreadable and which carries no detection rule (VLC's
+        # NSIS .exe is the canonical case). Publishing it would mint a malformed
+        # superseding app (filename as name, "unknown" version, a placeholder
+        # detection rule). Fail the upgrade cleanly instead — the deterministic
+        # MSI path (catalog HIT / replay fixture) is the correct source.
+        from demo import events
+        from autopackager.models.job import JobState
+        reason = analysis.escalate_reason or "the fetched upgrade installer is not packageable"
+        try:
+            events.publish_pipeline_event(job_id, "failed", reason, level="error")
+            events.publish_end(job_id, ok=False, text="escalated")
+        except Exception:  # noqa: BLE001 — event stream is best-effort
+            pass
+        OrchestrationEngine().update_job_state(
+            job_id, JobState.FAILED, error_message=reason)
+        logger.warning("Upgrade installer not packageable; escalated",
+                       job_id=job_id, reason=reason)
+        return
     _apply_upgrade_metadata(job_id, analysis, old_app_id, scope, old_entry_id)
     dispatch_pipeline(job_id, gate=gate)
 

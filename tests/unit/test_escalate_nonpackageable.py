@@ -122,3 +122,32 @@ def test_identifiable_exe_miss_does_not_escalate(tmp_path):
         a = intake.analyze(p)
     assert a.escalate is False
     assert a.branch == "miss"
+
+
+# --- Upgrade path respects the escalate guard --------------------------------
+# A version-check (esp. live mode) can hand back a vendor UI .exe whose metadata
+# is unreadable. The upgrade must fail cleanly, NOT publish a malformed
+# superseding app.
+
+def test_finalize_upgrade_escalates_instead_of_publishing(tmp_path):
+    from unittest import mock
+    from demo import intake
+
+    inst = tmp_path / "vlc-3.0.23-win64.exe"
+    inst.write_bytes(b"MZ fake")
+    esc = intake.Analysis(
+        kind="exe", path=str(inst), filename=inst.name, branch="miss",
+        escalate=True, escalate_reason="no readable version info; use the MSI",
+    )
+    with mock.patch.object(intake, "analyze", return_value=esc), \
+         mock.patch.object(intake, "dispatch_pipeline") as dispatch, \
+         mock.patch.object(intake, "_apply_upgrade_metadata") as apply_md, \
+         mock.patch.object(intake, "OrchestrationEngine") as Engine, \
+         mock.patch("demo.events.publish_pipeline_event"), \
+         mock.patch("demo.events.publish_end"):
+        intake.finalize_upgrade_job(42, "old-app-id", str(inst), "all")
+        # The malformed installer must NOT be packaged/dispatched...
+        dispatch.assert_not_called()
+        apply_md.assert_not_called()
+        # ...and the job must be marked failed.
+        Engine.return_value.update_job_state.assert_called_once()
