@@ -1,5 +1,42 @@
 ## [Unreleased]
 
+## [1.10.0] - 2026-06-12
+
+Demo Mission Control gains **CVE-driven patch prioritization** — "patch by risk". Each Intune app is
+correlated with the public CVEs a newer release fixes and a CVSS severity score, so the console reads
+as a risk worklist sorted worst-first instead of an alphabetical app list (the capability gap relative
+to PatchMyPC's CVE Insights). The deterministic four-stage pipeline is unchanged; this is an
+operator-side enrichment + prioritization layer that hands the worst offenders straight into the
+existing version-check → supersedence → Ring 0 upgrade flow. Full suite: 863 tests passing.
+
+### Added
+
+- **CVE intelligence service (`autopackager/services/cve_intel.py`).** `lookup()` resolves, for a
+  product + deployed version, the CVEs a newer release fixes, with a CVSS base score and severity
+  bucket. Layered and best-effort (never raises): a curated offline **cache** (the default,
+  stage-reliable), then the live **NVD CVE API 2.0** by CPE (`virtualMatchString`, optional
+  `NVD_API_KEY`), then an optional **AI research-bridge** fallback. Precise version filtering — a
+  CVE counts only when its `fixed_in` is newer than what's deployed (and, when an upgrade target is
+  known, at or before it). Mode via `CVE_INTEL_MODE` (`cache` | `live` | `off`).
+- **Curated CVE fixture (`demo/fixtures/cve_intel.json`).** Real, sourced CVEs (real NVD CVSS +
+  fixed-in versions) for VLC, 7-Zip, Notepad++, Python (incl. the CVSS 10.0 tarfile RCE
+  CVE-2024-12718), and Go. Keyed by CPE or display-name alias.
+- **`CatalogEntry.cpe`** — an agnostic, baseline-eligible NVD CPE key (`vendor:product`, version
+  appended at query time), set on the VLC / 7-Zip / Notepad++ / Go baseline entries.
+- **Risk UI.** The center "Intune · Apps" table gains a **Risk** column (severity badge with CVSS
+  score, worst-first sort, a pulsing critical), a **CVE detail drawer** (per-CVE id → NVD link, score,
+  summary, fixed-in version, plus a live NVD re-scan), a one-click **Patch now** that runs the app
+  through the existing upgrade pipeline, and an **estate-risk roll-up** in the panel header. The
+  software-gap modal badges known-vulnerable unmanaged software too.
+- **Endpoints.** `GET /api/demo/intune/{app_id}/cves` (drawer detail; `?mode=live` forces a fresh
+  NVD lookup for one app). The apps view and software-delta now carry a per-row `cve` block.
+
+### Notes
+
+- For a demo with red badges, **pre-stage a deliberately-old build** (e.g. VLC 3.0.20, 7-Zip 24.08,
+  Notepad++ 8.8.1, Python 3.12.0 for the CRITICAL). A fully-current tenant correctly shows all-green.
+  "Patch now" on a staged-old app finds the newer build, supersedes it, and the badge clears.
+
 ## [1.9.0] - 2026-06-12
 
 Demo Mission Control gains an interactive multi-package **batch-stream** view, the approval gate is
