@@ -1021,6 +1021,38 @@ entries:
       - published
       note: Published to Ring 0 and install-confirmed 2026-06-10 (batch catalog-expansion); app still resident in tenant.
     notes: Auto-added by create-software-job (task c8cc9959-0e48-4287-93a8-d8c785e25d87)
+  # VLC also ships an NSIS .exe. Unlike the MSI it carries NO VS_VERSIONINFO
+  # (Windows' own properties tab reads blank ProductName/Version), so it cannot
+  # be matched by PE metadata and there is no ProductCode for detection. This
+  # entry supplies what the binary lacks: filename-pattern match, the NSIS silent
+  # switch, a file-version detection rule against the installed vlc.exe, and the
+  # NSIS uninstaller. Shares the `vlc-media-player` supersedence line with the MSI
+  # (same product). Prefer the MSI when available; this makes the .exe packageable
+  # when that's all you have.
+  - id: vlc-media-player-exe
+    type: exe
+    installer_family: nsis
+    distribution: standard
+    filename_pattern: "vlc-"
+    pe_product_name: "VLC media player"  # canonical name (the .exe's own VS_VERSIONINFO is blank)
+    publisher: VideoLAN
+    cpe: "cpe:2.3:a:videolan:vlc_media_player"
+    install_command_template: '"{installer_filename}" /S'
+    uninstall_command_template: '"C:\Program Files\VideoLAN\VLC\uninstall.exe" /S'
+    detection_rules:
+      - kind: file_version
+        path: 'C:\Program Files\VideoLAN\VLC'
+        file: vlc.exe
+        operator: greaterThanOrEqual
+        value: '3.0.0.0'
+    supersedence:
+      line: vlc-media-player
+      mode: generic
+    information_url: "https://www.videolan.org/vlc/"
+    description: "VLC media player — free, open-source cross-platform multimedia player."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    notes: "NSIS .exe (no VS_VERSIONINFO). Matched by filename, detected via the installed vlc.exe file version. Win64 install path; the win32 build lands in Program Files (x86)."
   - id: node-js
     type: msi
     install_command_template: msiexec /i {installer_filename} /qn /norestart

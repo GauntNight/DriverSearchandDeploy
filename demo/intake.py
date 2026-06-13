@@ -171,6 +171,17 @@ def substitute_with_enterprise(analysis: "Analysis") -> Optional["Analysis"]:
 
 # --- Identity + catalog match ----------------------------------------------
 
+def _version_from_filename(filename: str) -> Optional[str]:
+    """Best-effort version parsed from an installer filename, e.g.
+    ``vlc-3.0.20-win64.exe`` -> ``3.0.20``. Used as a fallback when an EXE's
+    VS_VERSIONINFO is blank but a catalog HIT identifies the product. Returns
+    None when no dotted version is present."""
+    import re
+
+    m = re.search(r"(\d+(?:\.\d+){1,3})", filename or "")
+    return m.group(1) if m else None
+
+
 def _exe_has_identity(pe_meta: Dict[str, Any]) -> bool:
     """True when an EXE's PE metadata carries at least one identifying field.
 
@@ -228,6 +239,16 @@ def analyze(path: Path) -> Analysis:
                 analysis.escalate_reason = entry.escalate_reason
                 analysis.blocker = entry.escalate_reason
                 return analysis
+            # Catalog HIT supplies identity the binary may lack: some installers
+            # (VLC's NSIS .exe) carry NO VS_VERSIONINFO, so PE name/publisher come
+            # back blank. The catalog entry is the curated source of truth — use
+            # it so the published app is "VLC media player", not the filename.
+            if not analysis.product_name:
+                analysis.product_name = entry.pe_product_name or entry.product_name_pattern or None
+            if not analysis.publisher:
+                analysis.publisher = entry.publisher or None
+            if not analysis.version:
+                analysis.version = _version_from_filename(path.name)
             rules = entry.detection_rules or []
             analysis.detection_rule_count = len(rules)
             analysis.install_command = entry.render_install_command(path.name)

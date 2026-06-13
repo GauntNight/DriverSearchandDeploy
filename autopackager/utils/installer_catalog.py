@@ -857,16 +857,29 @@ class Catalog:
                 if (e.sha256 or "").strip().lower() == sha:
                     return e
 
-        if not pe_metadata:
-            return None
         # PE VS_VERSIONINFO strings are often fixed-width padded with trailing
         # spaces (e.g. 'Visual Studio Code          '); strip before comparing
         # or the exact-match passes (and filename_pattern gate) silently fail.
+        pe_metadata = pe_metadata or {}
         company = (pe_metadata.get("company_name") or "").strip().lower()
         product = (pe_metadata.get("product_name") or "").strip().lower()
+        fname = (filename or "").strip().lower()
+
+        # Pass 1.5: filename-only match for IDENTITY-LESS installers. Some EXE
+        # installers ship NO VS_VERSIONINFO at all (VLC's NSIS .exe returns blank
+        # company/product -- confirmed against Windows' own properties tab), so
+        # none of the PE passes below can fire. Match purely on a catalog entry's
+        # filename_pattern. Gated to the no-PE-product case so it never overrides
+        # the precise filename+product disambiguation (e.g. VS Code user vs
+        # system) that relies on PE metadata being present.
+        if fname and not product:
+            for e in exe_entries:
+                fp = (e.filename_pattern or "").lower()
+                if fp and fp in fname:
+                    return e
+
         if not (company or product):
             return None
-        fname = (filename or "").strip().lower()
 
         # Pass 2: filename_pattern-gated exact-product match (most specific).
         if fname:
