@@ -58,7 +58,7 @@ def check_ai() -> Dict[str, Any]:
     cli = shutil.which("claude") is not None
     if not (sdk or cli):
         return {"ok": False, "state": "error",
-                "detail": "no claude-agent-sdk and no `claude` CLI on PATH",
+                "detail": "AutoPackager agent runtime not found (no SDK or CLI on PATH)",
                 "mode": mode}
 
     # Fast health check via CLI (cheap, authenticates through local session).
@@ -69,7 +69,7 @@ def check_ai() -> Dict[str, Any]:
             )
             if proc.returncode == 0:
                 return {"ok": True, "state": "ready",
-                        "detail": f"health check passed ({'sdk+cli' if sdk else 'cli'})",
+                        "detail": "AutoPackager agent ready",
                         "mode": mode}
             tail = (proc.stderr or proc.stdout or "").strip()[-200:]
             return {"ok": False, "state": "error",
@@ -80,7 +80,7 @@ def check_ai() -> Dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "state": "error", "detail": str(exc), "mode": mode}
     # SDK present but no CLI: assume ready (SDK authenticates via local config).
-    return {"ok": True, "state": "ready", "detail": "claude-agent-sdk present", "mode": mode}
+    return {"ok": True, "state": "ready", "detail": "AutoPackager agent ready", "mode": mode}
 
 
 def check_graph() -> Dict[str, Any]:
