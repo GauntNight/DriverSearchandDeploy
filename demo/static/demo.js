@@ -863,20 +863,21 @@
     cell.appendChild(patch);
   }
 
-  // ---- Version state: refresh + supersedence badge (spec §4) ---------------
+  // ---- Version state: refresh + supersedence badge -------------------------
+  // The server ranks every deployed app in a product line by displayVersion, so
+  // the top of each chain is "Latest" and older deployed versions are N-1/N-2…
   function badgeFromServerState(app) {
     switch (app.version_state) {
       case "pending":  return { state: "pending", label: "Pending" };
-      // Unknown/unplaceable defaults to "Current" until a refresh (per-app ↻,
-      // daily version-check, or tenant sync) resolves the real chain position.
-      case "":         return { state: "current", label: "Current" };
-      case "current":  return { state: "current", label: "Current" };
+      case "retired":  return { state: "retired", label: "Retired" };
+      case "":         return { state: "current", label: "Latest" };
+      case "current":  return { state: "current", label: "Latest" };
       default:
         // "N-1", "N-2", … come through verbatim as superseded labels.
         if (/^N-\d+$/.test(app.version_state || "")) {
           return { state: "superseded", label: app.version_state };
         }
-        return { state: "current", label: "Current" };
+        return { state: "current", label: "Latest" };
     }
   }
 

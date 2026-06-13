@@ -174,24 +174,52 @@ class TestIntuneViewEnrichment(unittest.TestCase):
         self.assertEqual(intune_view._version_state_for(entry, newest), "current")
         self.assertEqual(intune_view._version_state_for(entry, older), "N-1")
 
-    def test_enrich_apps_matches_and_defaults(self):
+    def test_enrich_apps_ranks_deployed_versions(self):
+        # Version state is derived by ranking DEPLOYED apps in a product line by
+        # their Graph displayVersion — reliable without install confirmation. A
+        # version known only to the catalog but not deployed is NOT "N-1" (that's
+        # "update available", handled separately); N-1/N-2 describe the estate.
         from demo import intune_view
 
         catalog, _ = _catalog_with_chain()
         apps = [
             {"id": "app-old", "name": "7-Zip", "version": "23.01"},
+            {"id": "app-older", "name": "7-Zip", "version": "22.01"},
             {"id": "unmanaged", "name": "Other", "version": "1.0"},
         ]
         with patch("autopackager.utils.installer_catalog.load_catalog", return_value=catalog):
             intune_view._enrich_apps(apps)
-        self.assertEqual(apps[0]["catalog_entry_id"], "7-zip")
-        self.assertEqual(apps[0]["version_state"], "N-1")
-        self.assertTrue(apps[0]["source_url_known"])
-        # Unmatched app can't be placed in a chain yet → optimistic "current"
-        # default (resolved to N-1/N-2 once a refresh populates the overlay).
-        self.assertIsNone(apps[1]["catalog_entry_id"])
-        self.assertEqual(apps[1]["version_state"], "current")
-        self.assertFalse(apps[1]["source_url_known"])
+        by_id = {a["id"]: a for a in apps}
+        self.assertEqual(by_id["app-old"]["catalog_entry_id"], "7-zip")
+        # Ranked by deployed version: 23.01 = Latest, 22.01 = N-1.
+        self.assertEqual(by_id["app-old"]["version_state"], "current")
+        self.assertEqual(by_id["app-older"]["version_state"], "N-1")
+        self.assertTrue(by_id["app-old"]["source_url_known"])
+        # A lone unmanaged app is the only one in its line → Latest.
+        self.assertIsNone(by_id["unmanaged"]["catalog_entry_id"])
+        self.assertEqual(by_id["unmanaged"]["version_state"], "current")
+        self.assertFalse(by_id["unmanaged"]["source_url_known"])
+
+    def test_enrich_apps_ranks_by_name_without_catalog_or_verified_versions(self):
+        # The reliability fix: in a device-less tenant with NO verified_versions
+        # and NO catalog match, two deployed versions of the same product still
+        # rank correctly by display name + deployed version (the old path
+        # defaulted both to "current").
+        from demo import intune_view
+        from autopackager.utils.installer_catalog import Catalog
+
+        apps = [
+            {"id": "v1", "name": "VLC media player", "version": "3.0.20.0"},
+            {"id": "v2", "name": "VLC media player", "version": "3.0.23.0"},
+            {"id": "np", "name": "Notepad++", "version": "8.9.6"},
+        ]
+        with patch("autopackager.utils.installer_catalog.load_catalog",
+                   return_value=Catalog(entries=[])):
+            intune_view._enrich_apps(apps)
+        by_id = {a["id"]: a for a in apps}
+        self.assertEqual(by_id["v2"]["version_state"], "current")  # 3.0.23 = Latest
+        self.assertEqual(by_id["v1"]["version_state"], "N-1")      # 3.0.20 = N-1
+        self.assertEqual(by_id["np"]["version_state"], "current")  # lone product
 
 
 # --- Upgrade-job metadata builders -----------------------------------------

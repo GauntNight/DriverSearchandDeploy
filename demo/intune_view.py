@@ -337,39 +337,101 @@ def _version_state_for(entry, matched_row) -> str:
     return "current"
 
 
-def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
-    """Augment each app row in place with supersedence-demo fields.
+import re as _re
 
-    A row that maps to a catalog entry gets its chain position
-    (``version_state`` = ``current`` / ``N-1`` / …). A row we CANNOT place in a
-    chain (no catalog overlay record — e.g. an app installed out-of-band) gets
-    ``version_state=""`` so it shows NO badge — it must not claim "Current".
+_PRODUCT_NAME_VERSION = _re.compile(r"\s+v?\d+(?:\.\d+){1,3}.*$")
+_PRODUCT_NAME_ARCH = _re.compile(
+    r"\s*\((?:[^)]*\b(?:x64|x86|64-bit|32-bit|amd64|arm64|edition|user|machine)\b[^)]*)\)\s*$",
+    _re.I)
+
+
+def _normalize_product_name(name: Optional[str]) -> str:
+    """Collapse a display name to a product key — strip a trailing version and an
+    arch/edition parenthetical so 'VLC media player 3.0.20' and 'VLC media player
+    3.0.23 (x64)' share one key for version ranking."""
+    if not name:
+        return ""
+    n = _PRODUCT_NAME_ARCH.sub("", str(name).strip())
+    n = _PRODUCT_NAME_VERSION.sub("", n)
+    return _re.sub(r"\s+", " ", n).strip().lower()
+
+
+def _product_key(entry, name: Optional[str] = None):
+    """Identity used to group multiple deployed versions of the SAME product so
+    they can be ranked Latest / N-1 / N-2. A catalog entry's supersedence ``line``
+    (shared across e.g. the VLC MSI and EXE entries) is the truest key; otherwise
+    fall back to the catalog id, else a normalized display name."""
+    if entry is not None:
+        line = (entry.supersedence or {}).get("line") if entry.supersedence else None
+        return ("line", (line or entry.id))
+    return ("name", _normalize_product_name(name))
+
+
+def _assign_version_states(apps: List[Dict[str, Any]]) -> None:
+    """Assign each row's ``version_state`` (``current`` = Latest, then ``N-1`` /
+    ``N-2`` …) by ranking every app in a product line by its DEPLOYED version
+    (Graph ``displayVersion``).
+
+    This is the reliable signal: ``displayVersion`` is always present, so the
+    badge is correct even in a device-less tenant where ``verified_versions``
+    (which only populates after a confirmed install) is empty. A product line
+    with a single deployed app is the Latest.
+    """
+    import functools
+    from collections import defaultdict
+    from autopackager.utils.version_comparison import compare_catalog_versions
+
+    groups: Dict[Any, List[Dict[str, Any]]] = defaultdict(list)
+    for row in apps:
+        groups[row.get("_product_key")].append(row)
+
+    for members in groups.values():
+        def _ver(r):
+            return r.get("version") or r.get("current_version") or ""
+        try:
+            members.sort(
+                key=functools.cmp_to_key(
+                    lambda a, b: compare_catalog_versions(_ver(a), _ver(b))),
+                reverse=True)
+        except Exception:  # noqa: BLE001 — unparseable versions keep insertion order
+            pass
+        for idx, row in enumerate(members):
+            row["version_state"] = "current" if idx == 0 else f"N-{idx}"
+
+
+def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
+    """Augment each app row in place with catalog identity + version-chain state.
+
+    Version state (``current`` = Latest / ``N-1`` / ``N-2`` …) is derived by
+    ranking every deployed app in a product line by its Graph ``displayVersion``
+    — reliable regardless of install confirmation (the old path ranked the sparse
+    ``verified_versions`` overlay, which is empty in a device-less tenant and so
+    defaulted everything to an optimistic "Current").
     """
     if not apps:
         return
     from autopackager.utils import installer_catalog
 
     catalog = installer_catalog.load_catalog()
+    # Pass 1 — resolve catalog identity + the product-line grouping key per row.
     for row in apps:
         entry, matched = find_entry_for_app_id(catalog, row.get("id"))
         if entry:
             row["catalog_entry_id"] = entry.id
-            row["current_version"] = (
-                (matched or {}).get("product_version") or row.get("version") or None
-            )
             row["source_url_known"] = bool(entry.canonical_download_url)
-            row["version_state"] = _version_state_for(entry, matched)
+            row["current_version"] = (
+                row.get("version") or (matched or {}).get("product_version") or None
+            )
+            row["_product_key"] = _product_key(entry)
         else:
             row.setdefault("catalog_entry_id", None)
-            row.setdefault("current_version", row.get("version") or None)
             row.setdefault("source_url_known", False)
-            # Optimistic default: a row we can't yet place in a chain shows
-            # "Current" rather than a blank badge. The chain position isn't known
-            # until the catalog overlay is populated for this app — which happens
-            # on a version refresh (the per-app ↻, the daily version-check Beat,
-            # or a tenant sync). Defaulting to "Current" keeps every app badged
-            # meaningfully until that refresh resolves it to N-1/N-2 if older.
-            row.setdefault("version_state", "current")
+            row["current_version"] = row.get("version") or None
+            row["_product_key"] = _product_key(None, row.get("name"))
+    # Pass 2 — rank each product line by deployed version → Latest / N-1 / N-2.
+    _assign_version_states(apps)
+    for row in apps:
+        row.pop("_product_key", None)
 
 
 def _live_view(include_counts: bool = False) -> Dict[str, Any]:
