@@ -85,19 +85,20 @@ class TestCheckVersion(unittest.TestCase):
         self.assertIsNone(cb._bump_version(None))
         self.assertIsNone(cb._bump_version("abc"))
 
-    def test_replay_generic_fallback_synthesizes_not_placeholder(self):
-        """The generic fixture (no app-specific one) must NOT surface a fixed
-        placeholder like the old 9.9.9 — it derives a believable next version
-        from the deployed build."""
+    def test_replay_no_fixture_reports_up_to_date(self):
+        """An app with NO specific fixture must report up-to-date in replay — not
+        a fabricated '+1' bump (which falsely showed every fixture-less app as
+        having an update, e.g. Go 1.26.4 -> a made-up 1.26.5) and not a
+        placeholder like 9.9.9."""
         from demo import claude_bridge
 
         with patch("demo.claude_bridge.time.sleep"):
             out = claude_bridge.check_version(
                 "Acme Widget", "3.0.23.0", None, mode="replay",
-                slug="acme-widget",  # no specific fixture -> generic fallback
+                slug="acme-widget",  # no specific fixture
             )
-        self.assertEqual(out["latest_version"], "3.0.24")
-        self.assertTrue(out["is_newer"])
+        self.assertFalse(out["is_newer"])
+        self.assertNotEqual(out["latest_version"], "3.0.24")
         self.assertNotEqual(out["latest_version"], "9.9.9")
 
     def test_replay_generic_fallback_no_version_is_inconclusive(self):
@@ -174,24 +175,113 @@ class TestIntuneViewEnrichment(unittest.TestCase):
         self.assertEqual(intune_view._version_state_for(entry, newest), "current")
         self.assertEqual(intune_view._version_state_for(entry, older), "N-1")
 
-    def test_enrich_apps_matches_and_defaults(self):
+    def test_enrich_apps_ranks_deployed_versions(self):
+        # Version state is derived by ranking DEPLOYED apps in a product line by
+        # their Graph displayVersion — reliable without install confirmation. A
+        # version known only to the catalog but not deployed is NOT "N-1" (that's
+        # "update available", handled separately); N-1/N-2 describe the estate.
         from demo import intune_view
 
         catalog, _ = _catalog_with_chain()
         apps = [
             {"id": "app-old", "name": "7-Zip", "version": "23.01"},
+            {"id": "app-older", "name": "7-Zip", "version": "22.01"},
             {"id": "unmanaged", "name": "Other", "version": "1.0"},
         ]
         with patch("autopackager.utils.installer_catalog.load_catalog", return_value=catalog):
             intune_view._enrich_apps(apps)
-        self.assertEqual(apps[0]["catalog_entry_id"], "7-zip")
-        self.assertEqual(apps[0]["version_state"], "N-1")
-        self.assertTrue(apps[0]["source_url_known"])
-        # Unmatched app can't be placed in a chain yet → optimistic "current"
-        # default (resolved to N-1/N-2 once a refresh populates the overlay).
-        self.assertIsNone(apps[1]["catalog_entry_id"])
-        self.assertEqual(apps[1]["version_state"], "current")
-        self.assertFalse(apps[1]["source_url_known"])
+        by_id = {a["id"]: a for a in apps}
+        self.assertEqual(by_id["app-old"]["catalog_entry_id"], "7-zip")
+        # Ranked by deployed version: 23.01 = Latest, 22.01 = N-1.
+        self.assertEqual(by_id["app-old"]["version_state"], "current")
+        self.assertEqual(by_id["app-older"]["version_state"], "N-1")
+        self.assertTrue(by_id["app-old"]["source_url_known"])
+        # A lone unmanaged app is the only one in its line → Latest.
+        self.assertIsNone(by_id["unmanaged"]["catalog_entry_id"])
+        self.assertEqual(by_id["unmanaged"]["version_state"], "current")
+        self.assertFalse(by_id["unmanaged"]["source_url_known"])
+
+    def test_enrich_apps_ranks_by_name_without_catalog_or_verified_versions(self):
+        # The reliability fix: in a device-less tenant with NO verified_versions
+        # and NO catalog match, two deployed versions of the same product still
+        # rank correctly by display name + deployed version (the old path
+        # defaulted both to "current").
+        from demo import intune_view
+        from autopackager.utils.installer_catalog import Catalog
+
+        apps = [
+            {"id": "v1", "name": "VLC media player", "version": "3.0.20.0"},
+            {"id": "v2", "name": "VLC media player", "version": "3.0.23.0"},
+            {"id": "np", "name": "Notepad++", "version": "8.9.6"},
+        ]
+        with patch("autopackager.utils.installer_catalog.load_catalog",
+                   return_value=Catalog(entries=[])):
+            intune_view._enrich_apps(apps)
+        by_id = {a["id"]: a for a in apps}
+        self.assertEqual(by_id["v2"]["version_state"], "current")  # 3.0.23 = Latest
+        self.assertEqual(by_id["v1"]["version_state"], "N-1")      # 3.0.20 = N-1
+        self.assertEqual(by_id["np"]["version_state"], "current")  # lone product
+
+    def test_enrich_apps_groups_dedupe_suffix(self):
+        # The deploy agent appends '_01' on a duplicate publish, giving two apps
+        # different displayNames ("VLC media player" / "VLC media player_01").
+        # They must still group as one product line so they rank (this was a live
+        # bug: both showed Latest).
+        from demo import intune_view
+        from autopackager.utils.installer_catalog import Catalog
+
+        apps = [
+            {"id": "a", "name": "VLC media player", "version": "3.0.20.0"},
+            {"id": "b", "name": "VLC media player_01", "version": "3.0.23.0"},
+        ]
+        with patch("autopackager.utils.installer_catalog.load_catalog",
+                   return_value=Catalog(entries=[])):
+            intune_view._enrich_apps(apps)
+        by_id = {a["id"]: a for a in apps}
+        self.assertEqual(by_id["b"]["version_state"], "current")  # 3.0.23 = Latest
+        self.assertEqual(by_id["a"]["version_state"], "N-1")      # 3.0.20 = N-1
+
+    def test_normalize_product_name_strips_version_arch_dedupe(self):
+        from demo import intune_view as iv
+        self.assertEqual(iv._normalize_product_name("VLC media player_01"), "vlc media player")
+        self.assertEqual(iv._normalize_product_name("Python 3.14.5 (64-bit)"), "python")
+        self.assertEqual(iv._normalize_product_name("7-Zip 24.08 (x64)"), "7-zip")
+        # 'v2' with no dotted version is part of the product name, not a version.
+        self.assertEqual(iv._normalize_product_name("AWS Command Line Interface v2"),
+                         "aws command line interface v2")
+
+    def test_aggregate_install_counts(self):
+        from demo import intune_view as iv
+        statuses = [
+            {"installState": "installed"}, {"installState": "installed"},
+            {"installState": "failed"}, {"installState": "pending"},
+            {"installState": "notApplicable"}, {"installState": "unknown"},
+        ]
+        agg = iv._aggregate_install_counts(statuses)
+        self.assertEqual(agg["installed"], 2)
+        self.assertEqual(agg["failed"], 1)
+        self.assertEqual(agg["pending"], 1)
+        self.assertEqual(agg["not_applicable"], 1)
+        self.assertEqual(agg["total"], 6)
+        self.assertEqual(iv._aggregate_install_counts([])["total"], 0)
+
+    def test_enrich_apps_clean_flag(self):
+        # clean = 0 confirmed installs; None when counts are unavailable.
+        from demo import intune_view
+        from autopackager.utils.installer_catalog import Catalog
+
+        apps = [
+            {"id": "a", "name": "Old App", "version": "1.0", "installed": 0},
+            {"id": "b", "name": "Busy App", "version": "2.0", "installed": 3},
+            {"id": "c", "name": "Unknown App", "version": "3.0"},  # no count fetched
+        ]
+        with patch("autopackager.utils.installer_catalog.load_catalog",
+                   return_value=Catalog(entries=[])):
+            intune_view._enrich_apps(apps)
+        by_id = {a["id"]: a for a in apps}
+        self.assertIs(by_id["a"]["clean"], True)
+        self.assertIs(by_id["b"]["clean"], False)
+        self.assertIsNone(by_id["c"]["clean"])
 
 
 # --- Upgrade-job metadata builders -----------------------------------------
@@ -448,3 +538,51 @@ class TestInflightUpgradeGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNoDuplicateUpgrade(unittest.TestCase):
+    """The upgrade/version-check must not offer a version that already exists in
+    the tenant (no duplicate apps)."""
+
+    def test_deployed_versions_for_app(self):
+        from demo import intune_view
+        view = {"apps": [
+            {"id": "a", "version": "3.0.20.0", "product_line": "name:vlc media player"},
+            {"id": "b", "version": "3.0.23.0", "product_line": "name:vlc media player"},
+            {"id": "c", "version": "8.9", "product_line": "name:notepad"},
+        ]}
+        with patch("demo.intune_view.get_apps_view_cached", return_value=view):
+            self.assertCountEqual(
+                intune_view.deployed_versions_for_app("a"), ["3.0.20.0", "3.0.23.0"])
+            self.assertEqual(intune_view.deployed_versions_for_app("zzz"), [])
+            self.assertEqual(intune_view.deployed_versions_for_app(None), [])
+
+    def test_already_deployed_version_is_not_offered(self):
+        from demo import router
+        body = {"app_label": "VLC media player", "current_version": "3.0.23.0", "mode": "replay"}
+        with patch("demo.router._live_app_ids", return_value=None), \
+             patch("autopackager.utils.installer_catalog.load_catalog",
+                   return_value=Catalog(entries=[])), \
+             patch("demo.claude_bridge.check_version",
+                   return_value={"latest_version": "3.0.23", "is_newer": True,
+                                 "download_url": "u", "current_version": "3.0.23.0"}), \
+             patch("demo.intune_view.deployed_versions_for_app",
+                   return_value=["3.0.23.0", "3.0.20.0"]):
+            res = router._check_version_sync(body, "app-x")
+        self.assertFalse(res["is_newer"])
+        self.assertTrue(res.get("already_deployed"))
+
+    def test_genuinely_newer_version_still_offered(self):
+        from demo import router
+        body = {"app_label": "VLC media player", "current_version": "3.0.20.0", "mode": "replay"}
+        with patch("demo.router._live_app_ids", return_value=None), \
+             patch("autopackager.utils.installer_catalog.load_catalog",
+                   return_value=Catalog(entries=[])), \
+             patch("demo.claude_bridge.check_version",
+                   return_value={"latest_version": "3.0.23", "is_newer": True,
+                                 "download_url": "u", "current_version": "3.0.20.0"}), \
+             patch("demo.intune_view.deployed_versions_for_app",
+                   return_value=["3.0.20.0"]):
+            res = router._check_version_sync(body, "app-x")
+        self.assertTrue(res["is_newer"])
+        self.assertFalse(res.get("already_deployed"))

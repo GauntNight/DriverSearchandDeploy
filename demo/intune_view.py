@@ -226,6 +226,7 @@ def get_apps_view_cached(include_counts: bool = False, *, force: bool = False,
                 _apps_cache.update(data=disk, ts=0.0, counts=bool(include_counts))
             _spawn_apps_refresh(include_counts)
             out = dict(disk)
+            apply_lifecycle_settings(out.get("apps") or [])  # fresh toggles on a cached serve
             out["cache"] = {"hit": True, "age_s": None, "revalidating": True,
                             "source": "snapshot"}
             return out
@@ -241,6 +242,7 @@ def get_apps_view_cached(include_counts: bool = False, *, force: bool = False,
 
     age = now - ts
     out = dict(snap)
+    apply_lifecycle_settings(out.get("apps") or [])  # re-read toggles fresh, not from the cache
     out["cache"] = {"hit": True, "age_s": round(age, 1), "revalidating": False,
                     "source": "memory"}
     if age >= ttl:
@@ -337,39 +339,208 @@ def _version_state_for(entry, matched_row) -> str:
     return "current"
 
 
-def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
-    """Augment each app row in place with supersedence-demo fields.
+import re as _re
 
-    A row that maps to a catalog entry gets its chain position
-    (``version_state`` = ``current`` / ``N-1`` / …). A row we CANNOT place in a
-    chain (no catalog overlay record — e.g. an app installed out-of-band) gets
-    ``version_state=""`` so it shows NO badge — it must not claim "Current".
+_PRODUCT_NAME_VERSION = _re.compile(r"\s+v?\d+(?:\.\d+){1,3}.*$")
+_PRODUCT_NAME_ARCH = _re.compile(
+    r"\s*\((?:[^)]*\b(?:x64|x86|64-bit|32-bit|amd64|arm64|edition|user|machine)\b[^)]*)\)\s*$",
+    _re.I)
+# The deploy agent's _dedupe_display_name appends '_01'/'_02'… on a displayName
+# collision (a duplicate publish of the same product). Strip it so the two apps
+# still group as one product line for ranking.
+_PRODUCT_NAME_DEDUP = _re.compile(r"_\d{1,3}$")
+
+
+def _normalize_product_name(name: Optional[str]) -> str:
+    """Collapse a display name to a product key — strip a trailing version, an
+    arch/edition parenthetical, and a deploy-time '_NN' dedupe suffix so
+    'VLC media player 3.0.20', 'VLC media player 3.0.23 (x64)', and
+    'VLC media player_01' all share one key for version ranking."""
+    if not name:
+        return ""
+    n = _PRODUCT_NAME_DEDUP.sub("", str(name).strip())
+    n = _PRODUCT_NAME_ARCH.sub("", n)
+    n = _PRODUCT_NAME_VERSION.sub("", n)
+    return _re.sub(r"\s+", " ", n).strip().lower()
+
+
+def _product_key(name: Optional[str]) -> str:
+    """Stable string identity used to group multiple deployed versions of the
+    SAME product so they can be ranked Latest / N-1 / N-2, share one autoupdate
+    setting, and never re-offer a version already deployed.
+
+    Keyed by the NORMALIZED DISPLAY NAME, which every deployed version of a
+    product shares — so grouping is consistent whether or not an individual app
+    is catalog-matched. (An earlier catalog-line key split a product when only
+    some of its versions had a verified_versions row.) Different versions of one
+    product all display the same name (the MSI and EXE builds included), so the
+    name is the reliable group key. A plain string so it survives the JSON
+    cache / disk snapshot intact."""
+    return "name:" + _normalize_product_name(name)
+
+
+def _assign_version_states(apps: List[Dict[str, Any]]) -> None:
+    """Assign each row's ``version_state`` (``current`` = Latest, then ``N-1`` /
+    ``N-2`` …) by ranking every app in a product line by its DEPLOYED version
+    (Graph ``displayVersion``).
+
+    This is the reliable signal: ``displayVersion`` is always present, so the
+    badge is correct even in a device-less tenant where ``verified_versions``
+    (which only populates after a confirmed install) is empty. A product line
+    with a single deployed app is the Latest.
+    """
+    import functools
+    from collections import defaultdict
+    from autopackager.utils.version_comparison import compare_catalog_versions
+
+    groups: Dict[Any, List[Dict[str, Any]]] = defaultdict(list)
+    for row in apps:
+        groups[row.get("product_line")].append(row)
+
+    for members in groups.values():
+        def _ver(r):
+            return r.get("version") or r.get("current_version") or ""
+        try:
+            members.sort(
+                key=functools.cmp_to_key(
+                    lambda a, b: compare_catalog_versions(_ver(a), _ver(b))),
+                reverse=True)
+        except Exception:  # noqa: BLE001 — unparseable versions keep insertion order
+            pass
+        for idx, row in enumerate(members):
+            row["version_state"] = "current" if idx == 0 else f"N-{idx}"
+
+
+def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
+    """Augment each app row in place with catalog identity + version-chain state.
+
+    Version state (``current`` = Latest / ``N-1`` / ``N-2`` …) is derived by
+    ranking every deployed app in a product line by its Graph ``displayVersion``
+    — reliable regardless of install confirmation (the old path ranked the sparse
+    ``verified_versions`` overlay, which is empty in a device-less tenant and so
+    defaulted everything to an optimistic "Current").
     """
     if not apps:
         return
     from autopackager.utils import installer_catalog
 
     catalog = installer_catalog.load_catalog()
+    # Pass 1 — resolve catalog identity + the product-line grouping key per row.
     for row in apps:
         entry, matched = find_entry_for_app_id(catalog, row.get("id"))
         if entry:
             row["catalog_entry_id"] = entry.id
-            row["current_version"] = (
-                (matched or {}).get("product_version") or row.get("version") or None
-            )
             row["source_url_known"] = bool(entry.canonical_download_url)
-            row["version_state"] = _version_state_for(entry, matched)
+            row["current_version"] = (
+                row.get("version") or (matched or {}).get("product_version") or None
+            )
+            row["product_line"] = _product_key(row.get("name"))
         else:
             row.setdefault("catalog_entry_id", None)
-            row.setdefault("current_version", row.get("version") or None)
             row.setdefault("source_url_known", False)
-            # Optimistic default: a row we can't yet place in a chain shows
-            # "Current" rather than a blank badge. The chain position isn't known
-            # until the catalog overlay is populated for this app — which happens
-            # on a version refresh (the per-app ↻, the daily version-check Beat,
-            # or a tenant sync). Defaulting to "Current" keeps every app badged
-            # meaningfully until that refresh resolves it to N-1/N-2 if older.
-            row.setdefault("version_state", "current")
+            row["current_version"] = row.get("version") or None
+            row["product_line"] = _product_key(row.get("name"))
+    # Pass 2 — rank each product line by deployed version → Latest / N-1 / N-2.
+    # (product_line is kept on each row so the upgrade flow can tell whether a
+    # found version already exists in the line — no duplicate apps.)
+    _assign_version_states(apps)
+    # Live build has FRESH install counts → record clean-since transitions.
+    try:
+        from demo import clean_tracking
+    except Exception:  # noqa: BLE001
+        clean_tracking = None
+    for row in apps:
+        # "clean" = zero confirmed installs (the retirement signal). int 0 -> True;
+        # None (counts unavailable / not fetched) -> None so the UI shows "no data"
+        # rather than a false "clean".
+        inst = row.get("installed")
+        row["clean"] = (inst == 0) if isinstance(inst, int) else None
+        if clean_tracking is not None and isinstance(inst, int):
+            clean_tracking.observe(row.get("id"), inst)
+    apply_lifecycle_settings(apps)
+
+
+def apply_lifecycle_settings(apps: List[Dict[str, Any]]) -> None:
+    """Stamp each row's lifecycle overlay — per-product toggles (auto_update /
+    auto_delete_when_clean), the clean-since/retire-eligibility, and whether the
+    CVE risk is ACTIVE — from the settings + clean-tracking stores.
+
+    Applied on EVERY serve (including cached ones): these are cheap local reads
+    that change independently of the SWR-cached Graph data, so a freshly-toggled
+    flag or a just-elapsed clean window must not wait for the Graph cache to
+    revalidate.
+    """
+    if not apps:
+        return
+    try:
+        from demo import lifecycle_settings, clean_tracking, retire_state
+        from autopackager.utils.config import get_config
+    except Exception:  # noqa: BLE001 — demo package may be removed
+        return
+    window = (get_config().get("lifecycle", {}) or {}).get("clean_window_days", 30)
+    recs = clean_tracking.all_records()
+    retired = retire_state.all_retired()
+    for row in apps:
+        s = lifecycle_settings.get(row.get("product_line"))
+        row["auto_update"] = s["auto_update"]
+        row["auto_delete_when_clean"] = s["auto_delete_when_clean"]
+        # Clean-since / retire-eligibility (old versions only).
+        cs = (recs.get(row.get("id")) or {}).get("clean_since")
+        cd = clean_tracking.days_since(cs)
+        row["clean_since"] = cs
+        row["clean_days"] = round(cd, 1) if cd is not None else None
+        is_old = (row.get("version_state") or "").startswith("N-")
+        is_retired = bool((retired.get(row.get("id")) or {}).get("retired_since"))
+        # An already-retired version is terminal: it's no longer "eligible" (the
+        # action has run) and its row reads "Retired" rather than N-1/N-2.
+        row["retired"] = is_retired
+        row["retire_eligible"] = bool(
+            is_old and not is_retired and cd is not None and cd >= window)
+        if is_retired:
+            row["version_state"] = "retired"
+        # CVE risk is ACTIVE only while devices actually run the vulnerable build.
+        # 0 installs (clean) -> the risk is drained/cleared; unknown count (None)
+        # stays active so we never hide a real exposure. A retired version is, by
+        # definition, drained.
+        inst = row.get("installed")
+        has_cve = bool((row.get("cve") or {}).get("cve_count"))
+        row["risk_active"] = bool(has_cve and inst != 0 and not is_retired)
+
+
+def deployed_versions_for_app(app_id: Optional[str]) -> List[str]:
+    """Versions currently deployed in the SAME product line as ``app_id``.
+
+    Read from the cached apps view (fast). Used by the upgrade/version-check flow
+    to avoid offering — and the pipeline to avoid creating — a duplicate of a
+    version that already exists in the tenant. Empty if the app isn't found.
+    """
+    if not app_id:
+        return []
+    try:
+        view = get_apps_view_cached(True)
+    except Exception:  # noqa: BLE001
+        return []
+    apps = view.get("apps") or []
+    target = next((a for a in apps if a.get("id") == app_id), None)
+    if not target:
+        return []
+    line = target.get("product_line")
+    return [a.get("version") for a in apps
+            if a.get("product_line") == line and a.get("version")]
+
+
+def product_line_for_app(app_id: Optional[str]) -> Optional[str]:
+    """The ``product_line`` key for a deployed app (from the cached view), or None."""
+    if not app_id:
+        return None
+    try:
+        view = get_apps_view_cached(True)
+    except Exception:  # noqa: BLE001
+        return None
+    for a in view.get("apps") or []:
+        if a.get("id") == app_id:
+            return a.get("product_line")
+    return None
 
 
 def _live_view(include_counts: bool = False) -> Dict[str, Any]:
@@ -437,14 +608,42 @@ def _live_view(include_counts: bool = False) -> Dict[str, Any]:
             "pending": None,
         }
         if include_counts and app.get("id"):
+            # The legacy /installSummary nav property is retired in this tenant
+            # (HTTP error), like /deviceStatuses was. Use the modern report
+            # action and aggregate it ourselves. A successful empty report = 0
+            # installs (clean); an ERROR leaves None (unknown) so the UI can
+            # distinguish "clean" from "no data".
             try:
-                summary = client.get_app_install_summary(app["id"])
-                row["installed"] = summary.get("installedDeviceCount")
-                row["pending"] = summary.get("pendingInstallDeviceCount")
-            except Exception:
-                pass
+                agg = _aggregate_install_counts(client.get_app_device_statuses(app["id"]))
+                row["installed"] = agg["installed"]
+                row["failed"] = agg["failed"]
+                row["pending"] = agg["pending"]
+                row["total_devices"] = agg["total"]
+            except Exception as exc:  # noqa: BLE001 — counts are best-effort
+                logger.debug("install counts unavailable", app=app.get("id"), error=str(exc))
         rows.append(row)
     return {"mode": "live", "apps": rows, "error": None}
+
+
+def _aggregate_install_counts(statuses: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Roll per-device install statuses (from the modern report) into counts.
+
+    ``installState`` strings come from ``get_app_device_statuses``: installed /
+    failed / pending / notApplicable / unknown.
+    """
+    agg = {"installed": 0, "failed": 0, "pending": 0, "not_applicable": 0, "total": 0}
+    for s in statuses or []:
+        agg["total"] += 1
+        state = (s.get("installState") or "").lower()
+        if state == "installed":
+            agg["installed"] += 1
+        elif state == "failed":
+            agg["failed"] += 1
+        elif state in ("pending", "pendinginstall"):
+            agg["pending"] += 1
+        elif state in ("notapplicable", "not_applicable"):
+            agg["not_applicable"] += 1
+    return agg
 
 
 def _fixture_view() -> Dict[str, Any]:

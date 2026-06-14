@@ -416,9 +416,8 @@
 
     $("approve").addEventListener("click", async () => {
       if (!currentJob) return;
-      // Approval PUBLISHES to the tenant (Ring 0) — confirm to guard against an
-      // accidental click writing to Intune.
-      if (!window.confirm("Approve & publish this package to Ring 0? This deploys it to the tenant.")) return;
+      // Clicking Approve IS the decision to deploy — no extra confirm pop-up.
+      // (A richer approval gate / approval screen is a roadmap item.)
       $("gate-box").classList.add("hidden");
       await fetch(`/api/demo/jobs/${currentJob}/approve`, { method: "POST" });
     });
@@ -433,6 +432,8 @@
     // Software-gap delta modal + packaging queue.
     $("software-gap").addEventListener("click", openSoftwareGap);
     $("intune-refresh").addEventListener("click", () => pollIntune(true));
+    $("check-updates").addEventListener("click", checkAllUpdates);
+    $("daily-update").addEventListener("click", toggleDaily);
     $("gap-cancel").addEventListener("click", () => $("gap-overlay").classList.add("hidden"));
     $("gap-overlay").addEventListener("click", (e) => {
       if (e.target === $("gap-overlay")) $("gap-overlay").classList.add("hidden");
@@ -743,6 +744,7 @@
     badge.textContent = view.mode === "live" ? "live tenant" : "fixture mode";
     badge.dataset.mode = view.mode;
     updateFreshness(view);
+    renderDailyToggle(view);
     const body = $("intune-body");
     const apps = riskSorted(view.apps || []);
     if (!apps.length) {
@@ -786,7 +788,10 @@
     let exposed = 0;
     for (const a of apps) {
       const c = a.cve;
-      if (c && c.cve_count && tally[c.severity] != null) { tally[c.severity]++; exposed++; }
+      // Count only ACTIVE risk — a vulnerable build with 0 installs is cleared.
+      if (c && c.cve_count && a.risk_active !== false && tally[c.severity] != null) {
+        tally[c.severity]++; exposed++;
+      }
     }
     if (!exposed) {
       el.dataset.sev = "none";
@@ -822,6 +827,15 @@
     return { sev, score };
   }
 
+  // "Patch now" is only meaningful on the LATEST deployed version of a product.
+  // For an N-1/N-2 the fix already exists in the estate — the new version is
+  // confirmed/deployed (so patching is done) and a clean N-1 is retire-eligible,
+  // not patch-eligible. So we only offer Patch now on the current/Latest.
+  function isLatestVersion(app) {
+    const s = app && app.version_state;
+    return !/^N-\d+$/.test(s || "");
+  }
+
   function buildRiskCell(cell, app) {
     cell.innerHTML = "";
     const c = app.cve;
@@ -842,6 +856,17 @@
       return;
     }
     const { sev, score } = sevMeta(c);
+    // Vulnerable build but 0 installs → the risk is drained/cleared (no device
+    // runs it). Show it cleared rather than as an active red badge.
+    if (app.risk_active === false) {
+      const cl = document.createElement("button");
+      cl.className = "risk-cleared";
+      cl.textContent = "✓ CVE cleared";
+      cl.title = `Was ${sev.toUpperCase()} ${score} — 0 installs, no devices exposed. Click for detail.`;
+      cl.addEventListener("click", () => openCveDrawer(app));
+      cell.appendChild(cl);
+      return;
+    }
     const badge = document.createElement("button");
     badge.className = "risk-badge";
     badge.dataset.sev = sev;
@@ -855,28 +880,33 @@
     count.textContent = `${c.cve_count} CVE${c.cve_count > 1 ? "s" : ""}`;
     cell.appendChild(count);
 
-    const patch = document.createElement("button");
-    patch.className = "risk-patch";
-    patch.textContent = "Patch now";
-    patch.title = "Check the vendor source and patch through the pipeline";
-    patch.addEventListener("click", () => patchNow(app));
-    cell.appendChild(patch);
+    // Patch now only on the Latest — an N-1/N-2 is already superseded by a newer
+    // deployed version (and a clean one is for retirement, not patching).
+    if (isLatestVersion(app)) {
+      const patch = document.createElement("button");
+      patch.className = "risk-patch";
+      patch.textContent = "Patch now";
+      patch.title = "Check the vendor source and patch through the pipeline";
+      patch.addEventListener("click", () => patchNow(app));
+      cell.appendChild(patch);
+    }
   }
 
-  // ---- Version state: refresh + supersedence badge (spec §4) ---------------
+  // ---- Version state: refresh + supersedence badge -------------------------
+  // The server ranks every deployed app in a product line by displayVersion, so
+  // the top of each chain is "Latest" and older deployed versions are N-1/N-2…
   function badgeFromServerState(app) {
     switch (app.version_state) {
       case "pending":  return { state: "pending", label: "Pending" };
-      // Unknown/unplaceable defaults to "Current" until a refresh (per-app ↻,
-      // daily version-check, or tenant sync) resolves the real chain position.
-      case "":         return { state: "current", label: "Current" };
-      case "current":  return { state: "current", label: "Current" };
+      case "retired":  return { state: "retired", label: "Retired" };
+      case "":         return { state: "current", label: "Latest" };
+      case "current":  return { state: "current", label: "Latest" };
       default:
         // "N-1", "N-2", … come through verbatim as superseded labels.
         if (/^N-\d+$/.test(app.version_state || "")) {
           return { state: "superseded", label: app.version_state };
         }
-        return { state: "current", label: "Current" };
+        return { state: "current", label: "Latest" };
     }
   }
 
@@ -901,6 +931,210 @@
       b.addEventListener("click", () => openScopeDialog(app));
     }
     cell.appendChild(b);
+
+    // Install count — the lifecycle "clean" signal. For an old version (N-1/N-2)
+    // 0 installs means retire-eligible ("clean"); installs remaining are the
+    // drain target. For the Latest, the count is just rollout progress.
+    const inst = installLine(app);
+    if (inst) {
+      const el = document.createElement("span");
+      el.className = "inst-pill " + inst.cls;
+      el.textContent = inst.text;
+      if (inst.title) el.title = inst.title;
+      cell.appendChild(el);
+    }
+
+    const retired = app.version_state === "retired" || app.retired;
+
+    // Per-product policy toggles — only on the Latest (and not on a retired row).
+    if (isLatestVersion(app) && !retired) {
+      // Autoupdate: on = full auto-upgrade when a newer version is found; off = gated.
+      const tog = document.createElement("button");
+      tog.className = "auto-toggle";
+      tog.dataset.on = app.auto_update ? "1" : "0";
+      tog.textContent = app.auto_update ? "auto ⟳ on" : "auto ⟳ off";
+      tog.title = app.auto_update
+        ? "Autoupdate ON — new versions deploy automatically. Click to require approval (gated)."
+        : "Autoupdate OFF — new versions are packaged and held at the Ring 0 gate. Click to deploy automatically.";
+      tog.addEventListener("click", (e) => { e.stopPropagation(); setAutoupdate(app, !app.auto_update); });
+      cell.appendChild(tog);
+
+      // Auto-delete-when-clean: on = delete old versions once clean past the
+      // window; off (default) = relabel "Retired" and keep the object.
+      const del = document.createElement("button");
+      del.className = "auto-toggle del-toggle";
+      del.dataset.on = app.auto_delete_when_clean ? "1" : "0";
+      del.textContent = app.auto_delete_when_clean ? "del ⌫ on" : "del ⌫ off";
+      del.title = app.auto_delete_when_clean
+        ? "Auto-delete ON — clean old versions are removed from Intune. Click to keep & relabel 'Retired' instead."
+        : "Auto-delete OFF — clean old versions are relabeled 'Retired' (kept). Click to delete them automatically.";
+      del.addEventListener("click", (e) => { e.stopPropagation(); setAutodelete(app, !app.auto_delete_when_clean); });
+      cell.appendChild(del);
+    }
+
+    // Manual Retire — on an old (N-1/N-2) version that isn't already retired.
+    // Honors the product's auto-delete policy: delete (with a confirm) when on,
+    // else a non-destructive relabel.
+    if (!isLatestVersion(app) && !retired) {
+      const ret = document.createElement("button");
+      const willDelete = !!app.auto_delete_when_clean;
+      ret.className = "retire-btn" + (willDelete ? " danger" : "");
+      ret.textContent = willDelete ? "Delete" : "Retire";
+      ret.title = willDelete
+        ? "Auto-delete is ON for this product — remove this old version from Intune now."
+        : "Relabel this old version 'Retired' (kept in Intune). Turn on auto-delete to remove instead.";
+      ret.addEventListener("click", (e) => { e.stopPropagation(); retireApp(app); });
+      cell.appendChild(ret);
+    }
+  }
+
+  async function setAutoupdate(app, enabled) {
+    if (!app.id) return;
+    try {
+      const r = await fetch(`/api/demo/intune/${encodeURIComponent(app.id)}/autoupdate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const res = await r.json();
+      if (res.error) throw new Error(res.error);
+      app.auto_update = !!res.auto_update;
+      appendLine({ source: "system", text:
+        `${app.name}: autoupdate ${app.auto_update ? "ENABLED (full auto)" : "disabled (gated)"}.` });
+      rerender();
+    } catch (e) {
+      appendLine({ source: "system", level: "error", text: `Autoupdate toggle failed: ${e}` });
+    }
+  }
+
+  async function setAutodelete(app, enabled) {
+    if (!app.id) return;
+    try {
+      const r = await fetch(`/api/demo/intune/${encodeURIComponent(app.id)}/auto-delete`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const res = await r.json();
+      if (res.error) throw new Error(res.error);
+      app.auto_delete_when_clean = !!res.auto_delete_when_clean;
+      appendLine({ source: "system", text:
+        `${app.name}: auto-delete-when-clean ${app.auto_delete_when_clean
+          ? "ENABLED (clean old versions are removed)" : "disabled (old versions relabeled 'Retired')"}.` });
+      rerender();
+    } catch (e) {
+      appendLine({ source: "system", level: "error", text: `Auto-delete toggle failed: ${e}` });
+    }
+  }
+
+  // Manual retire of an old version. Relabels "Retired" (kept), or — when the
+  // product's auto-delete is on — removes it from Intune after a confirm.
+  async function retireApp(app) {
+    if (!app.id) return;
+    const willDelete = !!app.auto_delete_when_clean;
+    if (willDelete &&
+        !confirm(`Delete "${app.name}" (${app.version || "old version"}) from Intune?\n` +
+                 `This removes the app object. Auto-delete is ON for this product.`)) {
+      return;
+    }
+    try {
+      const r = await fetch(`/api/demo/intune/${encodeURIComponent(app.id)}/retire`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delete: willDelete }),
+      });
+      const res = await r.json();
+      if (!res.ok) throw new Error(res.error || "retire failed");
+      appendLine({ source: "system", text:
+        res.action === "deleted"
+          ? `${app.name}: deleted from Intune (${res.supersedence_links_cleared || 0} supersedence link(s) cleared).`
+          : `${app.name}: relabeled "Retired" (kept in Intune).` });
+      await pollIntune(true);   // force a live reload so the row updates
+    } catch (e) {
+      appendLine({ source: "system", level: "error", text: `Retire failed: ${e}` });
+    }
+  }
+
+  // Global daily-update flag: reflect state + toggle.
+  function renderDailyToggle(view) {
+    const el = $("daily-update");
+    if (!el) return;
+    const on = !!view.daily_update;
+    el.dataset.on = on ? "1" : "0";
+    el.textContent = on ? "Daily: ON" : "Daily: off";
+  }
+  async function toggleDaily() {
+    const el = $("daily-update");
+    const next = el.dataset.on !== "1";
+    try {
+      const r = await fetch("/api/demo/daily-update", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      const res = await r.json();
+      el.dataset.on = res.daily_update ? "1" : "0";
+      el.textContent = res.daily_update ? "Daily: ON" : "Daily: off";
+      appendLine({ source: "system", text:
+        `Daily auto-update ${res.daily_update ? "ENABLED" : "disabled"} — ` +
+        `${res.daily_update ? "apps set to autoupdate will upgrade automatically each day." : "scheduled upgrades paused."}` });
+    } catch (e) {
+      appendLine({ source: "system", level: "error", text: `Daily toggle failed: ${e}` });
+    }
+  }
+
+  // The discovery loop on demand: check every Latest app (catalog → internet)
+  // and act per its autoupdate setting (full-auto or gated). Surfaces a summary.
+  async function checkAllUpdates() {
+    if (busy) return;
+    const btn = $("check-updates");
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = "Checking…";
+    appendLine({ source: "system", text: "Checking catalog → internet for newer versions…" });
+    try {
+      const r = await fetch("/api/demo/intune/check-updates", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: $("mode").value || undefined }),
+      });
+      const res = await r.json();
+      const plan = res.plan || [];
+      const updates = plan.filter((p) => p.status === "update");
+      if (!updates.length) {
+        appendLine({ source: "system", text:
+          `Checked ${res.checked} app(s) — all up to date. Nothing to upgrade.` });
+      } else {
+        for (const u of updates) {
+          appendLine({ source: "system", text:
+            `${u.name}: ${u.current_version} → ${u.latest_version} — ${u.action === "auto-upgrade" ? "auto-upgrading" : "gated (awaiting approval)"} (job #${u.job_id}).` });
+        }
+        appendLine({ source: "system", text:
+          `${res.dispatched} upgrade(s) dispatched of ${res.checked} checked.` });
+      }
+      pollIntune(true);
+    } catch (e) {
+      appendLine({ source: "system", level: "error", text: `Update check failed: ${e}` });
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
+    }
+  }
+
+  // Returns {cls, text, title} for the install-count pill, or null when counts
+  // are unavailable (so we never show a false "clean").
+  function installLine(app) {
+    const n = app.installed;
+    if (n == null) return null;                       // counts unavailable
+    const isOld = /^N-\d+$/.test(app.version_state || "");
+    if (n === 0) {
+      if (isOld) {
+        if (app.retire_eligible) {
+          return { cls: "clean", text: "retire-ready", title: "clean past the window — safe to retire" };
+        }
+        const d = app.clean_days;
+        return d != null
+          ? { cls: "clean", text: `clean ${Math.round(d)}d`, title: "0 installs — draining toward retirement" }
+          : { cls: "clean", text: "✓ clean", title: "0 installs — draining toward retirement" };
+      }
+      return { cls: "zero", text: "0 installs", title: "not yet on any device" };
+    }
+    const word = n === 1 ? "install" : "installs";
+    return isOld
+      ? { cls: "stale", text: `${n} ${word}`, title: `${n} device(s) still on this old version` }
+      : { cls: "ok",    text: `${n} ${word}`, title: `${n} device(s) have the latest` };
   }
 
   function rerender() { if (lastView) renderIntune(lastView); }
@@ -933,6 +1167,12 @@
         });
         appendLine({ source: "system", text:
           `${app.name}: new version ${res.latest_version} available (deployed ${res.current_version || "?"}).` });
+      } else if (res.already_deployed && res.latest_version) {
+        // The "newer" build already exists in this product line — don't offer to
+        // create a duplicate of an app already in the tenant.
+        badgeOverride.delete(app.id);
+        appendLine({ source: "system", text:
+          `${app.name}: ${res.latest_version} is already in the tenant — not creating a duplicate.` });
       } else {
         badgeOverride.delete(app.id);
         appendLine({ source: "system", text:
@@ -990,7 +1230,8 @@
     // Patch-now / live re-scan act on a deployed Intune app (need its id); a row
     // opened from the software-gap modal has none — it's queued, not patched.
     const hasApp = !!app.id;
-    $("cve-patch").style.display = (hasApp && c.cve_count) ? "" : "none";
+    // Patch now only on the Latest (an N-1/N-2 is already superseded / retire-eligible).
+    $("cve-patch").style.display = (hasApp && c.cve_count && isLatestVersion(app)) ? "" : "none";
     $("cve-rescan").style.display = hasApp ? "" : "none";
     $("cve-overlay").classList.remove("hidden");
   }

@@ -190,6 +190,11 @@ GET  /api/demo/intune/apps                     live tenant Win32 apps (stale-whi
 GET  /api/demo/intune/{app_id}/cves            CVE risk detail for one app (?mode=live re-scans NVD)
 GET  /api/demo/intune/verify-url               deep-link to the Intune portal
 GET  /api/demo/intune/software-delta           installed-but-not-packaged gap (source=intune|local|both; rows carry `cve`)
+POST /api/demo/intune/{app_id}/autoupdate      toggle per-product autoupdate (on=full auto, off=gated)
+POST /api/demo/intune/{app_id}/auto-delete     toggle per-product auto-delete-when-clean (on=delete, off=relabel Retired)
+POST /api/demo/intune/{app_id}/retire          retire an old version now ({delete?}: relabel "Retired" or delete)
+POST /api/demo/intune/check-updates            on-demand discovery: check every Latest app, dispatch upgrades
+POST /api/demo/daily-update                     toggle the global daily-update Beat flag
 POST /api/demo/jobs/{job_id}/approve           release the Ring 0 gate (UI confirms first) + deploy
 POST /api/demo/jobs/{job_id}/retry             re-run a failed job's pipeline (gating preserved)
 GET  /api/demo/jobs/{job_id}/logs              human-readable diagnostic log for a (failed) job
@@ -247,6 +252,41 @@ still resolve by display-name alias against the curated fixture.
 > ships no metadata. For a predictable on-stage upgrade, run "Patch now" in replay.
 > (VLC trivia worth knowing: **3.0.21 was `.exe`-only**; the newest VLC with a
 > managed `.msi` is **3.0.23**, which the bundled VLC fixture targets.)
+
+### Application lifecycle (version state → autoupdate → retire)
+
+The center table is a lifecycle worklist. The server ranks every deployed app in a product line by
+its Graph `displayVersion`, so each row reads **Latest** / **N-1** / **N-2** (reliable even in a
+device-less tenant). An install-count pill is the **clean** signal: for an old version, 0 installs
+means nothing on the estate runs it, and a timer (`demo/clean_tracking.py`) counts how long it has
+stayed clean.
+
+Two per-product toggles on the **Latest** row drive automation (both keyed by product line, so they
+apply across the product's versions):
+
+- **`auto ⟳`** — autoupdate. ON = a discovered newer version is full-auto upgraded; OFF (default) =
+  the upgrade is packaged + tested and **held at the Ring-0 gate**.
+- **`del ⌫`** — auto-delete-when-clean. ON = once an old version is clean past
+  `lifecycle.clean_window_days` (default 30) it is **deleted** from Intune; OFF (default) = it is
+  **relabeled "Retired"** (struck-through badge, object kept — reversible).
+
+**Discovery** runs on demand (**Check updates**) and daily (the **Daily** Beat toggle): a
+version-check cascade (catalog → internet) over every Latest app, dispatching an upgrade per genuine
+newer build (full-auto or gated per the product's setting), with a no-duplicate guard. The same daily
+Beat runs a **retire sweep** — relabeling every retire-eligible old version, or deleting the ones
+whose product opted into auto-delete (clearing incoming supersedence links first). An old row also
+carries a manual **Retire**/**Delete** button (a confirm appears only when it actually deletes).
+
+A retired version is terminal: its badge reads "Retired", it is no longer retire-eligible, and its
+CVE risk is drained (0 installs). Lifecycle flags + clean/retire state are re-applied on **every**
+serve (even cached ones), so a freshly-toggled flag takes effect on the next paint.
+
+> **Rehearsal — staging a retirement.** A single-version tenant shows everything as **Latest** with
+> nothing to retire (correct). To demo the back half: publish an **old** build, then upgrade it (the
+> supersedence flow) so the old build becomes **N-1**. With 0 installs it shows **clean**; lower
+> `lifecycle.clean_window_days` to `0` in `config.yaml` (worker restart) to make it **retire-ready**
+> immediately. Then either click **Retire** (relabels "Retired"), or turn on **`del ⌫`** and click
+> **Delete** (removes it from Intune). The daily Beat does the same unattended.
 
 ### Approval gate
 

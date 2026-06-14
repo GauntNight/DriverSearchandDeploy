@@ -118,13 +118,14 @@ The initial phase focuses on automating driver updates for Dell, HP, and Lenovo 
 | Web dashboard (FastAPI + REST) | ✅ Working | Job, deployment, discovery, and stats endpoints |
 | AI-driven install-param research | ✅ Working (operator-side) | The AI research bridge authors silent install commands + detection rules for unknown installers and writes them back to the catalog. Operator-side only (Mission Control console), not a shipped endpoint feature. Note: it authenticates via the local Claude session — the `llm` config block / OpenAI key are still unused |
 | Autonomous customer-facing version discovery | ❌ Planned (Phase 2/3) | The bridge checks versions operator-side; an unattended product service is still to come |
-| COTS / general software discovery | ⚠️ Partial | MSI applications are packaged from a supplied install command + MSI metadata (see [Packaging MSI Software](#packaging-msi-software)). Automatic *version* discovery for software (checking vendors for updates) is still Phase 2 |
+| COTS / general software discovery | ✅ Working (operator-side) | MSI + EXE applications are packaged from metadata + the catalog (see [Packaging MSI Software](#packaging-msi-software)). Automatic *version* discovery is wired: the **Check updates** button and a daily Beat run a catalog → internet cascade over every Latest app and dispatch upgrades (full-auto or gated per the product's setting), with a no-duplicate guard |
+| **Application lifecycle (operator-side)** | ✅ Working | The demo console reads as a lifecycle worklist: reliable **Latest / N-1 / N-2** version state (ranked by deployed `displayVersion`), an install-count **clean** signal + retention clock (`demo/clean_tracking.py`), per-product **autoupdate** and **auto-delete-when-clean** toggles, and a **retire action** — a clean old version is relabeled "Retired" (kept) or deleted (clearing supersedence first), on demand or via the daily Beat sweep. CVE risk is gated on active exposure (a clean/retired build shows no active badge). Roadmap: tenant-wide Cleaning/Retiring/Blocking config |
 | **AI research bridge (operator-side)** | ✅ Working | `demo/claude_bridge.py` via the Claude Agent SDK (or `claude -p` CLI). Three contracts: catalog-miss research (silent install command + detection rule, written back to the catalog so the next run is a deterministic HIT), version-check ("is there a newer build?"), and installer-URL acquisition (web-search for the official vendor download, operator-confirmed). Three modes via `DEMO_CLAUDE_MODE`: `live` / `replay` / `off`. Operator-side only; never shipped to an endpoint |
 | **Unmanaged-software delta** | ✅ Working | `autopackager/services/software_delta.py` — combines installed inventory (Intune Detected Apps + local ARP) with the managed set (published Win32 apps + catalog) and classifies into `managed` / `known_packageable` / `standard_os_component` / `store_app` / `unmanaged_candidate` / `ignored`. Surfaces the actionable "installed but not packaged" gap; degrades to local-ARP-only if the SP can't read `detectedApps` |
 | **Packaging queue from the delta** | ✅ Working | `demo/queue.py` — turns selected delta candidates into gated packaging jobs one at a time. Acquisition cascade: curated catalog URL → version-check brain → agent web-search (unknown app → parked for an operator confirm). Always Ring-0-scoped and deploy-gated; single-action lock + responsive cancel |
 | **Pre-publish install validation** | ✅ Working | `local_install_validator.py` actually installs the package on the host and verifies by detection rule or a new ARP entry before publishing. Capped retry ladder probes alternate silent switches; a working one is recorded as the corrected command. Unrecoverable installers (non-silent / bundleware) are flagged ENGINEER ESCALATION instead of publishing an app Intune can never detect; detached consumer stubs are reaped |
 | **Mission Control demo console** | ✅ Working | `demo/` — single-screen three-panel console (pipeline status · live Intune view + **CVE risk column** · AI agent console + lamp) showing intake → Intune → Ring 0 with the AI research narrating live over SSE. The center panel is served **stale-while-revalidate** (cached instantly, refreshed in the background; disk snapshot for an instant first paint) with a Refresh button and freshness badge. Fully removable (`demo/` + one mount line); the core is untouched |
-| Automated test suite | ✅ Working | 876 tests passing — unit, integration, CLI, API |
+| Automated test suite | ✅ Working | 908 tests passing — unit, integration, CLI, API |
 
 ## Quick Start
 
@@ -597,6 +598,8 @@ Be aware of the following before relying on AutoPackager in production:
 - ✅ **AI silent-install-parameter research for non-MSI installers** (delivered, operator-side) — the research bridge authors the silent command + detection rule for an unknown installer and writes it back to the catalog
 - 🟡 **AI-powered software *version* discovery** (operator-side via the version-check bridge / packaging queue) — autonomous, customer-facing version tracking is still to come
 - 🟡 **Unmanaged-software delta + packaging queue** (delivered, operator-side) — surfaces "installed but not packaged" and queues gated jobs
+- ✅ **CVE patch prioritization** (delivered, operator-side) — risk-sorted "patch by severity" with one-click upgrade
+- ✅ **Application lifecycle management** (delivered, operator-side) — reliable Latest/N-1/N-2 state, clean signal + retention clock, per-product autoupdate + auto-delete toggles, daily/on-demand version discovery, and a retire action (relabel "Retired" / delete, on demand or via a daily sweep)
 - ⬜ Support for 50+ common applications (growing catalog: 7-Zip, Chrome, VS Code, dev tools, …)
 - ⬜ Full PSADT integration
 
@@ -605,6 +608,10 @@ Be aware of the following before relying on AutoPackager in production:
 - AI-driven UAT with UI automation
 - Self-healing deployment capabilities
 - Full CI/CD pipeline ("Desktop as Code")
+
+### Governance & Lifecycle Controls (Planned)
+- ⬜ **Approval gates & approval screen** — configurable per-ring / per-app approval *policies* and a dedicated approval-review screen (queue of pending deployments with diff/impact, approve/reject with audit trail), replacing today's inline one-click Ring-0 gate. (The interim confirm pop-up was removed — clicking Approve is the decision.)
+- ⬜ **Tenant-wide lifecycle configuration** — central settings for the Cleaning / Retiring / Blocking behaviors (clean-window, auto-delete, block-on-CVE), instead of per-product toggles only.
 
 ## Success Metrics
 
@@ -664,7 +671,7 @@ This repository was sanitized for public release. Git history prior to the initi
 ## Credits
 
 Built with AI assistance.
-Version 1.11.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
+Version 1.12.0 — Phase 1 (driver automation): catalog-based discovery, Win32 packaging and
 Intune publishing, deployment rings with automatic promotion and rollback, continuous
 catalog discovery, status polling, web dashboard, and CLI. Software packaging covers both
 MSI and EXE installers (catalog-driven detection/silent-install) plus operator-opt-in MSI
@@ -675,4 +682,9 @@ packaged" backlog into gated jobs; and a **Mission Control demo console** narrat
 The console now adds **CVE patch prioritization** (risk-sorted "patch by severity" with one-click
 upgrade) and a stale-while-revalidate cached center panel; EXE packaging handles metadata-less
 installers via filename-matched catalog entries, and non-packageable installers escalate cleanly
-instead of publishing undetectable apps. See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+instead of publishing undetectable apps. Version 1.12.0 adds **application lifecycle management** —
+reliable Latest/N-1/N-2 version state, a clean signal + retention clock, per-product autoupdate and
+auto-delete toggles, daily/on-demand version discovery, and a retire action (relabel "Retired" or
+delete, on demand or via a daily sweep) — plus intake hardening so a non-installer file can never
+publish a malformed app, and a one-command `restart-all.bat` stack restart. See
+[CHANGELOG.md](CHANGELOG.md) for the full release history.

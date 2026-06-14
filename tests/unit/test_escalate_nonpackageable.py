@@ -191,3 +191,92 @@ def test_real_baseline_has_vlc_exe_entry():
     assert e is not None and e.type == "exe"
     assert e.filename_pattern and e.pe_product_name == "VLC media player"
     assert e.detection_rules  # must publish with a real detection rule
+
+
+# --- Unrecognized installer type (no extension / wrong extension) -------------
+# A download with no installer extension — e.g. a vendor "stable channel" URL
+# saved as 'stable' — must escalate before any parser runs, NOT get mis-routed
+# to the MSI parser and published as a malformed `msiexec /i stable` app.
+
+def test_no_extension_file_escalates(tmp_path):
+    from demo import intake
+    p = tmp_path / "stable"          # no extension
+    p.write_bytes(b"not an installer")
+    a = intake.analyze(p)
+    assert a.escalate is True
+    assert a.kind == "unknown"
+    assert a.branch == "miss"
+    assert "not a recognized installer" in (a.escalate_reason or "")
+    assert a.blocker == a.escalate_reason
+    # Never computes a bogus install command for an unrecognized type.
+    assert a.install_command is None
+
+
+def test_unknown_extension_escalates(tmp_path):
+    from demo import intake
+    p = tmp_path / "readme.txt"
+    p.write_bytes(b"hello")
+    a = intake.analyze(p)
+    assert a.escalate is True
+    assert a.install_command is None
+
+
+def test_is_known_installer_helper():
+    from demo import intake
+    assert intake.is_known_installer("foo.msi") is True
+    assert intake.is_known_installer("foo.exe") is True
+    assert intake.is_known_installer("foo.zip") is True
+    assert intake.is_known_installer("https://x.test/setup.exe?token=1") is True
+    assert intake.is_known_installer("stable") is False
+    assert intake.is_known_installer("https://x.test/stable") is False
+    assert intake.is_known_installer(None) is False
+
+
+# --- Empty / unreadable MSI Property table ------------------------------------
+# A file that ends in .msi but whose Property table is empty (corrupt, or a
+# non-MSI renamed) yields no identity. With no catalog match it must escalate,
+# NOT publish a malformed app named after the filename with a placeholder rule.
+
+def test_msi_has_identity_helper():
+    from demo import intake
+    assert intake._msi_has_identity({}) is False
+    assert intake._msi_has_identity({"product_name": "", "product_code": ""}) is False
+    assert intake._msi_has_identity({"product_name": "7-Zip"}) is True
+    assert intake._msi_has_identity({"upgrade_code": "{GUID}"}) is True
+    assert intake._msi_has_identity({"product_code": "{GUID}"}) is True
+
+
+def test_empty_msi_escalates(monkeypatch, tmp_path):
+    from demo import intake
+    from autopackager.utils.installer_catalog import Catalog
+
+    p = tmp_path / "mystery.msi"
+    p.write_bytes(b"not a real msi")
+    meta = Mock()
+    meta.to_dict = lambda: {}     # empty Property table
+    monkeypatch.setattr("autopackager.utils.msi_metadata.read_msi_metadata", lambda x: meta)
+    monkeypatch.setattr("autopackager.utils.installer_catalog.load_catalog",
+                        lambda: Catalog(entries=[]))
+    a = intake.analyze(p)
+    assert a.escalate is True
+    assert "not a valid MSI" in (a.escalate_reason or "")
+    assert a.install_command is None
+
+
+def test_identifiable_msi_miss_does_not_escalate(monkeypatch, tmp_path):
+    # A readable MSI that matches no catalog entry is a normal miss with the
+    # deterministic default command — NOT an escalation.
+    from demo import intake
+    from autopackager.utils.installer_catalog import Catalog
+
+    p = tmp_path / "someapp.msi"
+    p.write_bytes(b"not a real msi")
+    meta = Mock()
+    meta.to_dict = lambda: {"product_name": "Some App", "product_code": "{GUID}"}
+    monkeypatch.setattr("autopackager.utils.msi_metadata.read_msi_metadata", lambda x: meta)
+    monkeypatch.setattr("autopackager.utils.installer_catalog.load_catalog",
+                        lambda: Catalog(entries=[]))
+    a = intake.analyze(p)
+    assert a.escalate is False
+    assert a.branch == "miss"
+    assert a.install_command == "msiexec /i someapp.msi /qn /norestart"

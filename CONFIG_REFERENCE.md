@@ -1041,6 +1041,38 @@ A worker alone will not trigger scheduled tasks.
 
 **Gotcha:** Inspect run history through the dashboard (`GET /api/discovery/runs`, or the `Discovery` panel in the web UI) or directly in the database via `SELECT * FROM discovery_runs ORDER BY started_at DESC;`.
 
+### Related: `version_check_schedule` (software version discovery)
+
+The OEM-driver discovery above has a software counterpart used by the operator-side application
+lifecycle. `version_check_schedule` activates the daily Beat (`check_app_versions`) that checks every
+deployed *application* for a newer build (catalog → internet) and runs the **retire sweep**.
+
+```yaml
+version_check_schedule:
+  enabled: true        # activates the daily Beat SCHEDULE
+  interval_hours: 24
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Activates the daily Beat schedule. Whether an *upgrade* run actually acts is also gated at runtime by the console's global **Daily** flag; the **retire sweep** runs whenever the Beat fires. Honours `DEMO_CLAUDE_MODE`. |
+| `interval_hours` | int | `24` | Cadence of the run. |
+
+### Related: `lifecycle` (retire window)
+
+```yaml
+lifecycle:
+  clean_window_days: 30
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `clean_window_days` | int | `30` | How many days an old (N-1/N-2) version must stay **clean** (0 confirmed installs) before it becomes retire-eligible. The daily sweep then relabels it "Retired", or deletes it if the product's `auto_delete_when_clean` toggle is on. Set to `0` to retire as soon as a version goes clean (useful for a demo). |
+
+> Per-product autoupdate / auto-delete toggles are **not** in `config.yaml` — they are set per
+> product line in the demo console and stored in `data/demo_lifecycle.json` (gitignored runtime
+> state). See `demo/README.md` § Application lifecycle.
+
 ---
 
 ## 14. Dashboard Configuration (Optional)

@@ -45,8 +45,12 @@ async def api_preflight():
 
 
 @demo_router.get("/api/demo/intune/apps")
-async def api_intune_apps(counts: bool = False, refresh: bool = False):
+async def api_intune_apps(counts: bool = True, refresh: bool = False):
     """Center-panel apps view, served stale-while-revalidate.
+
+    Includes per-app install counts by default (the lifecycle "clean" signal),
+    fetched via the modern installation-status report; the SWR cache + disk
+    snapshot keep the extra per-app calls off the hot path.
 
     Returns the cached snapshot instantly (memory, or a disk snapshot on a cold
     start) and refreshes in the background once stale, so the panel stays
@@ -57,6 +61,11 @@ async def api_intune_apps(counts: bool = False, refresh: bool = False):
     """
     view = await asyncio.to_thread(
         intune_view.get_apps_view_cached, counts, force=refresh)
+    try:
+        from demo import lifecycle_settings
+        view["daily_update"] = lifecycle_settings.get_daily()
+    except Exception:  # noqa: BLE001
+        pass
     return view
 
 
@@ -335,7 +344,195 @@ def _check_version_sync(body: dict, app_id: Optional[str]) -> dict:
         mode=body.get("mode") or None, slug=slug,
     )
     result["entry_id"] = entry_id
+
+    # No duplicates: if the "newer" version already exists somewhere in this
+    # product line's deployed apps (same version, or older than the newest
+    # deployed), it is NOT an upgrade — suppress the option so we never create a
+    # duplicate of an app already in the tenant.
+    latest = result.get("latest_version")
+    if latest and result.get("is_newer"):
+        from autopackager.utils.version_comparison import compare_catalog_versions
+        deployed = intune_view.deployed_versions_for_app(app_id)
+        try:
+            already = any(compare_catalog_versions(latest, dv) <= 0 for dv in deployed)
+        except Exception:  # noqa: BLE001
+            already = latest in deployed
+        if already:
+            result["is_newer"] = False
+            result["already_deployed"] = True
     return result
+
+
+# --- Lifecycle: per-app autoupdate toggle + the discovery loop --------------
+
+@demo_router.post("/api/demo/intune/{app_id}/autoupdate")
+async def api_set_autoupdate(app_id: str, request: Request):
+    """Toggle Enable-Autoupdate for the app's product line. When on, a discovered
+    newer version is full-auto-upgraded; when off (default) it's a gated upgrade
+    held at the Ring-0 approval gate. Keyed by product line, so it applies to the
+    product across all its deployed versions."""
+    from demo import lifecycle_settings
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    line = await asyncio.to_thread(intune_view.product_line_for_app, app_id)
+    if not line:
+        return JSONResponse({"error": "app not found"}, status_code=404)
+    entry = await asyncio.to_thread(
+        lambda: lifecycle_settings.set_flags(line, auto_update=enabled))
+    return {"app_id": app_id, "product_line": line, "auto_update": entry["auto_update"]}
+
+
+@demo_router.post("/api/demo/intune/{app_id}/auto-delete")
+async def api_set_autodelete(app_id: str, request: Request):
+    """Toggle Auto-Delete-When-Clean for the app's product line. When on, an old
+    version that has gone clean past the retention window is DELETED from Intune
+    by the daily sweep; when off (default) it is relabeled "Retired" and the
+    object is kept. Keyed by product line (applies across the product's versions).
+    """
+    from demo import lifecycle_settings
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    line = await asyncio.to_thread(intune_view.product_line_for_app, app_id)
+    if not line:
+        return JSONResponse({"error": "app not found"}, status_code=404)
+    entry = await asyncio.to_thread(
+        lambda: lifecycle_settings.set_flags(line, auto_delete_when_clean=enabled))
+    return {"app_id": app_id, "product_line": line,
+            "auto_delete_when_clean": entry["auto_delete_when_clean"]}
+
+
+@demo_router.post("/api/demo/intune/{app_id}/retire")
+async def api_retire(app_id: str, request: Request):
+    """Retire an old (N-1/N-2) version now. Body ``{delete?: bool}`` — ``delete``
+    removes the Intune object (clearing supersedence first); otherwise the app is
+    relabeled "Retired" and kept. Forces a live apps reload so the row updates."""
+    from demo import retire
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — empty body = relabel
+        body = {}
+    delete = bool(body.get("delete"))
+    res = await asyncio.to_thread(retire.retire_app, app_id, delete=delete)
+    # The cached apps view still shows the old/just-deleted row — force a live
+    # reload so the next poll (and this response's caller) sees the change.
+    try:
+        await asyncio.to_thread(intune_view.get_apps_view_cached, True, force=True)
+    except Exception:  # noqa: BLE001 — refresh is best-effort
+        pass
+    status = 200 if res.get("ok") else 502
+    return JSONResponse(res, status_code=status)
+
+
+def run_retire_sweep(mode=None):
+    """Estate retire sweep (invoked by the daily Beat alongside ``run_daily``).
+    Relabels every retire-eligible old version, or deletes it when its product is
+    set to auto-delete. Synchronous (worker/Beat context)."""
+    from demo import retire
+    return retire.run_retire_sweep()
+
+
+@demo_router.post("/api/demo/intune/check-updates")
+async def api_check_updates(request: Request, background: BackgroundTasks):
+    """The discovery loop, on demand. For each Latest deployed app (optionally
+    filtered by ``app_ids``), check catalog → internet for a newer version (the
+    same cascade + no-duplicate guard as the per-app check); for each genuine
+    update, dispatch an upgrade — full-auto if the product's autoupdate is on,
+    otherwise gated (held at Ring 0). Returns the plan + what was dispatched.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — empty body = check everything
+        body = {}
+    app_ids = body.get("app_ids") or None
+    mode = body.get("mode") or None
+    plan = await asyncio.to_thread(_discover_updates, app_ids, mode)
+    dispatched = []
+    for item in plan:
+        if item.get("status") != "update":
+            continue
+        gate = not item["auto_update"]
+        job_id = await asyncio.to_thread(
+            intake.begin_upgrade_job, item["app_id"], "all", gate=gate)
+        background.add_task(
+            _run_upgrade_pipeline, job_id, item["app_id"], "all",
+            item["download_url"], gate, item.get("entry_id"))
+        item["job_id"] = job_id
+        item["action"] = "gated" if gate else "auto-upgrade"
+        dispatched.append(item)
+    return {"checked": len(plan), "dispatched": len(dispatched), "plan": plan}
+
+
+def _discover_updates(app_ids, mode):
+    """Run the version-check cascade over the Latest deployed apps and classify
+    each: ``update`` (genuine newer build with a source) / ``no-source`` /
+    ``already-deployed`` / ``up-to-date``. Pure — no dispatch."""
+    view = intune_view.get_apps_view_cached(True)
+    out = []
+    for app in view.get("apps") or []:
+        aid = app.get("id")
+        if not aid or (app_ids and aid not in app_ids):
+            continue
+        # Only upgrade FROM the Latest — an N-1/N-2 is already superseded.
+        if (app.get("version_state") or "").startswith("N-"):
+            continue
+        res = _check_version_sync(
+            {"app_label": app.get("name"), "current_version": app.get("version"),
+             "mode": mode}, aid)
+        item = {
+            "app_id": aid, "name": app.get("name"),
+            "current_version": app.get("version"),
+            "latest_version": res.get("latest_version"),
+            "download_url": res.get("download_url"),
+            "entry_id": res.get("entry_id"),
+            "auto_update": bool(app.get("auto_update")),
+        }
+        if res.get("already_deployed"):
+            item["status"] = "already-deployed"
+        elif res.get("is_newer") and res.get("latest_version"):
+            item["status"] = "update" if res.get("download_url") else "no-source"
+        else:
+            item["status"] = "up-to-date"
+        out.append(item)
+    return out
+
+
+@demo_router.post("/api/demo/daily-update")
+async def api_daily_update(request: Request):
+    """Toggle the global daily-update flag. When on, the daily Beat auto-upgrades
+    every app whose product is set to autoupdate ("Update")."""
+    from demo import lifecycle_settings
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    state = await asyncio.to_thread(lifecycle_settings.set_daily, enabled)
+    return {"daily_update": state}
+
+
+def run_daily(mode=None):
+    """The scheduled daily run (invoked by the Beat). No-op unless the global
+    daily-update flag is on; then it discovers newer versions and FULL-AUTO
+    upgrades every Latest app whose product is set to autoupdate ("Update").
+    Apps not set to autoupdate are left for the operator's manual check.
+    Synchronous (worker/Beat context)."""
+    from demo import lifecycle_settings
+    if not lifecycle_settings.get_daily():
+        return {"enabled": False, "acted": [], "note": "daily update flag off"}
+    plan = _discover_updates(None, mode)
+    acted = []
+    for item in plan:
+        if item.get("status") != "update" or not item.get("auto_update"):
+            continue  # daily honors ONLY apps set to autoupdate
+        job_id = intake.begin_upgrade_job(item["app_id"], "all", gate=False)
+        try:
+            _run_upgrade_pipeline(
+                job_id, item["app_id"], "all", item["download_url"], False,
+                item.get("entry_id"))
+        except Exception as exc:  # noqa: BLE001 — one app's failure shouldn't sink the run
+            logger.error("daily auto-upgrade failed", app=item.get("name"), error=str(exc))
+        item["job_id"] = job_id
+        item["action"] = "auto-upgrade"
+        acted.append(item)
+    logger.info("daily update run", checked=len(plan), acted=len(acted))
+    return {"enabled": True, "checked": len(plan), "acted": acted}
 
 
 _TERMINAL_JOB_STATES = {"completed", "failed", "cancelled"}

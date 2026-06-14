@@ -1,5 +1,70 @@
 ## [Unreleased]
 
+## [1.12.0] - 2026-06-14
+
+Application lifecycle management for general (COTS) software — the center panel now reads as a
+true lifecycle worklist: reliable version state, a clean/retirement signal, automatic version
+discovery, per-product autoupdate, and a retire/delete back half. Plus intake hardening so a
+non-installer file can never publish a malformed app, and a one-command stack restart. The
+deterministic four-stage pipeline is unchanged. Full suite: 908 tests passing.
+
+### Added
+
+- **Reliable version state (Latest / N-1 / N-2).** Every deployed app in a product line is ranked
+  by its Graph `displayVersion` (`intune_view._assign_version_states`), so the badge is correct even
+  in a device-less tenant where the `verified_versions` overlay is empty. Apps are grouped by a
+  name-only `product_line` key that normalizes the `_NN` dedupe suffix, so catalog-matched and
+  name-matched versions of the same product land in one chain.
+- **Install-count "clean" signal + retirement clock.** Live install counts drive a per-app `clean`
+  state (0 confirmed installs). `demo/clean_tracking.py` records WHEN an old version first went clean
+  (`data/demo_clean_tracking.json`); the timer resets if a straggler device reappears. Once an old
+  version stays clean past `lifecycle.clean_window_days` (default 30) it is **retire-eligible**.
+- **Per-product autoupdate toggle.** A toggle on the Latest row (keyed by product line): ON =
+  full-auto upgrade when a newer version is found; OFF (default) = a **gated** upgrade held at the
+  Ring-0 approval gate. `POST /api/demo/intune/{id}/autoupdate`.
+- **Automatic version discovery — daily + on-demand.** The **Check updates** button (and a global
+  **Daily** Beat toggle) run a version-check cascade over every Latest app (catalog → internet),
+  dispatching an upgrade per genuine newer build — full-auto if the product's autoupdate is on, else
+  gated. A no-duplicate guard never offers/creates a version already in the tenant. The daily Beat
+  (`check_app_versions`) honors the global daily flag and each product's setting.
+- **Retire action (phase 3b).** A new per-product **Auto-Delete-When-Clean** toggle
+  (`POST /api/demo/intune/{id}/auto-delete`) governs what happens to a retire-eligible old version:
+  OFF (default) **relabels it "Retired"** (local marker, Intune object kept — reversible); ON
+  **deletes** the Intune app, first clearing the incoming supersedence relationships that would
+  otherwise block the delete (unrelated relationships on the superseding app are preserved). A manual
+  **Retire/Delete** button on each old row does the same on demand (a confirm appears only when it
+  deletes). The daily Beat runs an estate **retire sweep** alongside the update run. New modules
+  `demo/retire.py` + `demo/retire_state.py`; `POST /api/demo/intune/{id}/retire`.
+- **Reusable stack restart.** `scripts/restart_stack.py` + `restart-all.bat` stop the whole local
+  stack (Redis + Celery worker + uvicorn), clear the stale Redis dump, relaunch all three detached
+  with logs in `data/logs/`, and health-check the ports (`--stop` / `--start` / `--no-worker`). Uses
+  a PowerShell CIM query (Windows 11 no longer ships `wmic`) plus a port-8000 fallback.
+
+### Changed
+
+- **CVE risk is gated on active exposure.** A vulnerable build with 0 installs (clean) — or a
+  retired version — no longer shows an active risk badge; the risk is "drained". Unknown install
+  counts stay active so a real exposure is never hidden.
+- **"Patch now" only on the Latest version.** An N-1/N-2 is already superseded (and a clean one is
+  for retirement, not patching), so the action is hidden there.
+- **No Approve→Ring 0 confirm pop-up.** The deployment gate is released directly; an approval
+  gate/screen is on the roadmap.
+- Lifecycle settings (`auto_update`, `auto_delete_when_clean`) and clean/retire state are applied
+  fresh on **every** serve (including SWR-cached ones), so a just-toggled flag or a just-elapsed
+  clean window takes effect immediately without waiting for the Graph cache to revalidate.
+
+### Fixed
+
+- **Intake hardening.** `demo/intake.analyze()` now **escalates** (instead of publishing a malformed
+  app) for (a) unrecognized / no-extension files — e.g. a vendor "stable channel" URL saved as
+  `stable` (guard runs before any parser, so the upgrade/discovery/queue download-then-analyze paths
+  are covered too); and (b) a `.msi` whose Property table is empty/unreadable with no catalog match
+  (new `_msi_has_identity()`).
+- **Autoupdate toggle no longer flips back** on the next poll (the SWR cache had frozen the flag).
+- **Replay version-check reports up-to-date** for fixture-less apps instead of fabricating a "+1"
+  version.
+- Table column alignment + the three-panel layout were tightened.
+
 ## [1.11.0] - 2026-06-13
 
 Demo robustness + first-class EXE support for installers that carry no metadata. Hardens the

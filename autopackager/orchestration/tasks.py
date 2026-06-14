@@ -671,62 +671,49 @@ def check_ring_promotions(self):
 
 @celery_app.task(bind=True, name='autopackager.check_app_versions')
 def check_app_versions(self):
-    """Daily version check for managed software apps (the scheduled half of the
-    demo's 'refresh' brain — spec §2).
+    """The scheduled daily update run (the automated half of the lifecycle
+    discovery).
 
-    Walks catalog entries that have a known source URL and at least one
-    'newest' verified version, asks the version-check bridge whether something
-    newer is upstream, and LOGS findings. It is DETECTION-ONLY: it never
-    dispatches an upgrade unattended — the actual package/supersede/deploy stays
-    operator-gated through the demo UI. Honours ``DEMO_CLAUDE_MODE``.
+    Delegates to the demo's ``run_daily()``, which honours the global
+    daily-update flag and each product's autoupdate ("Update") setting: for every
+    Latest deployed app set to autoupdate whose source has a newer build (catalog
+    → internet, with the no-duplicate guard), it full-auto-upgrades. Apps NOT set
+    to autoupdate are left for the operator's manual "Check updates". No-op when
+    the demo layer is absent or the daily flag is off. Honours ``DEMO_CLAUDE_MODE``.
     """
-    logger.info("Starting scheduled app version check")
+    logger.info("Starting scheduled daily update run")
     try:
         from autopackager.utils.config import get_config
-        from autopackager.utils import installer_catalog
 
         vc_config = get_config().get('version_check_schedule', {}) or {}
         if not vc_config.get('enabled', False):
             logger.info("Scheduled version check is disabled in config")
             return {'status': 'disabled'}
 
-        # Imported lazily: the demo bridge is optional and operator-side only.
-        from demo import claude_bridge
+        # The lifecycle discovery lives in the optional, operator-side demo layer.
+        try:
+            from demo import router as demo_router
+        except Exception:  # noqa: BLE001 — demo removed ⇒ nothing to do
+            logger.info("Demo layer absent; skipping daily update run")
+            return {'status': 'no-demo'}
 
-        catalog = installer_catalog.load_catalog()
-        checked = 0
-        newer = []
-        for entry in catalog.entries:
-            if not entry.canonical_download_url:
-                continue
-            newest = next(
-                (vv for vv in (entry.verified_versions or [])
-                 if vv.get('status') == 'newest' and vv.get('product_version')),
-                None,
-            )
-            if not newest:
-                continue
-            checked += 1
-            result = claude_bridge.check_version(
-                entry.id, newest.get('product_version'), entry.canonical_download_url,
-                slug=entry.id,
-            )
-            if result.get('is_newer'):
-                finding = {
-                    'entry_id': entry.id,
-                    'deployed_version': newest.get('product_version'),
-                    'latest_version': result.get('latest_version'),
-                    'download_url': result.get('download_url'),
-                }
-                newer.append(finding)
-                logger.info("Newer version available for managed app", **finding)
-
+        result = demo_router.run_daily()
+        # Retire sweep — the back half of the lifecycle. Runs every daily Beat
+        # independent of the daily *upgrade* flag: it relabels retire-eligible
+        # old versions "Retired" (reversible) and deletes only those whose
+        # product is set to auto-delete (explicit opt-in). Best-effort.
+        retire_result = {}
+        try:
+            retire_result = demo_router.run_retire_sweep() or {}
+        except Exception as re:  # noqa: BLE001 — sweep failure must not fail the run
+            logger.warning("Retire sweep failed", error=str(re))
         logger.info(
-            "Scheduled app version check completed",
-            checked=checked, newer_available=len(newer),
+            "Scheduled daily update run completed",
+            enabled=result.get('enabled'), acted=len(result.get('acted', [])),
+            retired=retire_result.get('swept', 0),
         )
-        return {'status': 'completed', 'checked': checked, 'newer': newer}
+        return {'status': 'completed', 'retire': retire_result, **result}
 
     except Exception as e:
-        logger.error("Scheduled app version check failed", error=str(e))
+        logger.error("Scheduled daily update run failed", error=str(e))
         raise self.retry(exc=e, countdown=300, max_retries=2)
