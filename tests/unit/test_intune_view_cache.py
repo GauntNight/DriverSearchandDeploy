@@ -107,3 +107,25 @@ def test_cache_never_raises_on_live_failure(monkeypatch):
     r = intune_view.get_apps_view_cached(ttl=0.0)  # stale -> serve cache + bg refresh
     assert r["apps"]            # still served the last good snapshot
     time.sleep(0.05)            # let the background thread run + swallow the error
+
+
+def test_cached_serve_reapplies_fresh_lifecycle_settings(monkeypatch):
+    # Regression: toggling autoupdate must NOT appear to flip back on the next
+    # (cached) poll. The flag is re-read fresh on every serve, not frozen in the
+    # SWR cache alongside the Graph data.
+    from demo import intune_view, lifecycle_settings
+    base = {"mode": "live", "error": None,
+            "apps": [{"id": "a", "name": "VLC media player", "version": "3.0.23",
+                      "product_line": "name:vlc media player", "auto_update": False}]}
+    monkeypatch.setattr(intune_view, "get_apps_view",
+                        lambda counts=False: {**base, "apps": [dict(base["apps"][0])]})
+    monkeypatch.setattr(lifecycle_settings, "get",
+                        lambda pl: {"auto_update": False, "auto_delete_when_clean": False})
+    intune_view.get_apps_view_cached()  # cold -> live -> caches (auto_update False)
+
+    # operator toggles autoupdate ON
+    monkeypatch.setattr(lifecycle_settings, "get",
+                        lambda pl: {"auto_update": True, "auto_delete_when_clean": False})
+    r = intune_view.get_apps_view_cached()  # warm cached serve
+    assert r["cache"]["source"] == "memory"
+    assert r["apps"][0]["auto_update"] is True

@@ -226,6 +226,7 @@ def get_apps_view_cached(include_counts: bool = False, *, force: bool = False,
                 _apps_cache.update(data=disk, ts=0.0, counts=bool(include_counts))
             _spawn_apps_refresh(include_counts)
             out = dict(disk)
+            apply_lifecycle_settings(out.get("apps") or [])  # fresh toggles on a cached serve
             out["cache"] = {"hit": True, "age_s": None, "revalidating": True,
                             "source": "snapshot"}
             return out
@@ -241,6 +242,7 @@ def get_apps_view_cached(include_counts: bool = False, *, force: bool = False,
 
     age = now - ts
     out = dict(snap)
+    apply_lifecycle_settings(out.get("apps") or [])  # re-read toggles fresh, not from the cache
     out["cache"] = {"hit": True, "age_s": round(age, 1), "revalidating": False,
                     "source": "memory"}
     if age >= ttl:
@@ -442,21 +444,34 @@ def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
     # (product_line is kept on each row so the upgrade flow can tell whether a
     # found version already exists in the line — no duplicate apps.)
     _assign_version_states(apps)
-    try:
-        from demo import lifecycle_settings
-    except Exception:  # noqa: BLE001 — demo package may be removed
-        lifecycle_settings = None
     for row in apps:
         # "clean" = zero confirmed installs (the retirement signal). int 0 -> True;
         # None (counts unavailable / not fetched) -> None so the UI shows "no data"
         # rather than a false "clean".
         inst = row.get("installed")
         row["clean"] = (inst == 0) if isinstance(inst, int) else None
-        # Per-product-line lifecycle prefs (autoupdate / auto-delete-when-clean).
-        if lifecycle_settings is not None:
-            s = lifecycle_settings.get(row.get("product_line"))
-            row["auto_update"] = s["auto_update"]
-            row["auto_delete_when_clean"] = s["auto_delete_when_clean"]
+    apply_lifecycle_settings(apps)
+
+
+def apply_lifecycle_settings(apps: List[Dict[str, Any]]) -> None:
+    """Stamp each row's per-product lifecycle prefs (auto_update /
+    auto_delete_when_clean) from the settings store.
+
+    Applied on EVERY serve — including cached ones — because these are cheap
+    local toggles that change independently of the (SWR-cached) Graph data. If we
+    only set them during the live enrich, a freshly-toggled flag would appear to
+    flip back on the next poll until the Graph cache revalidated.
+    """
+    if not apps:
+        return
+    try:
+        from demo import lifecycle_settings
+    except Exception:  # noqa: BLE001 — demo package may be removed
+        return
+    for row in apps:
+        s = lifecycle_settings.get(row.get("product_line"))
+        row["auto_update"] = s["auto_update"]
+        row["auto_delete_when_clean"] = s["auto_delete_when_clean"]
 
 
 def deployed_versions_for_app(app_id: Optional[str]) -> List[str]:
