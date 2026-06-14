@@ -113,6 +113,14 @@ version_check_schedule:
   enabled: true
   interval_hours: 24
 
+# Application retire lifecycle. An old (N-1/N-2) version with 0 confirmed installs
+# is "clean"; once it has stayed clean for clean_window_days the daily run treats
+# it as retire-eligible (relabel "Retired", or auto-delete if the product's
+# auto_delete_when_clean toggle is on). Lower it for a faster demo (0 = retire as
+# soon as clean).
+lifecycle:
+  clean_window_days: 30
+
 # Unmanaged-software delta (what's installed in the environment but not packaged).
 # Drives `cli.py discover-unmanaged` + the demo delta panel. The classifier sorts
 # every installed app into: managed (published to Intune) / known_packageable (in

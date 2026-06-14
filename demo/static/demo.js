@@ -788,7 +788,10 @@
     let exposed = 0;
     for (const a of apps) {
       const c = a.cve;
-      if (c && c.cve_count && tally[c.severity] != null) { tally[c.severity]++; exposed++; }
+      // Count only ACTIVE risk — a vulnerable build with 0 installs is cleared.
+      if (c && c.cve_count && a.risk_active !== false && tally[c.severity] != null) {
+        tally[c.severity]++; exposed++;
+      }
     }
     if (!exposed) {
       el.dataset.sev = "none";
@@ -853,6 +856,17 @@
       return;
     }
     const { sev, score } = sevMeta(c);
+    // Vulnerable build but 0 installs → the risk is drained/cleared (no device
+    // runs it). Show it cleared rather than as an active red badge.
+    if (app.risk_active === false) {
+      const cl = document.createElement("button");
+      cl.className = "risk-cleared";
+      cl.textContent = "✓ CVE cleared";
+      cl.title = `Was ${sev.toUpperCase()} ${score} — 0 installs, no devices exposed. Click for detail.`;
+      cl.addEventListener("click", () => openCveDrawer(app));
+      cell.appendChild(cl);
+      return;
+    }
     const badge = document.createElement("button");
     badge.className = "risk-badge";
     badge.dataset.sev = sev;
@@ -1031,9 +1045,16 @@
     if (n == null) return null;                       // counts unavailable
     const isOld = /^N-\d+$/.test(app.version_state || "");
     if (n === 0) {
-      return isOld
-        ? { cls: "clean", text: "✓ clean", title: "0 installs — safe to retire" }
-        : { cls: "zero",  text: "0 installs", title: "not yet on any device" };
+      if (isOld) {
+        if (app.retire_eligible) {
+          return { cls: "clean", text: "retire-ready", title: "clean past the window — safe to retire" };
+        }
+        const d = app.clean_days;
+        return d != null
+          ? { cls: "clean", text: `clean ${Math.round(d)}d`, title: "0 installs — draining toward retirement" }
+          : { cls: "clean", text: "✓ clean", title: "0 installs — draining toward retirement" };
+      }
+      return { cls: "zero", text: "0 installs", title: "not yet on any device" };
     }
     const word = n === 1 ? "install" : "installs";
     return isOld

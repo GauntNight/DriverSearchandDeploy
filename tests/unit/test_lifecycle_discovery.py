@@ -115,3 +115,40 @@ def test_run_daily_upgrades_only_autoupdate_apps(monkeypatch):
     assert res["enabled"] is True
     assert [d["app_id"] for d in res["acted"]] == ["a"]   # only the autoupdate-ON update
     assert dispatched == [("a", "all", False)]            # full-auto (gate False)
+
+
+def test_clean_tracking_observe(tmp_path, monkeypatch):
+    from demo import clean_tracking as ct
+    monkeypatch.setattr(ct, "_PATH", tmp_path / "ct.json")
+    cs = ct.observe("a", 0)               # 0 installs -> clean timer starts
+    assert cs and ct.clean_since("a") == cs
+    assert ct.observe("a", 0) == cs       # still clean -> timer unchanged
+    assert ct.observe("a", 2) is None     # a device has it again -> reset
+    assert ct.clean_since("a") is None
+    ct.observe("a", 0)                     # clean again
+    assert ct.observe("a", None) is not None   # unknown count -> leave timer running
+
+
+def test_apply_lifecycle_retire_and_risk(tmp_path, monkeypatch):
+    from demo import intune_view, lifecycle_settings, clean_tracking
+    import autopackager.utils.config as cfg
+    monkeypatch.setattr(clean_tracking, "_PATH", tmp_path / "ct.json")
+    monkeypatch.setattr(lifecycle_settings, "_PATH", tmp_path / "ls.json")
+    # window 0 -> a clean old version is immediately retire-eligible
+    monkeypatch.setattr(cfg, "get_config", lambda: {"lifecycle": {"clean_window_days": 0}})
+    clean_tracking.observe("a", 0)        # the old version is clean
+
+    apps = [
+        {"id": "a", "product_line": "name:vlc", "version_state": "N-1", "installed": 0,
+         "cve": {"cve_count": 1, "severity": "high", "max_cvss": 8.0}},
+        {"id": "b", "product_line": "name:vlc", "version_state": "current", "installed": 1,
+         "cve": {"cve_count": 1, "severity": "high", "max_cvss": 8.0}},
+    ]
+    intune_view.apply_lifecycle_settings(apps)
+    by = {a["id"]: a for a in apps}
+    # old + clean past the window -> retire-eligible; 0 installs -> CVE risk cleared
+    assert by["a"]["retire_eligible"] is True
+    assert by["a"]["risk_active"] is False
+    # latest with installs + CVE -> active risk, not retire-eligible
+    assert by["b"]["retire_eligible"] is False
+    assert by["b"]["risk_active"] is True

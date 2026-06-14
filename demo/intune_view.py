@@ -444,34 +444,58 @@ def _enrich_apps(apps: List[Dict[str, Any]]) -> None:
     # (product_line is kept on each row so the upgrade flow can tell whether a
     # found version already exists in the line — no duplicate apps.)
     _assign_version_states(apps)
+    # Live build has FRESH install counts → record clean-since transitions.
+    try:
+        from demo import clean_tracking
+    except Exception:  # noqa: BLE001
+        clean_tracking = None
     for row in apps:
         # "clean" = zero confirmed installs (the retirement signal). int 0 -> True;
         # None (counts unavailable / not fetched) -> None so the UI shows "no data"
         # rather than a false "clean".
         inst = row.get("installed")
         row["clean"] = (inst == 0) if isinstance(inst, int) else None
+        if clean_tracking is not None and isinstance(inst, int):
+            clean_tracking.observe(row.get("id"), inst)
     apply_lifecycle_settings(apps)
 
 
 def apply_lifecycle_settings(apps: List[Dict[str, Any]]) -> None:
-    """Stamp each row's per-product lifecycle prefs (auto_update /
-    auto_delete_when_clean) from the settings store.
+    """Stamp each row's lifecycle overlay — per-product toggles (auto_update /
+    auto_delete_when_clean), the clean-since/retire-eligibility, and whether the
+    CVE risk is ACTIVE — from the settings + clean-tracking stores.
 
-    Applied on EVERY serve — including cached ones — because these are cheap
-    local toggles that change independently of the (SWR-cached) Graph data. If we
-    only set them during the live enrich, a freshly-toggled flag would appear to
-    flip back on the next poll until the Graph cache revalidated.
+    Applied on EVERY serve (including cached ones): these are cheap local reads
+    that change independently of the SWR-cached Graph data, so a freshly-toggled
+    flag or a just-elapsed clean window must not wait for the Graph cache to
+    revalidate.
     """
     if not apps:
         return
     try:
-        from demo import lifecycle_settings
+        from demo import lifecycle_settings, clean_tracking
+        from autopackager.utils.config import get_config
     except Exception:  # noqa: BLE001 — demo package may be removed
         return
+    window = (get_config().get("lifecycle", {}) or {}).get("clean_window_days", 30)
+    recs = clean_tracking.all_records()
     for row in apps:
         s = lifecycle_settings.get(row.get("product_line"))
         row["auto_update"] = s["auto_update"]
         row["auto_delete_when_clean"] = s["auto_delete_when_clean"]
+        # Clean-since / retire-eligibility (old versions only).
+        cs = (recs.get(row.get("id")) or {}).get("clean_since")
+        cd = clean_tracking.days_since(cs)
+        row["clean_since"] = cs
+        row["clean_days"] = round(cd, 1) if cd is not None else None
+        is_old = (row.get("version_state") or "").startswith("N-")
+        row["retire_eligible"] = bool(is_old and cd is not None and cd >= window)
+        # CVE risk is ACTIVE only while devices actually run the vulnerable build.
+        # 0 installs (clean) -> the risk is drained/cleared; unknown count (None)
+        # stays active so we never hide a real exposure.
+        inst = row.get("installed")
+        has_cve = bool((row.get("cve") or {}).get("cve_count"))
+        row["risk_active"] = has_cve and inst != 0
 
 
 def deployed_versions_for_app(app_id: Optional[str]) -> List[str]:

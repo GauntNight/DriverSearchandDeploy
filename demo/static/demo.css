@@ -528,3 +528,11 @@ body.busy .ver-badge[data-state="available"] {
 #daily-update[data-on="1"] {
   color: var(--accent); border-color: var(--accent-dim); background: rgba(52,209,230,.12);
 }
+
+/* CVE risk cleared (vulnerable build, but 0 installs — drained) */
+.risk-cleared {
+  font-size: 11px; font-family: var(--mono); color: var(--text-mute);
+  background: transparent; border: 1px solid var(--border-2); border-radius: 999px;
+  padding: 2px 8px; cursor: pointer;
+}
+.risk-cleared:hover { color: var(--text-dim); filter: brightness(1.15); }
