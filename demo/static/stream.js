@@ -100,10 +100,8 @@
     const btn = document.createElement("button");
     btn.className = "btn approve"; btn.textContent = "Approve & deploy";
     btn.addEventListener("click", async () => {
-      const name = card.el.querySelector(".card-name").textContent || "this package";
-      // Approval PUBLISHES to the tenant (Ring 0) — confirm so an accidental
-      // click can't write to Intune.
-      if (!window.confirm(`Approve & publish "${name.trim()}" to Ring 0? This deploys it to the tenant.`)) return;
+      // Clicking Approve IS the decision to deploy — no extra confirm pop-up.
+      // (A richer approval gate / approval screen is a roadmap item.)
       btn.disabled = true; btn.textContent = "Approving…";
       try {
         await fetch(`/api/demo/jobs/${jobId}/approve`, { method: "POST" });

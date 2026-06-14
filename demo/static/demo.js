@@ -416,9 +416,8 @@
 
     $("approve").addEventListener("click", async () => {
       if (!currentJob) return;
-      // Approval PUBLISHES to the tenant (Ring 0) — confirm to guard against an
-      // accidental click writing to Intune.
-      if (!window.confirm("Approve & publish this package to Ring 0? This deploys it to the tenant.")) return;
+      // Clicking Approve IS the decision to deploy — no extra confirm pop-up.
+      // (A richer approval gate / approval screen is a roadmap item.)
       $("gate-box").classList.add("hidden");
       await fetch(`/api/demo/jobs/${currentJob}/approve`, { method: "POST" });
     });

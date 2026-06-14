@@ -606,6 +606,10 @@ Be aware of the following before relying on AutoPackager in production:
 - Self-healing deployment capabilities
 - Full CI/CD pipeline ("Desktop as Code")
 
+### Governance & Lifecycle Controls (Planned)
+- ⬜ **Approval gates & approval screen** — configurable per-ring / per-app approval *policies* and a dedicated approval-review screen (queue of pending deployments with diff/impact, approve/reject with audit trail), replacing today's inline one-click Ring-0 gate. (The interim confirm pop-up was removed — clicking Approve is the decision.)
+- ⬜ **Tenant-wide lifecycle configuration** — central settings for the Cleaning / Retiring / Blocking behaviors (clean-window, auto-delete, block-on-CVE), instead of per-product toggles only.
+
 ## Success Metrics
 
 | Metric | Target |
