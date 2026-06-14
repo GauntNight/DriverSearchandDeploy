@@ -944,9 +944,11 @@
       cell.appendChild(el);
     }
 
-    // Per-product autoupdate toggle — only on the Latest (it's the product's
-    // policy). On = full auto-upgrade when a newer version is found; off = gated.
-    if (isLatestVersion(app)) {
+    const retired = app.version_state === "retired" || app.retired;
+
+    // Per-product policy toggles — only on the Latest (and not on a retired row).
+    if (isLatestVersion(app) && !retired) {
+      // Autoupdate: on = full auto-upgrade when a newer version is found; off = gated.
       const tog = document.createElement("button");
       tog.className = "auto-toggle";
       tog.dataset.on = app.auto_update ? "1" : "0";
@@ -956,6 +958,33 @@
         : "Autoupdate OFF — new versions are packaged and held at the Ring 0 gate. Click to deploy automatically.";
       tog.addEventListener("click", (e) => { e.stopPropagation(); setAutoupdate(app, !app.auto_update); });
       cell.appendChild(tog);
+
+      // Auto-delete-when-clean: on = delete old versions once clean past the
+      // window; off (default) = relabel "Retired" and keep the object.
+      const del = document.createElement("button");
+      del.className = "auto-toggle del-toggle";
+      del.dataset.on = app.auto_delete_when_clean ? "1" : "0";
+      del.textContent = app.auto_delete_when_clean ? "del ⌫ on" : "del ⌫ off";
+      del.title = app.auto_delete_when_clean
+        ? "Auto-delete ON — clean old versions are removed from Intune. Click to keep & relabel 'Retired' instead."
+        : "Auto-delete OFF — clean old versions are relabeled 'Retired' (kept). Click to delete them automatically.";
+      del.addEventListener("click", (e) => { e.stopPropagation(); setAutodelete(app, !app.auto_delete_when_clean); });
+      cell.appendChild(del);
+    }
+
+    // Manual Retire — on an old (N-1/N-2) version that isn't already retired.
+    // Honors the product's auto-delete policy: delete (with a confirm) when on,
+    // else a non-destructive relabel.
+    if (!isLatestVersion(app) && !retired) {
+      const ret = document.createElement("button");
+      const willDelete = !!app.auto_delete_when_clean;
+      ret.className = "retire-btn" + (willDelete ? " danger" : "");
+      ret.textContent = willDelete ? "Delete" : "Retire";
+      ret.title = willDelete
+        ? "Auto-delete is ON for this product — remove this old version from Intune now."
+        : "Relabel this old version 'Retired' (kept in Intune). Turn on auto-delete to remove instead.";
+      ret.addEventListener("click", (e) => { e.stopPropagation(); retireApp(app); });
+      cell.appendChild(ret);
     }
   }
 
@@ -974,6 +1003,52 @@
       rerender();
     } catch (e) {
       appendLine({ source: "system", level: "error", text: `Autoupdate toggle failed: ${e}` });
+    }
+  }
+
+  async function setAutodelete(app, enabled) {
+    if (!app.id) return;
+    try {
+      const r = await fetch(`/api/demo/intune/${encodeURIComponent(app.id)}/auto-delete`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const res = await r.json();
+      if (res.error) throw new Error(res.error);
+      app.auto_delete_when_clean = !!res.auto_delete_when_clean;
+      appendLine({ source: "system", text:
+        `${app.name}: auto-delete-when-clean ${app.auto_delete_when_clean
+          ? "ENABLED (clean old versions are removed)" : "disabled (old versions relabeled 'Retired')"}.` });
+      rerender();
+    } catch (e) {
+      appendLine({ source: "system", level: "error", text: `Auto-delete toggle failed: ${e}` });
+    }
+  }
+
+  // Manual retire of an old version. Relabels "Retired" (kept), or — when the
+  // product's auto-delete is on — removes it from Intune after a confirm.
+  async function retireApp(app) {
+    if (!app.id) return;
+    const willDelete = !!app.auto_delete_when_clean;
+    if (willDelete &&
+        !confirm(`Delete "${app.name}" (${app.version || "old version"}) from Intune?\n` +
+                 `This removes the app object. Auto-delete is ON for this product.`)) {
+      return;
+    }
+    try {
+      const r = await fetch(`/api/demo/intune/${encodeURIComponent(app.id)}/retire`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delete: willDelete }),
+      });
+      const res = await r.json();
+      if (!res.ok) throw new Error(res.error || "retire failed");
+      appendLine({ source: "system", text:
+        res.action === "deleted"
+          ? `${app.name}: deleted from Intune (${res.supersedence_links_cleared || 0} supersedence link(s) cleared).`
+          : `${app.name}: relabeled "Retired" (kept in Intune).` });
+      await pollIntune(true);   // force a live reload so the row updates
+    } catch (e) {
+      appendLine({ source: "system", level: "error", text: `Retire failed: ${e}` });
     }
   }
 

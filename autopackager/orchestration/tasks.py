@@ -698,11 +698,21 @@ def check_app_versions(self):
             return {'status': 'no-demo'}
 
         result = demo_router.run_daily()
+        # Retire sweep — the back half of the lifecycle. Runs every daily Beat
+        # independent of the daily *upgrade* flag: it relabels retire-eligible
+        # old versions "Retired" (reversible) and deletes only those whose
+        # product is set to auto-delete (explicit opt-in). Best-effort.
+        retire_result = {}
+        try:
+            retire_result = demo_router.run_retire_sweep() or {}
+        except Exception as re:  # noqa: BLE001 — sweep failure must not fail the run
+            logger.warning("Retire sweep failed", error=str(re))
         logger.info(
             "Scheduled daily update run completed",
             enabled=result.get('enabled'), acted=len(result.get('acted', [])),
+            retired=retire_result.get('swept', 0),
         )
-        return {'status': 'completed', **result}
+        return {'status': 'completed', 'retire': retire_result, **result}
 
     except Exception as e:
         logger.error("Scheduled daily update run failed", error=str(e))

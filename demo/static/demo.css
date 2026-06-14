@@ -523,6 +523,22 @@ body.busy .ver-badge[data-state="available"] {
 .auto-toggle[data-on="1"] {
   color: var(--accent); border-color: var(--accent-dim); background: rgba(52,209,230,.12);
 }
+/* Auto-delete toggle: when ON, tint it as a destructive policy (red), not accent. */
+.auto-toggle.del-toggle[data-on="1"] {
+  color: var(--error); border-color: #6f2424; background: rgba(226,75,74,.12);
+}
+
+/* Manual Retire / Delete button on an old version row. */
+.retire-btn {
+  display: inline-block; margin-left: 6px; font-size: 10px;
+  font-family: var(--mono); padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--border-2); background: var(--panel-2);
+  color: var(--text-mute); cursor: pointer; white-space: nowrap; vertical-align: middle;
+}
+.retire-btn:hover { color: var(--text-dim); filter: brightness(1.2); }
+.retire-btn.danger { color: var(--error); border-color: #6f2424; }
+.retire-btn.danger:hover { background: rgba(226,75,74,.12); }
+body.busy .retire-btn { opacity: .5; pointer-events: none; }
 
 /* Global daily-update toggle (header) */
 #daily-update[data-on="1"] {

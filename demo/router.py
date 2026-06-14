@@ -382,6 +382,55 @@ async def api_set_autoupdate(app_id: str, request: Request):
     return {"app_id": app_id, "product_line": line, "auto_update": entry["auto_update"]}
 
 
+@demo_router.post("/api/demo/intune/{app_id}/auto-delete")
+async def api_set_autodelete(app_id: str, request: Request):
+    """Toggle Auto-Delete-When-Clean for the app's product line. When on, an old
+    version that has gone clean past the retention window is DELETED from Intune
+    by the daily sweep; when off (default) it is relabeled "Retired" and the
+    object is kept. Keyed by product line (applies across the product's versions).
+    """
+    from demo import lifecycle_settings
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    line = await asyncio.to_thread(intune_view.product_line_for_app, app_id)
+    if not line:
+        return JSONResponse({"error": "app not found"}, status_code=404)
+    entry = await asyncio.to_thread(
+        lambda: lifecycle_settings.set_flags(line, auto_delete_when_clean=enabled))
+    return {"app_id": app_id, "product_line": line,
+            "auto_delete_when_clean": entry["auto_delete_when_clean"]}
+
+
+@demo_router.post("/api/demo/intune/{app_id}/retire")
+async def api_retire(app_id: str, request: Request):
+    """Retire an old (N-1/N-2) version now. Body ``{delete?: bool}`` — ``delete``
+    removes the Intune object (clearing supersedence first); otherwise the app is
+    relabeled "Retired" and kept. Forces a live apps reload so the row updates."""
+    from demo import retire
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — empty body = relabel
+        body = {}
+    delete = bool(body.get("delete"))
+    res = await asyncio.to_thread(retire.retire_app, app_id, delete=delete)
+    # The cached apps view still shows the old/just-deleted row — force a live
+    # reload so the next poll (and this response's caller) sees the change.
+    try:
+        await asyncio.to_thread(intune_view.get_apps_view_cached, True, force=True)
+    except Exception:  # noqa: BLE001 — refresh is best-effort
+        pass
+    status = 200 if res.get("ok") else 502
+    return JSONResponse(res, status_code=status)
+
+
+def run_retire_sweep(mode=None):
+    """Estate retire sweep (invoked by the daily Beat alongside ``run_daily``).
+    Relabels every retire-eligible old version, or deletes it when its product is
+    set to auto-delete. Synchronous (worker/Beat context)."""
+    from demo import retire
+    return retire.run_retire_sweep()
+
+
 @demo_router.post("/api/demo/intune/check-updates")
 async def api_check_updates(request: Request, background: BackgroundTasks):
     """The discovery loop, on demand. For each Latest deployed app (optionally

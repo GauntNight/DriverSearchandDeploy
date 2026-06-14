@@ -473,12 +473,13 @@ def apply_lifecycle_settings(apps: List[Dict[str, Any]]) -> None:
     if not apps:
         return
     try:
-        from demo import lifecycle_settings, clean_tracking
+        from demo import lifecycle_settings, clean_tracking, retire_state
         from autopackager.utils.config import get_config
     except Exception:  # noqa: BLE001 — demo package may be removed
         return
     window = (get_config().get("lifecycle", {}) or {}).get("clean_window_days", 30)
     recs = clean_tracking.all_records()
+    retired = retire_state.all_retired()
     for row in apps:
         s = lifecycle_settings.get(row.get("product_line"))
         row["auto_update"] = s["auto_update"]
@@ -489,13 +490,21 @@ def apply_lifecycle_settings(apps: List[Dict[str, Any]]) -> None:
         row["clean_since"] = cs
         row["clean_days"] = round(cd, 1) if cd is not None else None
         is_old = (row.get("version_state") or "").startswith("N-")
-        row["retire_eligible"] = bool(is_old and cd is not None and cd >= window)
+        is_retired = bool((retired.get(row.get("id")) or {}).get("retired_since"))
+        # An already-retired version is terminal: it's no longer "eligible" (the
+        # action has run) and its row reads "Retired" rather than N-1/N-2.
+        row["retired"] = is_retired
+        row["retire_eligible"] = bool(
+            is_old and not is_retired and cd is not None and cd >= window)
+        if is_retired:
+            row["version_state"] = "retired"
         # CVE risk is ACTIVE only while devices actually run the vulnerable build.
         # 0 installs (clean) -> the risk is drained/cleared; unknown count (None)
-        # stays active so we never hide a real exposure.
+        # stays active so we never hide a real exposure. A retired version is, by
+        # definition, drained.
         inst = row.get("installed")
         has_cve = bool((row.get("cve") or {}).get("cve_count"))
-        row["risk_active"] = has_cve and inst != 0
+        row["risk_active"] = bool(has_cve and inst != 0 and not is_retired)
 
 
 def deployed_versions_for_app(app_id: Optional[str]) -> List[str]:
