@@ -61,6 +61,11 @@ async def api_intune_apps(counts: bool = True, refresh: bool = False):
     """
     view = await asyncio.to_thread(
         intune_view.get_apps_view_cached, counts, force=refresh)
+    try:
+        from demo import lifecycle_settings
+        view["daily_update"] = lifecycle_settings.get_daily()
+    except Exception:  # noqa: BLE001
+        pass
     return view
 
 
@@ -440,6 +445,45 @@ def _discover_updates(app_ids, mode):
             item["status"] = "up-to-date"
         out.append(item)
     return out
+
+
+@demo_router.post("/api/demo/daily-update")
+async def api_daily_update(request: Request):
+    """Toggle the global daily-update flag. When on, the daily Beat auto-upgrades
+    every app whose product is set to autoupdate ("Update")."""
+    from demo import lifecycle_settings
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    state = await asyncio.to_thread(lifecycle_settings.set_daily, enabled)
+    return {"daily_update": state}
+
+
+def run_daily(mode=None):
+    """The scheduled daily run (invoked by the Beat). No-op unless the global
+    daily-update flag is on; then it discovers newer versions and FULL-AUTO
+    upgrades every Latest app whose product is set to autoupdate ("Update").
+    Apps not set to autoupdate are left for the operator's manual check.
+    Synchronous (worker/Beat context)."""
+    from demo import lifecycle_settings
+    if not lifecycle_settings.get_daily():
+        return {"enabled": False, "acted": [], "note": "daily update flag off"}
+    plan = _discover_updates(None, mode)
+    acted = []
+    for item in plan:
+        if item.get("status") != "update" or not item.get("auto_update"):
+            continue  # daily honors ONLY apps set to autoupdate
+        job_id = intake.begin_upgrade_job(item["app_id"], "all", gate=False)
+        try:
+            _run_upgrade_pipeline(
+                job_id, item["app_id"], "all", item["download_url"], False,
+                item.get("entry_id"))
+        except Exception as exc:  # noqa: BLE001 — one app's failure shouldn't sink the run
+            logger.error("daily auto-upgrade failed", app=item.get("name"), error=str(exc))
+        item["job_id"] = job_id
+        item["action"] = "auto-upgrade"
+        acted.append(item)
+    logger.info("daily update run", checked=len(plan), acted=len(acted))
+    return {"enabled": True, "checked": len(plan), "acted": acted}
 
 
 _TERMINAL_JOB_STATES = {"completed", "failed", "cancelled"}

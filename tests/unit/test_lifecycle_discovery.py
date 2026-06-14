@@ -74,3 +74,44 @@ def test_discover_updates_respects_app_ids_filter(monkeypatch):
                         lambda body, app_id: {"is_newer": False, "latest_version": "1.0"})
     plan = router._discover_updates(["a"], None)
     assert [p["app_id"] for p in plan] == ["a"]
+
+
+def test_daily_flag_roundtrip(tmp_path, monkeypatch):
+    from demo import lifecycle_settings as ls
+    monkeypatch.setattr(ls, "_PATH", tmp_path / "lc.json")
+    assert ls.get_daily() is False
+    ls.set_daily(True)
+    assert ls.get_daily() is True
+    # the reserved daily key is excluded from per-line settings
+    ls.set_flags("name:vlc", auto_update=True)
+    assert "__daily_update__" not in ls.all_settings()
+    ls.set_daily(False)
+    assert ls.get_daily() is False
+
+
+def test_run_daily_off_is_noop(monkeypatch):
+    from demo import router, lifecycle_settings
+    monkeypatch.setattr(lifecycle_settings, "get_daily", lambda: False)
+    res = router.run_daily()
+    assert res["enabled"] is False and res["acted"] == []
+
+
+def test_run_daily_upgrades_only_autoupdate_apps(monkeypatch):
+    from demo import router, lifecycle_settings
+    monkeypatch.setattr(lifecycle_settings, "get_daily", lambda: True)
+    plan = [
+        {"app_id": "a", "name": "A", "status": "update", "auto_update": True,
+         "download_url": "u", "entry_id": "ea"},
+        {"app_id": "b", "name": "B", "status": "update", "auto_update": False,
+         "download_url": "u", "entry_id": "eb"},          # not autoupdate -> skip
+        {"app_id": "c", "name": "C", "status": "up-to-date", "auto_update": True},  # not an update
+    ]
+    monkeypatch.setattr(router, "_discover_updates", lambda app_ids, mode: plan)
+    dispatched = []
+    monkeypatch.setattr(router.intake, "begin_upgrade_job",
+                        lambda aid, scope, gate=False: dispatched.append((aid, scope, gate)) or 99)
+    monkeypatch.setattr(router, "_run_upgrade_pipeline", lambda *a, **k: None)
+    res = router.run_daily()
+    assert res["enabled"] is True
+    assert [d["app_id"] for d in res["acted"]] == ["a"]   # only the autoupdate-ON update
+    assert dispatched == [("a", "all", False)]            # full-auto (gate False)

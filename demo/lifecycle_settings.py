@@ -79,7 +79,28 @@ def set_flags(product_line: Optional[str], **flags: bool) -> Dict[str, bool]:
 
 
 def all_settings() -> Dict[str, Dict[str, bool]]:
-    """Every stored product line's settings (defaults merged) — for the Beat."""
+    """Every stored product line's settings (defaults merged) — for the Beat.
+    Reserved ``__`` keys (e.g. the global daily flag) are excluded."""
     with _lock:
         data = _load()
-    return {pl: {**DEFAULTS, **(v or {})} for pl, v in data.items()}
+    return {pl: {**DEFAULTS, **(v or {})}
+            for pl, v in data.items() if not pl.startswith("__")}
+
+
+# --- Global daily-update flag ----------------------------------------------
+# When on, the daily Beat acts on apps whose product has auto_update enabled
+# ("set to Update"). Stored under a reserved key in the same JSON.
+_DAILY_KEY = "__daily_update__"
+
+
+def get_daily() -> bool:
+    with _lock:
+        return bool((_load().get(_DAILY_KEY) or {}).get("enabled"))
+
+
+def set_daily(enabled: bool) -> bool:
+    with _lock:
+        data = _load()
+        data[_DAILY_KEY] = {"enabled": bool(enabled)}
+        _save(data)
+    return bool(enabled)

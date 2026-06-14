@@ -434,6 +434,7 @@
     $("software-gap").addEventListener("click", openSoftwareGap);
     $("intune-refresh").addEventListener("click", () => pollIntune(true));
     $("check-updates").addEventListener("click", checkAllUpdates);
+    $("daily-update").addEventListener("click", toggleDaily);
     $("gap-cancel").addEventListener("click", () => $("gap-overlay").classList.add("hidden"));
     $("gap-overlay").addEventListener("click", (e) => {
       if (e.target === $("gap-overlay")) $("gap-overlay").classList.add("hidden");
@@ -744,6 +745,7 @@
     badge.textContent = view.mode === "live" ? "live tenant" : "fixture mode";
     badge.dataset.mode = view.mode;
     updateFreshness(view);
+    renderDailyToggle(view);
     const body = $("intune-body");
     const apps = riskSorted(view.apps || []);
     if (!apps.length) {
@@ -959,6 +961,33 @@
       rerender();
     } catch (e) {
       appendLine({ source: "system", level: "error", text: `Autoupdate toggle failed: ${e}` });
+    }
+  }
+
+  // Global daily-update flag: reflect state + toggle.
+  function renderDailyToggle(view) {
+    const el = $("daily-update");
+    if (!el) return;
+    const on = !!view.daily_update;
+    el.dataset.on = on ? "1" : "0";
+    el.textContent = on ? "Daily: ON" : "Daily: off";
+  }
+  async function toggleDaily() {
+    const el = $("daily-update");
+    const next = el.dataset.on !== "1";
+    try {
+      const r = await fetch("/api/demo/daily-update", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      const res = await r.json();
+      el.dataset.on = res.daily_update ? "1" : "0";
+      el.textContent = res.daily_update ? "Daily: ON" : "Daily: off";
+      appendLine({ source: "system", text:
+        `Daily auto-update ${res.daily_update ? "ENABLED" : "disabled"} — ` +
+        `${res.daily_update ? "apps set to autoupdate will upgrade automatically each day." : "scheduled upgrades paused."}` });
+    } catch (e) {
+      appendLine({ source: "system", level: "error", text: `Daily toggle failed: ${e}` });
     }
   }
 

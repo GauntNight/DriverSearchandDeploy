@@ -103,12 +103,14 @@ ring_promotion:
   check_interval_hours: 6
 
 # Scheduled software version check (demo "refresh" brain — the daily half).
-# Detection-only: flags managed apps whose vendor source has a newer version.
-# It NEVER auto-packages or auto-deploys; upgrades stay operator-gated through
-# the demo console. The check honours DEMO_CLAUDE_MODE (replay | live | off).
-# Disabled by default — opt in for rehearsal/standing monitoring.
+# The scheduled daily update run. `enabled` here activates the Beat SCHEDULE;
+# whether a run actually acts is gated at runtime by the global daily-update flag
+# (toggled in the console — "Daily: ON/off"). When both are on, every Latest app
+# whose product is set to autoupdate ("Update") is full-auto upgraded; apps not
+# set to autoupdate are left for the operator's manual "Check updates". Honours
+# DEMO_CLAUDE_MODE (replay | live | off). Worker restart picks up schedule changes.
 version_check_schedule:
-  enabled: false
+  enabled: true
   interval_hours: 24
 
 # Unmanaged-software delta (what's installed in the environment but not packaged).

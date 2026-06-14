@@ -523,3 +523,8 @@ body.busy .ver-badge[data-state="available"] {
 .auto-toggle[data-on="1"] {
   color: var(--accent); border-color: var(--accent-dim); background: rgba(52,209,230,.12);
 }
+
+/* Global daily-update toggle (header) */
+#daily-update[data-on="1"] {
+  color: var(--accent); border-color: var(--accent-dim); background: rgba(52,209,230,.12);
+}
