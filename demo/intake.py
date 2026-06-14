@@ -194,6 +194,15 @@ def _exe_has_identity(pe_meta: Dict[str, Any]) -> bool:
         "original_filename", "file_description"))
 
 
+def _msi_has_identity(msi_meta: Dict[str, Any]) -> bool:
+    """True when an MSI's metadata carries real identity. An empty Property table
+    (e.g. a non-MSI file, or a no-extension download saved as 'stable') yields
+    none of these — we can neither name it nor build a ProductCode detection
+    rule, so it must not be published as a guessed app."""
+    return any((msi_meta or {}).get(k) for k in (
+        "product_name", "product_code", "upgrade_code"))
+
+
 def analyze(path: Path) -> Analysis:
     """Extract identity and resolve catalog hit/miss for an installer file.
 
@@ -203,8 +212,24 @@ def analyze(path: Path) -> Analysis:
     from autopackager.utils import installer_catalog
 
     path = Path(path)
-    is_exe = path.suffix.lower() == ".exe"
+    suffix = path.suffix.lower()
+    is_exe = suffix == ".exe"
     catalog = installer_catalog.load_catalog()
+
+    # Unrecognized installer type — e.g. a no-extension download saved as 'stable'
+    # (a vendor "stable channel" URL). The endpoints guard this, but the upgrade /
+    # discovery / queue paths download-then-analyze without that check, so escalate
+    # here too rather than mis-routing it to the MSI parser and publishing garbage.
+    if suffix not in KNOWN_EXTENSIONS:
+        a = Analysis(kind="unknown", path=str(path.resolve()), filename=path.name,
+                     branch="miss")
+        a.escalate = True
+        a.escalate_reason = (
+            f"'{path.name}' is not a recognized installer — only .msi, .exe, or .zip "
+            "are supported. (A download with no installer extension, e.g. a vendor "
+            "'stable channel' link, lands here.)")
+        a.blocker = a.escalate_reason
+        return a
 
     if is_exe:
         from autopackager.utils.pe_metadata import (
@@ -313,10 +338,22 @@ def analyze(path: Path) -> Analysis:
         if entry.prefer_entry_id:
             analysis.prefer_entry_id = entry.prefer_entry_id
             analysis.consumer_caveats = entry.consumer_caveats
+    elif not _msi_has_identity(msi_meta):
+        # MISS with an empty/unreadable Property table — not a real MSI (e.g. a
+        # no-extension download saved as 'stable', or a corrupt file). Publishing
+        # it yields a malformed app: filename as the name, version "unknown", a
+        # placeholder detection rule, and a bogus `msiexec /i stable` command.
+        # Escalate instead.
+        analysis.escalate = True
+        analysis.escalate_reason = (
+            f"Couldn't read MSI metadata from '{path.name}' — not a valid MSI "
+            "(empty Property table) and no catalog match. Provide the real vendor "
+            "MSI/EXE, or add a catalog entry."
+        )
+        analysis.blocker = analysis.escalate_reason
     else:
-        # MSI miss still has a deterministic default, but per the demo spec we
-        # route unknown installers through the research bridge so the audience
-        # sees the model author the command + detection rule.
+        # MSI miss with real identity → deterministic default; the research
+        # bridge can refine the command + detection rule.
         analysis.install_command = f"msiexec /i {path.name} /qn /norestart"
     return analysis
 
