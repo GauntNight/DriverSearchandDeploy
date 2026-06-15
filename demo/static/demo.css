@@ -149,7 +149,7 @@ body {
 .panel-title-row { display: flex; align-items: center; justify-content: space-between;
   border-bottom: 1px solid var(--border); padding-right: 12px; }
 .panel-title-row .panel-title { border-bottom: none; }
-.center-actions { display: flex; align-items: center; gap: 10px; }
+.center-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px 10px; }
 .src-badge {
   font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 4px;
   border: 1px solid var(--border-2); color: var(--text-dim);
@@ -197,6 +197,27 @@ body {
 /* CENTER: table */
 .table-wrap { overflow: auto; flex: 1; }
 .intune-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+/* Fixed layout for the tenant table: column widths come from the <colgroup>
+   below, NOT from cell content — so a version check, a flipped policy toggle,
+   or a changing install pill reflows only WITHIN its cell and never shoves the
+   neighbouring columns. (Scoped to #intune-table so the gap modal table, which
+   shares .intune-table, keeps its own auto layout.) */
+#intune-table { table-layout: fixed; min-width: 720px; }
+/* These widths act as PROPORTIONAL WEIGHTS, not hard pixels: the table is
+   width:100% with fixed layout, so on a wide panel every column scales up
+   together (no single column hoards the slack → no giant whitespace beside
+   Name) and on a narrow panel they scale down together. The two control-heavy
+   cells (Risk, State) WRAP their contents to a second line (see
+   .risk-flow / .ver-flow) rather than clipping when scaled down. */
+#intune-table .col-name       { width: 210px; }
+#intune-table .col-version    { width: 78px; }
+#intune-table .col-risk       { width: 150px; }
+#intune-table .col-publisher  { width: 118px; }
+#intune-table .col-assignment { width: 100px; }
+#intune-table .col-created    { width: 84px; }
+#intune-table .col-state      { width: 200px; }
+#intune-table td.app-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .intune-table th {
   position: sticky; top: 0; background: var(--panel-2); color: var(--text-mute);
   text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase;
@@ -264,9 +285,20 @@ body {
    toggle. IMPORTANT: keep this a real table-cell (NOT display:flex) — flex on a
    <td> drops it out of the table's column sizing and the rows stop lining up.
    Inline children on one line (nowrap) keep the column aligned. */
-.ver-cell { white-space: nowrap; }
-.ver-cell > * { vertical-align: middle; }
-.ver-cell > * + * { margin-left: 6px; }
+/* Control-heavy cells lay their children out in a WRAPPING flex row inside an
+   inner div (.ver-flow / .risk-flow) — NOT on the <td> itself, because flex on a
+   <td> drops it out of the table's column sizing and rows stop lining up. When
+   the column scales narrow the controls wrap to a second line instead of being
+   clipped at the table's right edge. */
+.ver-flow, .risk-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* Each State cell is its own flex container, so flex layout alone can't line up
+   siblings ACROSS rows — only fixed widths can. Give the version badge and the
+   install pill a fixed slot so the badge, the install pill, and the trailing
+   ⚙ policy / Retire button all align column-wise from row to row. */
+.ver-flow .ver-badge { min-width: 62px; text-align: center; box-sizing: border-box; }
+.ver-flow .inst-pill { min-width: 88px; text-align: center; box-sizing: border-box; }
+.ver-flow .inst-pill.placeholder { visibility: hidden; }   /* reserves the slot when a row has no install count */
 .ver-refresh {
   background: transparent; border: 1px solid var(--border-2); color: var(--accent);
   border-radius: 4px; cursor: pointer; font-size: 13px; line-height: 1;
@@ -387,8 +419,7 @@ body.busy .ver-badge[data-state="available"] {
 
 .risk-th { white-space: nowrap; }
 
-.risk-cell { white-space: nowrap; }
-.risk-cell > * + * { margin-left: 6px; }
+/* .risk-cell children live in the wrapping .risk-flow row (see above). */
 
 /* Severity badge (table + drawer summary + gap chip share [data-sev]). */
 .risk-badge {
@@ -495,6 +526,14 @@ body.busy .ver-badge[data-state="available"] {
 @keyframes freshpulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
 #intune-refresh.spin { opacity: .6; pointer-events: none; }
 
+/* Header stability: these badges/toggles change their LABEL text as state
+   updates ("cached" → "live · just now", "Daily: off" → "Daily: ON",
+   "✓ no known exposure" → "⚠ 2 critical"). Reserve width + tabular numerals so
+   the row of action buttons to their right doesn't slide left/right on update. */
+#intune-fresh { min-width: 128px; justify-content: center; font-variant-numeric: tabular-nums; }
+#daily-update { min-width: 78px; text-align: center; }
+#risk-summary { min-width: 136px; text-align: center; }
+
 /* ===== Lifecycle: install-count "clean" pill ============================= */
 .inst-pill {
   display: inline-block; margin-left: 6px; font-size: 10px;
@@ -540,9 +579,10 @@ body.busy .ver-badge[data-state="available"] {
 .retire-btn.danger:hover { background: rgba(226,75,74,.12); }
 body.busy .retire-btn { opacity: .5; pointer-events: none; }
 
-/* Global daily-update toggle (header) */
+/* Global daily-update toggle (header). Green = "enabled / healthy", keeping
+   cyan reserved for "actionable / new" (available upgrade, Patch now, links). */
 #daily-update[data-on="1"] {
-  color: var(--accent); border-color: var(--accent-dim); background: rgba(52,209,230,.12);
+  color: var(--ok); border-color: #3c5a23; background: rgba(99,153,34,.12);
 }
 
 /* CVE risk cleared (vulnerable build, but 0 installs — drained) */
@@ -552,3 +592,91 @@ body.busy .retire-btn { opacity: .5; pointer-events: none; }
   padding: 2px 8px; cursor: pointer;
 }
 .risk-cleared:hover { color: var(--text-dim); filter: brightness(1.15); }
+
+/* ===== Lifecycle policy: compact button + popover ========================= */
+/* Replaces the two inline State-column toggles. The button summarises policy
+   (green = autoupdate ON / full-auto; neutral = gated; ⌫ marks auto-delete on)
+   and opens a popover with the full switches. */
+.policy-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--mono); font-size: 10px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--border-2); background: var(--panel-2);
+  color: var(--text-mute); cursor: pointer; white-space: nowrap; vertical-align: middle;
+}
+.policy-btn:hover { filter: brightness(1.2); }
+.policy-btn[data-on="1"] { color: var(--ok); border-color: #3c5a23; background: rgba(99,153,34,.12); }
+.policy-btn.has-del { border-color: #6f2424; }   /* destructive auto-delete is armed */
+
+.policy-pop {
+  position: fixed; z-index: 60; width: 270px;
+  background: var(--panel); border: 1px solid var(--border-2); border-radius: 8px;
+  box-shadow: 0 16px 44px rgba(0,0,0,.55); padding: 10px 10px 12px;
+}
+.pp-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-mute); }
+.pp-sub {
+  font-size: 12.5px; color: var(--text); font-weight: 600; margin: 2px 0 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pp-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
+  background: transparent; border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; margin-top: 6px; cursor: pointer; text-align: left; color: inherit;
+}
+.pp-row:hover { border-color: var(--border-2); background: var(--panel-2); }
+.pp-text { min-width: 0; }
+.pp-label { font-size: 12px; color: var(--text); font-weight: 600; }
+.pp-hint { font-size: 10.5px; color: var(--text-mute); margin-top: 2px; line-height: 1.35; }
+
+/* Toggle switch — one consistent on/off control (green = good, red = destructive). */
+.switch {
+  position: relative; flex: none; width: 34px; height: 18px; border-radius: 999px;
+  background: var(--border-2); border: 1px solid var(--border-2);
+  transition: background .15s ease, border-color .15s ease;
+}
+.switch::after {
+  content: ""; position: absolute; top: 1px; left: 1px; width: 14px; height: 14px;
+  border-radius: 50%; background: var(--text-dim);
+  transition: transform .15s ease, background .15s ease;
+}
+.switch[data-on="1"]::after { transform: translateX(16px); background: #fff; }
+.switch.good[data-on="1"]   { background: var(--ok);    border-color: var(--ok); }
+.switch.danger[data-on="1"] { background: var(--error); border-color: var(--error); }
+
+/* ===== Sortable headers ================================================== */
+#intune-table th.sortable { cursor: pointer; user-select: none; }
+#intune-table th.sortable:hover { color: var(--text-dim); }
+#intune-table th.sortable::after {
+  content: "⇅"; margin-left: 5px; font-size: 9px; opacity: .35; vertical-align: middle;
+}
+/* Active sort: solid arrow in plain text colour (cyan stays reserved for "new"). */
+#intune-table th.sortable[data-dir="asc"]::after  { content: "▲"; opacity: 1; color: var(--text); }
+#intune-table th.sortable[data-dir="desc"]::after { content: "▼"; opacity: 1; color: var(--text); }
+
+/* ===== Filter button + popover =========================================== */
+#filter-btn.active { color: var(--accent); border-color: var(--accent-dim); background: rgba(52,209,230,.10); }
+
+.filter-pop {
+  position: fixed; z-index: 60; width: 250px;
+  background: var(--panel); border: 1px solid var(--border-2); border-radius: 8px;
+  box-shadow: 0 16px 44px rgba(0,0,0,.55); padding: 10px 10px 12px;
+}
+.fp-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
+.fp-label { font-size: 12px; color: var(--text-dim); flex: none; }
+.fp-select, .fp-input {
+  flex: 1; min-width: 0; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border-2); border-radius: 6px; padding: 5px 8px;
+  font-family: var(--mono); font-size: 12px; cursor: pointer;
+}
+.fp-input { cursor: text; }
+.fp-input::placeholder { color: var(--text-mute); }
+.fp-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
+}
+.fp-count { font-size: 11.5px; color: var(--text-mute); }
+.fp-clear {
+  font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: 6px;
+  border: 1px solid var(--border-2); background: transparent; color: var(--accent); cursor: pointer;
+}
+.fp-clear:hover { filter: brightness(1.2); }
+.fp-clear:disabled { opacity: .4; cursor: default; color: var(--text-mute); }

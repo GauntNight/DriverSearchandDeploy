@@ -105,6 +105,7 @@
       <div class="panel-title-row">
         <h2 class="panel-title">Intune · Apps › Windows</h2>
         <div class="center-actions">
+          <button id="filter-btn" class="btn ghost" title="Filter the app list by publisher, assignment, risk, or state">Filter ▾</button>
           <span class="risk-summary" id="risk-summary" title="Estate vulnerability exposure by CVSS severity"></span>
           <span class="src-badge" id="intune-mode">…</span>
           <span class="fresh-badge" id="intune-fresh" title="Center panel is served from a cached snapshot and refreshed in the background — Refresh forces a live reload">cached</span>
@@ -117,10 +118,26 @@
       </div>
       <div class="table-wrap">
         <table class="intune-table" id="intune-table">
+          <!-- Fixed column geometry — widths reserved for each cell's widest
+               state so toggles/badges changing content never reflow neighbors.
+               Name (first col) has no width and absorbs the remaining space. -->
+          <colgroup>
+            <col class="col-name" />
+            <col class="col-version" />
+            <col class="col-risk" />
+            <col class="col-publisher" />
+            <col class="col-assignment" />
+            <col class="col-created" />
+            <col class="col-state" />
+          </colgroup>
           <thead>
-            <tr><th>Name</th><th>Version</th>
-                <th class="risk-th" title="Known CVEs a newer release fixes, by CVSS severity — worst first">Risk ⚠</th>
-                <th>Publisher</th><th>Assignment</th><th>Created</th><th>State</th></tr>
+            <tr><th class="sortable" data-sort="name">Name</th>
+                <th class="sortable" data-sort="version">Version</th>
+                <th class="sortable risk-th" data-sort="risk" title="Known CVEs a newer release fixes, by CVSS severity — worst first">Risk ⚠</th>
+                <th class="sortable" data-sort="publisher">Publisher</th>
+                <th class="sortable" data-sort="assignment">Assignment</th>
+                <th class="sortable" data-sort="created">Created</th>
+                <th class="sortable" data-sort="state">State</th></tr>
           </thead>
           <tbody id="intune-body">
             <tr class="empty"><td colspan="7">Loading tenant apps…</td></tr>
@@ -212,6 +229,14 @@
       <button class="modal-x" id="cve-cancel" title="Close">✕</button>
     </div>
   </div>
+
+  <!-- Lifecycle-policy popover (per-product autoupdate / auto-delete toggles).
+       Positioned + populated by demo.js when a row's ⚙ button is clicked. -->
+  <div class="policy-pop hidden" id="policy-pop" role="dialog" aria-label="Lifecycle policy"></div>
+
+  <!-- Filter popover (publisher / assignment / risk / state). Positioned +
+       populated by demo.js when the header "Filter ▾" button is clicked. -->
+  <div class="filter-pop hidden" id="filter-pop" role="dialog" aria-label="Filter apps"></div>
 
   <script src="/demo/static/demo.js"></script>
 </body>
