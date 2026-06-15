@@ -35,6 +35,13 @@
   let pendingUpgrade = null;           // { app_id, scope } awaiting a manual installer drop
   let scopeApp = null;                 // app the open scope dialog targets
   let cveApp = null;                   // app the open CVE risk drawer targets
+  let policyApp = null;                // app the open lifecycle-policy popover targets
+
+  // Center-table sort + filter (client-side over the already-fetched view).
+  let sortKey = null;                  // null = default risk-worst-first; else a column key
+  let sortDir = 1;                     // 1 asc, -1 desc
+  const filters = { publisher: "", assignment: "", risk: "", state: "" };
+  let filterOpen = false;
 
   // ---- Single-action lock + queue batch state ------------------------------
   // The console runs ONE action at a time. While an action is in flight, other
@@ -463,6 +470,12 @@
     $("cve-overlay").addEventListener("click", (e) => {
       if (e.target === $("cve-overlay")) closeCveDrawer();
     });
+
+    // Center-table: sortable headers + filter popover.
+    document.querySelectorAll("#intune-table th.sortable").forEach((th) => {
+      th.addEventListener("click", () => setSort(th.dataset.sort));
+    });
+    $("filter-btn").addEventListener("click", (e) => { e.stopPropagation(); openFilterMenu(); });
   }
 
   // ---- Software gap (installed but not packaged) ---------------------------
@@ -746,15 +759,27 @@
     updateFreshness(view);
     renderDailyToggle(view);
     const body = $("intune-body");
-    const apps = riskSorted(view.apps || []);
-    if (!apps.length) {
+    const all = view.apps || [];
+    // Estate roll-up reflects the WHOLE tenant, not the filtered subset.
+    renderRiskSummary(all);
+    updateSortHeaders();
+    updateFilterButton(all);
+    if (filterOpen) updateFilterCount(all);   // refresh counts without rebuilding (keeps type-ahead focus)
+    if (!all.length) {
       body.innerHTML = `<tr class="empty"><td colspan="7">No Win32 apps ${view.mode === "fixture" ? "in fixtures" : "in tenant"} yet</td></tr>`;
       return;
     }
-    renderRiskSummary(apps);
+    const apps = sortApps(applyFilters(all));
+    if (!apps.length) {
+      body.innerHTML = `<tr class="empty"><td colspan="7">No apps match the current filter — <span class="link" id="filter-clear-inline">clear filter</span></td></tr>`;
+      const fc = $("filter-clear-inline");
+      if (fc) fc.addEventListener("click", clearFilters);
+      return;
+    }
     body.innerHTML = "";
     for (const app of apps) {
       const tr = document.createElement("tr");
+      if (app.id) tr.dataset.appId = app.id;   // lets us refresh ONE row in place
       const isFresh = !firstIntuneLoad && app.id && !seenAppIds.has(app.id);
       if (isFresh) tr.classList.add("fresh");
       if (app.id) seenAppIds.add(app.id);
@@ -827,6 +852,119 @@
     return { sev, score };
   }
 
+  // ---- Sort + filter (client-side, over the already-fetched view) ----------
+  // Filter bucket for the Risk column — mirrors what buildRiskCell renders:
+  //   "critical|high|medium|low" = active exposure (a newer release fixes CVEs)
+  //   "none"    = assessed clean — "✓ no known CVEs" / "✓ CVE cleared"
+  //   "unknown" = no CVE data at all (the "—" rows)
+  function riskBucketOf(app) {
+    const c = app && app.cve;
+    if (!c || c.source === "none") return "unknown";
+    if (c.cve_count && app.risk_active !== false && c.severity) return c.severity;
+    return "none";
+  }
+  // Normalised lifecycle state key: "latest" | "N-1" | "N-2" … | "retired" | "pending".
+  function stateKeyOf(app) {
+    if (app.version_state === "pending") return "pending";
+    if (app.version_state === "retired" || app.retired) return "retired";
+    if (/^N-\d+$/.test(app.version_state || "")) return app.version_state;
+    return "latest";
+  }
+  function stateRank(app) {
+    const k = stateKeyOf(app);
+    if (k === "pending") return -1;
+    if (k === "latest") return 0;
+    if (k === "retired") return 100;
+    const m = /^N-(\d+)$/.exec(k);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+  function firstRing(app) {
+    return (app.assignments && app.assignments[0] && app.assignments[0].ring) || "";
+  }
+
+  function sortValue(app, key) {
+    switch (key) {
+      case "risk":       return riskScore(app);
+      case "state":      return stateRank(app);
+      case "created":    { const t = Date.parse(app.created); return isNaN(t) ? 0 : t; }
+      case "version":    return app.version || "";
+      case "publisher":  return app.publisher || "";
+      case "assignment": return firstRing(app);
+      case "name":
+      default:           return app.name || "";
+    }
+  }
+  function cmpVals(a, b) {
+    if (typeof a === "number" && typeof b === "number") return a - b;
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+  }
+  // Default (no explicit sort) = risk worst-first, server order as tiebreak.
+  function sortApps(apps) {
+    if (!sortKey) return riskSorted(apps);
+    const idx = new Map(apps.map((a, i) => [a, i]));
+    return apps.slice().sort((x, y) => {
+      const c = cmpVals(sortValue(x, sortKey), sortValue(y, sortKey)) * sortDir;
+      return c !== 0 ? c : (idx.get(x) - idx.get(y));   // stable tiebreak, dir-independent
+    });
+  }
+  function setSort(key) {
+    if (sortKey === key) { sortDir = -sortDir; }
+    else { sortKey = key; sortDir = (key === "risk" || key === "created") ? -1 : 1; }  // sensible first dir
+    rerender();
+  }
+  function updateSortHeaders() {
+    document.querySelectorAll("#intune-table th.sortable").forEach((th) => {
+      if (th.dataset.sort === sortKey) th.dataset.dir = sortDir === 1 ? "asc" : "desc";
+      else th.removeAttribute("data-dir");
+    });
+  }
+
+  function applyFilters(apps) {
+    const pub = filters.publisher.trim().toLowerCase();   // type-ahead: substring match
+    return apps.filter((a) => {
+      if (pub && !(a.publisher || "").toLowerCase().includes(pub)) return false;
+      if (filters.assignment) {
+        const rings = (a.assignments || []).map((x) => x.ring);
+        if (filters.assignment === "__none__") { if (rings.length) return false; }
+        else if (!rings.includes(filters.assignment)) return false;
+      }
+      if (filters.risk && riskBucketOf(a) !== filters.risk) return false;
+      if (filters.state && stateKeyOf(a) !== filters.state) return false;
+      return true;
+    });
+  }
+  function anyFilterActive() {
+    return !!(filters.publisher || filters.assignment || filters.risk || filters.state);
+  }
+  function clearFilters() {
+    filters.publisher = filters.assignment = filters.risk = filters.state = "";
+    if (filterOpen) renderFilterMenu((lastView && lastView.apps) || []);   // reset the controls
+    rerender();
+  }
+  // Lightweight update of just the popover's count + Clear state, WITHOUT
+  // rebuilding the controls (rebuilding would steal focus from the publisher
+  // type-ahead mid-keystroke).
+  function updateFilterCount(apps) {
+    const p = $("filter-pop");
+    if (!p || p.classList.contains("hidden")) return;
+    const count = p.querySelector(".fp-count");
+    if (count) count.textContent = `${applyFilters(apps).length} of ${apps.length} shown`;
+    const clear = p.querySelector(".fp-clear");
+    if (clear) clear.disabled = !anyFilterActive();
+  }
+  function updateFilterButton(all) {
+    const btn = $("filter-btn");
+    if (!btn) return;
+    const on = anyFilterActive();
+    btn.classList.toggle("active", on);
+    if (on && all) {
+      const shown = applyFilters(all).length;
+      btn.textContent = `Filter ● ${shown}/${all.length} ▾`;
+    } else {
+      btn.textContent = "Filter ▾";
+    }
+  }
+
   // "Patch now" is only meaningful on the LATEST deployed version of a product.
   // For an N-1/N-2 the fix already exists in the estate — the new version is
   // confirmed/deployed (so patching is done) and a clean N-1 is retire-eligible,
@@ -838,6 +976,12 @@
 
   function buildRiskCell(cell, app) {
     cell.innerHTML = "";
+    // Wrapping flex row inside the td so the badge/count/Patch-now controls wrap
+    // rather than clip when the column is narrow.
+    const flow = document.createElement("div");
+    flow.className = "risk-flow";
+    cell.appendChild(flow);
+    cell = flow;
     const c = app.cve;
     if (!c || c.source === "none") {
       const dash = document.createElement("span");
@@ -913,6 +1057,12 @@
   function buildVersionCell(cell, app) {
     cell.innerHTML = "";
     if (!app.id) return;
+    // Wrapping flex row inside the td so refresh + badge + install pill + policy
+    // toggles wrap to a second line rather than clip when the column is narrow.
+    const flow = document.createElement("div");
+    flow.className = "ver-flow";
+    cell.appendChild(flow);
+    cell = flow;
     const btn = document.createElement("button");
     btn.className = "ver-refresh";
     btn.title = "Check the vendor source for a newer version";
@@ -927,7 +1077,9 @@
     b.dataset.state = state.state;
     b.textContent = state.label;
     if (state.state === "available") {
-      b.title = "Click to package & deploy this upgrade";
+      b.title = state.version
+        ? `New version available — ${state.version}. Click to package & deploy this upgrade.`
+        : "Click to package & deploy this upgrade";
       b.addEventListener("click", () => openScopeDialog(app));
     }
     cell.appendChild(b);
@@ -936,40 +1088,37 @@
     // 0 installs means retire-eligible ("clean"); installs remaining are the
     // drain target. For the Latest, the count is just rollout progress.
     const inst = installLine(app);
+    const el = document.createElement("span");
     if (inst) {
-      const el = document.createElement("span");
       el.className = "inst-pill " + inst.cls;
       el.textContent = inst.text;
       if (inst.title) el.title = inst.title;
-      cell.appendChild(el);
+    } else {
+      // No install count for this row — keep an invisible pill so the trailing
+      // ⚙ policy / Retire button stays aligned with the rows that have one.
+      el.className = "inst-pill placeholder";
+      el.textContent = "—";
+      el.setAttribute("aria-hidden", "true");
     }
+    cell.appendChild(el);
 
     const retired = app.version_state === "retired" || app.retired;
 
-    // Per-product policy toggles — only on the Latest (and not on a retired row).
+    // Per-product policy — only on the Latest (and not on a retired row). The two
+    // toggles (autoupdate, auto-delete-when-clean) used to sit inline and crowd
+    // the column; they now live behind one compact button that opens a popover.
     if (isLatestVersion(app) && !retired) {
-      // Autoupdate: on = full auto-upgrade when a newer version is found; off = gated.
-      const tog = document.createElement("button");
-      tog.className = "auto-toggle";
-      tog.dataset.on = app.auto_update ? "1" : "0";
-      tog.textContent = app.auto_update ? "auto ⟳ on" : "auto ⟳ off";
-      tog.title = app.auto_update
-        ? "Autoupdate ON — new versions deploy automatically. Click to require approval (gated)."
-        : "Autoupdate OFF — new versions are packaged and held at the Ring 0 gate. Click to deploy automatically.";
-      tog.addEventListener("click", (e) => { e.stopPropagation(); setAutoupdate(app, !app.auto_update); });
-      cell.appendChild(tog);
-
-      // Auto-delete-when-clean: on = delete old versions once clean past the
-      // window; off (default) = relabel "Retired" and keep the object.
-      const del = document.createElement("button");
-      del.className = "auto-toggle del-toggle";
-      del.dataset.on = app.auto_delete_when_clean ? "1" : "0";
-      del.textContent = app.auto_delete_when_clean ? "del ⌫ on" : "del ⌫ off";
-      del.title = app.auto_delete_when_clean
-        ? "Auto-delete ON — clean old versions are removed from Intune. Click to keep & relabel 'Retired' instead."
-        : "Auto-delete OFF — clean old versions are relabeled 'Retired' (kept). Click to delete them automatically.";
-      del.addEventListener("click", (e) => { e.stopPropagation(); setAutodelete(app, !app.auto_delete_when_clean); });
-      cell.appendChild(del);
+      const pol = document.createElement("button");
+      pol.className = "policy-btn";
+      pol.dataset.on = app.auto_update ? "1" : "0";          // green when full-auto
+      pol.classList.toggle("has-del", !!app.auto_delete_when_clean);
+      // Label summarises the primary policy; the ⌫ marker flags destructive auto-delete.
+      pol.textContent = (app.auto_update ? "⚙ Auto" : "⚙ Gated") + (app.auto_delete_when_clean ? " ⌫" : "");
+      pol.title = "Lifecycle policy — autoupdate" +
+        (app.auto_update ? " ON (full auto)" : " off (gated)") + ", auto-delete-when-clean" +
+        (app.auto_delete_when_clean ? " ON" : " off") + ". Click to change.";
+      pol.addEventListener("click", (e) => { e.stopPropagation(); openPolicyMenu(app, pol); });
+      cell.appendChild(pol);
     }
 
     // Manual Retire — on an old (N-1/N-2) version that isn't already retired.
@@ -1000,7 +1149,8 @@
       app.auto_update = !!res.auto_update;
       appendLine({ source: "system", text:
         `${app.name}: autoupdate ${app.auto_update ? "ENABLED (full auto)" : "disabled (gated)"}.` });
-      rerender();
+      refreshAppRow(app);
+      if (policyApp && policyApp.id === app.id) renderPolicyMenu(app);
     } catch (e) {
       appendLine({ source: "system", level: "error", text: `Autoupdate toggle failed: ${e}` });
     }
@@ -1019,7 +1169,8 @@
       appendLine({ source: "system", text:
         `${app.name}: auto-delete-when-clean ${app.auto_delete_when_clean
           ? "ENABLED (clean old versions are removed)" : "disabled (old versions relabeled 'Retired')"}.` });
-      rerender();
+      refreshAppRow(app);
+      if (policyApp && policyApp.id === app.id) renderPolicyMenu(app);
     } catch (e) {
       appendLine({ source: "system", level: "error", text: `Auto-delete toggle failed: ${e}` });
     }
@@ -1139,12 +1290,245 @@
 
   function rerender() { if (lastView) renderIntune(lastView); }
 
+  // Update a SINGLE app's row in place — rebuilds just its risk + state cells
+  // from the (mutated) app object, without re-sorting or rebuilding the table.
+  // This is what keeps a toggle flip or a version check from making the whole
+  // list flicker / jump vertically. Falls back to a full rerender if the row
+  // isn't in the DOM (e.g. it was filtered out).
+  function refreshAppRow(app) {
+    if (!app || !app.id) { rerender(); return; }
+    const tr = document.querySelector(`#intune-body tr[data-app-id="${app.id}"]`);
+    if (!tr) { rerender(); return; }
+    const rc = tr.querySelector(".risk-cell");
+    const vc = tr.querySelector(".ver-cell");
+    if (rc) buildRiskCell(rc, app);
+    if (vc) buildVersionCell(vc, app);
+  }
+
+  // ---- Lifecycle policy popover (declutters the State column) --------------
+  // One shared popover (#policy-pop) re-rendered per app. Holds the two
+  // per-product toggles (autoupdate, auto-delete-when-clean) as switches.
+  function policyRow({ label, hint, on, cls, onToggle }) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "pp-row";
+    const txt = document.createElement("div");
+    txt.className = "pp-text";
+    const l = document.createElement("div"); l.className = "pp-label"; l.textContent = label;
+    const h = document.createElement("div"); h.className = "pp-hint"; h.textContent = hint;
+    txt.appendChild(l); txt.appendChild(h);
+    const sw = document.createElement("span");
+    sw.className = "switch " + (cls || "");
+    sw.dataset.on = on ? "1" : "0";
+    row.appendChild(txt); row.appendChild(sw);
+    row.addEventListener("click", (e) => { e.stopPropagation(); onToggle(); });
+    return row;
+  }
+
+  function renderPolicyMenu(app) {
+    const p = $("policy-pop");
+    if (!p) return;
+    p.innerHTML = "";
+    const title = document.createElement("div");
+    title.className = "pp-title"; title.textContent = "Lifecycle policy";
+    const sub = document.createElement("div");
+    sub.className = "pp-sub"; sub.textContent = app.name || "";
+    p.appendChild(title); p.appendChild(sub);
+    p.appendChild(policyRow({
+      label: "Auto-update",
+      hint: app.auto_update
+        ? "New versions deploy automatically."
+        : "New versions are held at the Ring 0 gate.",
+      on: !!app.auto_update, cls: "good",
+      onToggle: () => setAutoupdate(app, !app.auto_update),
+    }));
+    p.appendChild(policyRow({
+      label: "Auto-delete when clean",
+      hint: app.auto_delete_when_clean
+        ? "Clean old versions are removed from Intune."
+        : "Clean old versions are relabeled “Retired” (kept).",
+      on: !!app.auto_delete_when_clean, cls: "danger",
+      onToggle: () => setAutodelete(app, !app.auto_delete_when_clean),
+    }));
+  }
+
+  function closePolicyMenu() {
+    const p = $("policy-pop");
+    if (p) p.classList.add("hidden");
+    policyApp = null;
+    document.removeEventListener("click", onPolicyOutside, true);
+    document.removeEventListener("keydown", onPolicyKey, true);
+  }
+  function onPolicyOutside(e) {
+    const p = $("policy-pop");
+    if (!p || p.classList.contains("hidden")) return;
+    if (p.contains(e.target)) return;
+    if (e.target.closest && e.target.closest(".policy-btn")) return;  // trigger toggles itself
+    closePolicyMenu();
+  }
+  function onPolicyKey(e) { if (e.key === "Escape") closePolicyMenu(); }
+
+  function openPolicyMenu(app, anchor) {
+    const p = $("policy-pop");
+    if (!p) return;
+    // Second click on the same trigger closes it.
+    if (policyApp && policyApp.id === app.id && !p.classList.contains("hidden")) {
+      closePolicyMenu();
+      return;
+    }
+    policyApp = app;
+    renderPolicyMenu(app);
+    p.classList.remove("hidden");
+    // Anchor under the button, right-aligned, clamped on screen.
+    const r = anchor.getBoundingClientRect();
+    let left = Math.max(8, r.right - p.offsetWidth);
+    let top = r.bottom + 6;
+    if (top + p.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - p.offsetHeight - 6);
+    p.style.left = `${Math.round(left)}px`;
+    p.style.top = `${Math.round(top)}px`;
+    // Attach the outside-click listener on the next tick so THIS click doesn't close it.
+    setTimeout(() => {
+      document.addEventListener("click", onPolicyOutside, true);
+      document.addEventListener("keydown", onPolicyKey, true);
+    }, 0);
+  }
+
+  // ---- Filter popover (publisher / assignment / risk / state) --------------
+  function distinctSorted(values) {
+    return [...new Set(values.filter((v) => v != null && v !== ""))]
+      .sort((a, b) => String(a).localeCompare(String(b), undefined, { sensitivity: "base" }));
+  }
+  function stateLabel(key) {
+    if (key === "latest") return "Latest";
+    if (key === "retired") return "Retired";
+    if (key === "pending") return "Pending";
+    return key;   // "N-1", "N-2" …
+  }
+  const RISK_OPTS = [
+    { value: "", text: "Any risk" },
+    { value: "critical", text: "Critical" }, { value: "high", text: "High" },
+    { value: "medium", text: "Medium" }, { value: "low", text: "Low" },
+    { value: "none", text: "No exposure" },        // assessed clean (no known CVEs)
+    { value: "unknown", text: "No CVE data" },      // the "—" rows
+  ];
+
+  // Publisher is a type-ahead combobox (text input + datalist), not a fixed
+  // dropdown — a large estate can have hundreds of publishers. Matching is a
+  // case-insensitive substring (see applyFilters), so partial typing works.
+  function buildPublisherCombo(apps) {
+    const row = document.createElement("label");
+    row.className = "fp-row";
+    const span = document.createElement("span");
+    span.className = "fp-label"; span.textContent = "Publisher";
+    const input = document.createElement("input");
+    input.type = "text"; input.className = "fp-input";
+    input.placeholder = "Any publisher"; input.spellcheck = false;
+    input.setAttribute("list", "fp-pub-list");
+    input.value = filters.publisher;
+    const dl = document.createElement("datalist");
+    dl.id = "fp-pub-list";
+    for (const v of distinctSorted(apps.map((a) => a.publisher))) {
+      const op = document.createElement("option"); op.value = v; dl.appendChild(op);
+    }
+    input.addEventListener("input", () => { filters.publisher = input.value; rerender(); });
+    row.appendChild(span); row.appendChild(input); row.appendChild(dl);
+    return row;
+  }
+
+  function buildFilterSelect(label, key, options) {
+    const row = document.createElement("label");
+    row.className = "fp-row";
+    const span = document.createElement("span");
+    span.className = "fp-label"; span.textContent = label;
+    const sel = document.createElement("select");
+    sel.className = "fp-select";
+    for (const o of options) {
+      const op = document.createElement("option");
+      op.value = o.value; op.textContent = o.text;
+      if (o.value === filters[key]) op.selected = true;
+      sel.appendChild(op);
+    }
+    sel.addEventListener("change", () => { filters[key] = sel.value; rerender(); });
+    row.appendChild(span); row.appendChild(sel);
+    return row;
+  }
+
+  function renderFilterMenu(apps) {
+    const p = $("filter-pop");
+    if (!p) return;
+    p.innerHTML = "";
+    const title = document.createElement("div");
+    title.className = "pp-title"; title.textContent = "Filter apps";
+    p.appendChild(title);
+
+    const ringVals = distinctSorted(apps.flatMap((a) => (a.assignments || []).map((x) => x.ring)));
+    const asgOpts = [{ value: "", text: "Any assignment" }, { value: "__none__", text: "(unassigned)" }]
+      .concat(ringVals.map((v) => ({ value: v, text: v })));
+    const presentStates = new Set(apps.map(stateKeyOf));
+    const stateOrder = ["latest", "N-1", "N-2", "N-3", "N-4", "retired", "pending"];
+    const stateOpts = [{ value: "", text: "Any state" }]
+      .concat(stateOrder.filter((s) => presentStates.has(s)).map((s) => ({ value: s, text: stateLabel(s) })));
+
+    p.appendChild(buildPublisherCombo(apps));
+    p.appendChild(buildFilterSelect("Assignment", "assignment", asgOpts));
+    p.appendChild(buildFilterSelect("Risk", "risk", RISK_OPTS));
+    p.appendChild(buildFilterSelect("State", "state", stateOpts));
+
+    const foot = document.createElement("div");
+    foot.className = "fp-foot";
+    const count = document.createElement("span");
+    count.className = "fp-count";
+    count.textContent = `${applyFilters(apps).length} of ${apps.length} shown`;
+    const clear = document.createElement("button");
+    clear.type = "button"; clear.className = "fp-clear"; clear.textContent = "Clear";
+    clear.disabled = !anyFilterActive();
+    clear.addEventListener("click", (e) => { e.stopPropagation(); clearFilters(); });
+    foot.appendChild(count); foot.appendChild(clear);
+    p.appendChild(foot);
+  }
+
+  function closeFilterMenu() {
+    const p = $("filter-pop");
+    if (p) p.classList.add("hidden");
+    filterOpen = false;
+    document.removeEventListener("click", onFilterOutside, true);
+    document.removeEventListener("keydown", onFilterKey, true);
+  }
+  function onFilterOutside(e) {
+    const p = $("filter-pop");
+    if (!p || p.classList.contains("hidden")) return;
+    if (p.contains(e.target)) return;
+    if (e.target.closest && e.target.closest("#filter-btn")) return;  // trigger toggles itself
+    closeFilterMenu();
+  }
+  function onFilterKey(e) { if (e.key === "Escape") closeFilterMenu(); }
+
+  function openFilterMenu() {
+    const p = $("filter-pop");
+    if (!p) return;
+    if (filterOpen) { closeFilterMenu(); return; }
+    filterOpen = true;
+    renderFilterMenu((lastView && lastView.apps) || []);
+    p.classList.remove("hidden");
+    const anchor = $("filter-btn");
+    const r = anchor.getBoundingClientRect();
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - p.offsetWidth - 8));
+    let top = r.bottom + 6;
+    if (top + p.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - p.offsetHeight - 6);
+    p.style.left = `${Math.round(left)}px`;
+    p.style.top = `${Math.round(top)}px`;
+    setTimeout(() => {
+      document.addEventListener("click", onFilterOutside, true);
+      document.addEventListener("keydown", onFilterKey, true);
+    }, 0);
+  }
+
   async function refreshVersion(app, btn) {
     if (!app.id) return;
     if (busy) return;  // one action at a time
     if (btn) { btn.disabled = true; btn.classList.add("spin"); }
     badgeOverride.set(app.id, { state: "checking", label: "Checking…" });
-    rerender();
+    refreshAppRow(app);
     setLamp("thinking", "checking vendor source…");
     try {
       const r = await fetch("/api/demo/intune/check-version", {
@@ -1163,7 +1547,9 @@
           download_url: res.download_url, current_version: res.current_version,
         });
         badgeOverride.set(app.id, {
-          state: "available", label: `New version available (${res.latest_version})`,
+          // Short, fixed-width chip ("⬆ 3.0.21") so it fits the reserved State
+          // column; the full sentence lives in the tooltip (set in buildVersionCell).
+          state: "available", label: `⬆ ${res.latest_version}`, version: res.latest_version,
         });
         appendLine({ source: "system", text:
           `${app.name}: new version ${res.latest_version} available (deployed ${res.current_version || "?"}).` });
@@ -1184,7 +1570,7 @@
       appendLine({ source: "system", level: "error", text: `Version check failed: ${e}` });
     } finally {
       if (btn) { btn.disabled = false; btn.classList.remove("spin"); }
-      rerender();
+      refreshAppRow(app);
     }
   }
 
