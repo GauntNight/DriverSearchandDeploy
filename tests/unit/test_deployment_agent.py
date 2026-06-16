@@ -1669,6 +1669,63 @@ class TestDeploymentAgentPromotion(unittest.TestCase):
 
     @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
     @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_promote_to_next_ring_force_bypasses_metric_gate(self, mock_datetime, mock_db_session):
+        """force=True promotes a deployment that fails the metric gate.
+
+        Models a tiny ring (e.g. Local Test, one device) that can never reach
+        minimum_install_count — the operator promotes manually 'when done'.
+        """
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+
+        # NOT eligible: dwell time not met AND nowhere near the install count.
+        self.deployment.deployed_at = mock_now - timedelta(hours=1)
+        self.deployment.successful_installs = 1
+        self.deployment.failed_installs = 0
+        self.deployment.promotion_blocked_reason = None
+
+        mock_package = Mock(spec=Package)
+        mock_package.id = self.deployment.package_id
+
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.first.side_effect = [
+            self.deployment,  # get deployment
+            mock_package,     # _get_package
+            self.deployment,  # update status
+        ]
+
+        with patch.object(self.agent, '_assign_to_ring') as mock_assign:
+            result = self.agent.promote_to_next_ring(self.deployment.id, force=True)
+
+        self.assertEqual(result['status'], 'promoted')
+        self.assertEqual(result['to_ring'], 'Ring 1 - Early Adopters')
+        mock_assign.assert_called_once_with(self.deployment.intune_app_id, mock_package, 1)
+
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
+    def test_promote_to_next_ring_force_still_honours_manual_block(self, mock_datetime, mock_db_session):
+        """force=True must NOT override an operator's explicit halt-promotion."""
+        mock_now = datetime(2024, 1, 15, 12, 0, 0)
+        mock_datetime.utcnow.return_value = mock_now
+
+        # Metrics are fine, but promotion was manually blocked.
+        self.deployment.deployed_at = mock_now - timedelta(hours=50)
+        self.deployment.promotion_blocked_reason = 'Critical bug found in test'
+
+        mock_session = MagicMock()
+        mock_db_session.return_value.__enter__.return_value = mock_session
+        mock_session.query.return_value.filter.return_value.first.return_value = self.deployment
+
+        with patch.object(self.agent, '_assign_to_ring') as mock_assign:
+            with self.assertRaises(ValueError) as context:
+                self.agent.promote_to_next_ring(self.deployment.id, force=True)
+
+        self.assertIn('manually blocked', str(context.exception))
+        mock_assign.assert_not_called()
+
+    @patch('autopackager.agents.deployment.deployment_agent.db_session_scope')
+    @patch('autopackager.agents.deployment.deployment_agent.datetime')
     def test_promote_to_next_ring_package_not_found(self, mock_datetime, mock_db_session):
         """Test that missing package raises ValueError"""
         mock_now = datetime(2024, 1, 15, 12, 0, 0)

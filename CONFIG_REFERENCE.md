@@ -47,7 +47,7 @@ The resulting loaded config will have actual values substituted.
 | `intune` | Microsoft Graph API credentials | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` |
 | `llm` | LLM provider configuration | `LLM_API_KEY` |
 | `oem_catalogs` | Dell/HP/Lenovo driver catalog sources | None |
-| `deployment_rings` | Phased rollout group mapping | `RING0_GROUP_ID`, `RING1_GROUP_ID`, `RING2_GROUP_ID`, `RING3_GROUP_ID` |
+| `deployment_rings` | Phased rollout group mapping | `RINGLOCALTEST_GROUP_ID`, `RING0_GROUP_ID`, `RING1_GROUP_ID`, `RING2_GROUP_ID`, `RING3_GROUP_ID` |
 | `paths` | Local filesystem directories | None |
 | `testing` | Test harness configuration (with nested `vm_config`) | `AZURE_TEST_RG`, `AZURE_VM_ADMIN_PASSWORD` (Azure VMs only) |
 | `logging` | Log format and verbosity | None |
@@ -352,7 +352,9 @@ oem_catalogs:
 
 ## 7. Deployment Rings Configuration
 
-Defines phased rollout groups for driver deployments. AutoPackager assigns packages to Entra ID groups based on deployment ring strategy (IT Pilot → Early Adopters → Broad Deployment → Critical Systems).
+Defines phased rollout groups for driver deployments. AutoPackager assigns packages to Entra ID groups based on deployment ring strategy (Local Test → IT Pilot → Early Adopters → Broad Deployment → Critical Systems).
+
+**Ordering matters.** The list is the promotion chain: a package publishes to the **first** ring (index 0) and `jobs promote` walks it one step at a time. The optional leading **Local Test** ring should contain only the build/test box — packages land there first so an Intune-delivered install + detection can be confirmed on one machine before the broader IT Pilot. A single-device ring can never meet the auto-promotion `minimum_install_count`, so promotion off it is a deliberate `cli.py jobs promote <id> --force` ("when we're done"); `--force` skips the metric gate (dwell / install-count / success-rate) but still respects a manual `halt-promotion` block.
 
 ### Structure
 
@@ -379,6 +381,10 @@ Each ring is a YAML list item (note the `-` prefix).
 
 ```yaml
 deployment_rings:
+  - name: "Local Test"          # pre-pilot: build/test box only — publishes here first
+    ring_id: "localtest"
+    entra_group_id: "${RINGLOCALTEST_GROUP_ID}"
+    deferral_days: 0
   - name: "IT Pilot"
     ring_id: "ring0"
     entra_group_id: "${RING0_GROUP_ID}"
@@ -397,8 +403,13 @@ deployment_rings:
     deferral_days: 14
 ```
 
+> The leading **Local Test** ring is optional. Drop it and IT Pilot (`ring0`)
+> becomes the initial target again — the demo's "test ring" resolves Ring 0 by
+> `ring_id`, not position, so it is unaffected either way.
+
 **Corresponding `.env` entries:**
 ```bash
+RINGLOCALTEST_GROUP_ID=00000000-1111-2222-3333-444444444444
 RING0_GROUP_ID=12345678-1234-1234-1234-123456789012
 RING1_GROUP_ID=abcdefab-abcd-abcd-abcd-abcdefabcdef
 RING2_GROUP_ID=fedcbafe-fedc-fedc-fedc-fedcbafedcba
@@ -1110,10 +1121,11 @@ Complete mapping of `.env` variables to `config.yaml` placeholders.
 | `AZURE_CLIENT_ID` | `intune.client_id` | App Registration client ID | Yes |
 | `AZURE_CLIENT_SECRET` | `intune.client_secret` | App Registration client secret | Yes |
 | `LLM_API_KEY` | `llm.api_key` | LLM API key (OpenAI/Anthropic/Azure) | Yes |
-| `RING0_GROUP_ID` | `deployment_rings[0].entra_group_id` | IT Pilot group object ID | Yes |
-| `RING1_GROUP_ID` | `deployment_rings[1].entra_group_id` | Early Adopters group object ID | Yes |
-| `RING2_GROUP_ID` | `deployment_rings[2].entra_group_id` | Broad Deployment group object ID | Yes |
-| `RING3_GROUP_ID` | `deployment_rings[3].entra_group_id` | Critical Systems group object ID | Yes |
+| `RINGLOCALTEST_GROUP_ID` | `deployment_rings[0].entra_group_id` | Local Test (pre-pilot) group object ID — build/test box only | Yes (if the Local Test ring is configured) |
+| `RING0_GROUP_ID` | `deployment_rings[1].entra_group_id` | IT Pilot group object ID | Yes |
+| `RING1_GROUP_ID` | `deployment_rings[2].entra_group_id` | Early Adopters group object ID | Yes |
+| `RING2_GROUP_ID` | `deployment_rings[3].entra_group_id` | Broad Deployment group object ID | Yes |
+| `RING3_GROUP_ID` | `deployment_rings[4].entra_group_id` | Critical Systems group object ID | Yes |
 | `AZURE_TEST_RG` | `testing.vm_config.azure.resource_group` | Azure resource group for test VMs | Azure VMs only |
 | `AZURE_VM_ADMIN_PASSWORD` | `testing.vm_config.azure.admin_password` | Azure VM admin password | Azure VMs only |
 | `AZURE_OPENAI_ENDPOINT` | `llm.azure_endpoint` | Azure OpenAI endpoint URL | Azure OpenAI only |
