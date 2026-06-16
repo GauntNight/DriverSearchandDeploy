@@ -1042,6 +1042,43 @@ def start_worker(concurrency):
 
 
 @cli.group()
+def logs():
+    """Export shareable log views for customers / packager support"""
+    pass
+
+
+@logs.command('export')
+@click.option('--minutes', type=int, default=45,
+              help='Trailing time window to export (default 45).')
+@click.option('--job', 'job_id', type=int, default=None,
+              help='Narrow the package-build view to a single job id (for packager support).')
+@click.option('--out', 'out_dir', default=None,
+              help='Output directory (default data/logs/exports/).')
+def logs_export(minutes, job_id, out_dir):
+    """Write two views from the running stack's logs: operational/INFO and
+    package-build & execution. The standard pattern for sharing logs with a
+    customer or pulling a support log when a package build needs investigation.
+    """
+    from autopackager.utils import log_export
+    res = log_export.export(minutes=minutes, job_id=job_id, out_dir=out_dir)
+    if res.get('error'):
+        console.print(f"[bold red]✗[/bold red] {res['error']}")
+        raise click.Abort()
+    console.print(f"[bold green]✓[/bold green] Exported logs ({res['from']} → {res['to']})")
+    console.print(f"  INFO/operational : {res['info']}  ({res['info_lines']} lines)")
+    label = f" (job {job_id})" if job_id is not None else ""
+    console.print(f"  package-build{label}: {res['packaging']}  ({res['packaging_lines']} lines)")
+    # Point at the robust installer logs (MSI /l*v + EXE/Burn bootstrapper logs)
+    # the local-install validator captured per package.
+    if job_id is not None:
+        from pathlib import Path as _P
+        hits = sorted(_P('data/logs').glob(f'installer_{job_id}_*'))
+        if hits:
+            console.print(f"  installer logs   : data/logs/installer_{job_id}_*  "
+                          f"({len(hits)} file(s) — robust MSI/EXE install logs)")
+
+
+@cli.group()
 def catalog():
     """Inspect and export the installer catalog"""
     pass

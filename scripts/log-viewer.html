@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoPackager Log Viewer</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#222b36; --fg:#d7dde5; --mut:#8b97a7;
+          --cy:#36c5d6; --info:#4aa3ff; --warn:#e3b341; --err:#f06d6d; --ok:#3fb950; --debug:#6b7787; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:16px; margin:0; color:var(--cy); font-weight:600; }
+  header .sub { color:var(--mut); font-size:12px; }
+  #drop { margin:22px 18px; padding:34px; border:2px dashed var(--line); border-radius:10px;
+          text-align:center; color:var(--mut); cursor:pointer; }
+  #drop.over { border-color:var(--cy); color:var(--fg); background:#12181f; }
+  #drop b { color:var(--fg); }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:10px 18px;
+         border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5; }
+  .bar input[type=text], .bar select { background:#0d1117; color:var(--fg); border:1px solid var(--line);
+         border-radius:6px; padding:5px 8px; font-size:12px; }
+  .bar input[type=text] { min-width:230px; }
+  .bar label { color:var(--mut); font-size:12px; display:flex; align-items:center; gap:5px; }
+  .pill { padding:2px 8px; border-radius:10px; font-size:11px; border:1px solid var(--line); color:var(--mut); }
+  .count { margin-left:auto; color:var(--mut); font-size:12px; }
+  main { padding:0 18px 40px; }
+  table { width:100%; border-collapse:collapse; font-family:ui-monospace,Consolas,monospace; font-size:12px; }
+  th { text-align:left; color:var(--mut); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--line);
+       position:sticky; top:49px; background:var(--bg); }
+  td { padding:4px 8px; border-bottom:1px solid #1a212b; vertical-align:top; white-space:pre-wrap; word-break:break-word; }
+  tr.lvl-error td, tr.lvl-critical td { background:rgba(240,109,109,.08); }
+  tr.lvl-warning td { background:rgba(227,179,65,.06); }
+  .lv { font-weight:700; }
+  .lv.info{color:var(--info)} .lv.warning{color:var(--warn)} .lv.error,.lv.critical{color:var(--err)}
+  .lv.debug{color:var(--debug)} .lv.ok{color:var(--ok)}
+  .logger { color:var(--mut); }
+  .kv { color:var(--cy); }
+  .ts { color:var(--mut); white-space:nowrap; }
+  /* MSI */
+  .summary { display:flex; gap:14px; flex-wrap:wrap; margin:16px 0; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 16px; min-width:150px; }
+  .card .lbl { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .val { font-size:20px; font-weight:700; margin-top:3px; }
+  .badge { display:inline-block; padding:3px 10px; border-radius:6px; font-weight:700; }
+  .badge.ok{background:rgba(63,185,80,.15);color:var(--ok)} .badge.err{background:rgba(240,109,109,.15);color:var(--err)}
+  section h2 { font-size:14px; color:var(--cy); border-bottom:1px solid var(--line); padding-bottom:6px; margin:24px 0 10px; cursor:pointer; }
+  section h2 .c { color:var(--mut); font-weight:400; font-size:12px; }
+  .msi-line { font-family:ui-monospace,Consolas,monospace; font-size:12px; padding:2px 6px; border-bottom:1px solid #1a212b; white-space:pre-wrap; }
+  .msi-line.err { color:var(--err); background:rgba(240,109,109,.07); }
+  .msi-line.warn { color:var(--warn); }
+  .collapsed { display:none; }
+  .hint { color:var(--mut); font-size:12px; margin:4px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AutoPackager Log Viewer</h1>
+  <span class="sub">Drop an AutoPackager log (JSON / structlog) or a verbose MSI <code>/l*v</code> log — parsed entirely in your browser, nothing leaves this page.</span>
+</header>
+
+<div id="drop">📂 <b>Drop a .log file here</b> or click to choose &nbsp;·&nbsp; handles UTF‑8 and UTF‑16 (MSI) logs
+  <input id="file" type="file" accept=".log,.txt" style="display:none">
+</div>
+
+<div id="ui" style="display:none">
+  <div class="bar" id="bar"></div>
+  <main id="out"></main>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s==null?"":s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const drop = $("#drop"), fileInput = $("#file");
+
+drop.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", e => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if (f) loadFile(f); });
+
+// --- encoding-aware read (MSI /l*v logs are UTF-16LE with a BOM) ----------
+function decodeBuffer(buf) {
+  const b = new Uint8Array(buf);
+  if (b[0] === 0xFF && b[1] === 0xFE) return new TextDecoder("utf-16le").decode(buf);
+  if (b[0] === 0xFE && b[1] === 0xFF) return new TextDecoder("utf-16be").decode(buf);
+  return new TextDecoder("utf-8").decode(buf);
+}
+
+function loadFile(file) {
+  const r = new FileReader();
+  r.onload = () => {
+    const text = decodeBuffer(r.result);
+    const kind = detectType(text);
+    $("#ui").style.display = "block";
+    drop.style.margin = "10px 18px"; drop.style.padding = "10px";
+    drop.innerHTML = `Loaded <b>${esc(file.name)}</b> · ${(file.size/1024/1024).toFixed(1)} MB · detected: <b>${kind.toUpperCase()}</b> — click to load another`;
+    if (kind === "msi") renderMSI(parseMSI(text), file.name);
+    else renderAP(parseAP(text), file.name);
+  };
+  r.readAsArrayBuffer(file);
+}
+
+function detectType(text) {
+  const head = text.slice(0, 60000);
+  if (/=== (Verbose )?logging started|MSI \([sc]\) \(|Property\(S\):|MainEngineThread is returning/i.test(head)) return "msi";
+  return "ap"; // AutoPackager: JSON and/or structlog console
+}
+
+// ============ AutoPackager logs (JSON + structlog console) =================
+const CELERY = /^\[\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d,\d+: \w+\/\w+\]\s*/;
+const STRUCT = /^(\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d)\s+\[(\w+)\s*\]\s+(.*)$/;
+const KV = /(\w[\w.]*)=("[^"]*"|\S+)/g;
+
+function parseKV(s) {
+  const f = {}; let m, last = s.length;
+  KV.lastIndex = 0;
+  const first = s.search(/\s\w[\w.]*=/);
+  while ((m = KV.exec(s))) { f[m[1]] = m[2].replace(/^"|"$/g, ""); }
+  const event = (first >= 0 ? s.slice(0, first) : s).trim();
+  return { event, fields: f };
+}
+
+function parseAP(text) {
+  const recs = [];
+  for (let line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    // JSON app-log line
+    if (line.trimStart().startsWith("{")) {
+      try {
+        const o = JSON.parse(line);
+        let event = o.message, fields = {};
+        try { const inner = JSON.parse(o.message);
+              event = inner.event || o.message;
+              for (const k in inner) if (!["event","logger","level","timestamp"].includes(k)) fields[k]=inner[k];
+        } catch(_) {}
+        recs.push({ ts:(o.asctime||"").slice(0,19), level:(o.levelname||"info").toLowerCase(),
+                    logger:o.name||"", event, fields, raw:line });
+        continue;
+      } catch(_) {}
+    }
+    // structlog console line (optionally wrapped by Celery)
+    const s = line.replace(CELERY, "");
+    const m = STRUCT.exec(s);
+    if (m) {
+      const { event, fields } = parseKV(m[3]);
+      recs.push({ ts:m[1].replace("T"," "), level:m[2].toLowerCase(), logger:fields.logger||"", event, fields, raw:line });
+    } else {
+      recs.push({ ts:"", level:"", logger:"", event:line, fields:{}, raw:line });
+    }
+  }
+  return recs;
+}
+
+let AP = { recs:[], f:{ q:"", level:"", job:"", nodebug:false } };
+function renderAP(recs, name) {
+  AP.recs = recs;
+  const levels = [...new Set(recs.map(r=>r.level).filter(Boolean))];
+  const jobs = [...new Set(recs.map(r=>r.fields.job_id).filter(Boolean))].sort((a,b)=>a-b);
+  $("#bar").innerHTML =
+    `<span class="pill">AutoPackager log</span>
+     <input id="q" type="text" placeholder="search…">
+     <label>Level <select id="lv"><option value="">all</option>${levels.map(l=>`<option>${l}</option>`).join("")}</select></label>
+     ${jobs.length?`<label>Job <select id="jb"><option value="">all</option>${jobs.map(j=>`<option>${j}</option>`).join("")}</select></label>`:""}
+     <label><input type="checkbox" id="nd"> hide debug</label>
+     <span class="count" id="cnt"></span>`;
+  $("#q").oninput = e => { AP.f.q = e.target.value.toLowerCase(); drawAP(); };
+  $("#lv").onchange = e => { AP.f.level = e.target.value; drawAP(); };
+  if ($("#jb")) $("#jb").onchange = e => { AP.f.job = e.target.value; drawAP(); };
+  $("#nd").onchange = e => { AP.f.nodebug = e.target.checked; drawAP(); };
+  drawAP();
+}
+function drawAP() {
+  const f = AP.f;
+  const rows = AP.recs.filter(r => {
+    if (f.nodebug && r.level === "debug") return false;
+    if (f.level && r.level !== f.level) return false;
+    if (f.job && String(r.fields.job_id) !== f.job) return false;
+    if (f.q && !r.raw.toLowerCase().includes(f.q)) return false;
+    return true;
+  });
+  const body = rows.map(r => {
+    const kv = Object.entries(r.fields).filter(([k])=>k!=="logger")
+      .map(([k,v])=>`<span class="kv">${esc(k)}</span>=${esc(v)}`).join("  ");
+    return `<tr class="lvl-${r.level}">
+      <td class="ts">${esc(r.ts)}</td>
+      <td class="lv ${r.level}">${esc(r.level||"")}</td>
+      <td class="logger">${esc((r.logger||"").replace(/^autopackager\./,""))}</td>
+      <td>${esc(r.event)}${kv?"  "+kv:""}</td></tr>`;
+  }).join("");
+  $("#cnt").textContent = `${rows.length} / ${AP.recs.length} lines`;
+  $("#out").innerHTML = `<table><thead><tr><th>time</th><th>level</th><th>logger</th><th>message</th></tr></thead><tbody>${body}</tbody></table>`;
+}
+
+// ============ MSI verbose (/l*v) logs ======================================
+function parseMSI(text) {
+  const lines = text.split(/\r?\n/);
+  const out = { result:null, resultText:"", started:"", stopped:"", product:"",
+                errors:[], actions:[], props:{}, lines };
+  // Authoritative result: the last "MainEngineThread is returning N" / status code
+  // (allow single-digit 0 and 3010); fall back to the success summary line.
+  const RESULT = /(?:Installation success or error status|MainEngineThread is returning)\s*:?\s*(\d{1,5})\b/i;
+  // High-signal failures only — NOT benign verbose noise (Note: 1: 2262, etc.).
+  const ERR = /Return value 3\b|returned actual error \d|error status: [1-9]|MainEngineThread is returning [1-9]|Internal Error|Error \d{4}|Installation failed|fatal error|custom action [^ ]+ .*(failed|error)/i;
+  for (const line of lines) {
+    let m;
+    if ((m = /=== (?:Verbose )?logging started:\s*(.+?)\s*(?:Build|$)/i.exec(line))) out.started = m[1].trim();
+    if ((m = /=== logging stopped:\s*(.+)$/i.exec(line))) out.stopped = m[1].trim();
+    if ((m = RESULT.exec(line))) out.result = parseInt(m[1],10);
+    else if (out.result == null && /-- Installation operation completed successfully/i.test(line)) out.result = 0;
+    if ((m = /Property\(S\):\s*(\w+)\s*=\s*(.*)$/.exec(line))) {
+      if (/^(ProductName|ProductVersion|Manufacturer|INSTALLDIR|ALLUSERS|REBOOT|ProductCode|UpgradeCode|ProductLanguage)$/i.test(m[1]))
+        out.props[m[1]] = m[2].trim();
+    }
+    if ((m = /Action(?: \d+:\d+:\d+)?:\s*([A-Za-z0-9_.]+)\.?\s*$/.exec(line)) && /Action (?:start|\d)/.test(line)) out.actions.push(m[1]);
+    if (ERR.test(line)) out.errors.push(line.trim());
+  }
+  const codes = { 0:"Success", 1602:"User cancelled", 1603:"Fatal error during installation",
+    1605:"Not installed (already absent)", 1618:"Another install in progress", 1619:"Package could not be opened",
+    1633:"Platform not supported", 1638:"Another version already installed", 3010:"Success — reboot required" };
+  if (out.result != null) out.resultText = codes[out.result] || "Unknown status code";
+  return out;
+}
+
+let MSI = { p:null, q:"", errOnly:false };
+function renderMSI(p, name) {
+  MSI.p = p;
+  const ok = p.result === 0 || p.result === 3010;
+  $("#bar").innerHTML =
+    `<span class="pill">MSI verbose (/l*v)</span>
+     <input id="q" type="text" placeholder="search raw log…">
+     <label><input type="checkbox" id="eo"> errors only</label>
+     <span class="count">${p.lines.length} lines</span>`;
+  $("#q").oninput = e => { MSI.q = e.target.value.toLowerCase(); drawMSIraw(); };
+  $("#eo").onchange = e => { MSI.errOnly = e.target.checked; drawMSIraw(); };
+  const propRows = Object.entries(p.props).map(([k,v])=>`<div class="msi-line"><span class="kv">${esc(k)}</span> = ${esc(v)}</div>`).join("") || `<div class="hint">none captured</div>`;
+  const errRows = p.errors.length ? p.errors.slice(0,500).map(l=>`<div class="msi-line err">${esc(l)}</div>`).join("") : `<div class="hint">No errors detected. ✓</div>`;
+  $("#out").innerHTML = `
+    <div class="summary">
+      <div class="card"><div class="lbl">Result</div><div class="val"><span class="badge ${ok?'ok':'err'}">${p.result==null?'?':p.result} ${ok?'OK':'FAIL'}</span></div><div class="hint">${esc(p.resultText)}</div></div>
+      <div class="card"><div class="lbl">Product</div><div class="val" style="font-size:14px">${esc(p.props.ProductName||'—')}</div><div class="hint">${esc(p.props.ProductVersion||'')}</div></div>
+      <div class="card"><div class="lbl">Errors</div><div class="val" style="color:${p.errors.length?'var(--err)':'var(--ok)'}">${p.errors.length}</div></div>
+      <div class="card"><div class="lbl">Actions</div><div class="val">${p.actions.length}</div></div>
+      <div class="card"><div class="lbl">Started</div><div class="val" style="font-size:13px">${esc(p.started||'—')}</div><div class="hint">stopped ${esc(p.stopped||'—')}</div></div>
+    </div>
+    <section><h2 onclick="tog('s-err')">⚠ Errors &amp; warnings <span class="c">(${p.errors.length})</span></h2><div id="s-err">${errRows}</div></section>
+    <section><h2 onclick="tog('s-act')">▸ Actions <span class="c">(${p.actions.length}) — click to expand</span></h2><div id="s-act" class="collapsed">${p.actions.map(a=>`<div class="msi-line">${esc(a)}</div>`).join("")}</div></section>
+    <section><h2 onclick="tog('s-prop')">▸ Key properties</h2><div id="s-prop">${propRows}</div></section>
+    <section><h2>Raw log (filtered)</h2><div id="s-raw"></div></section>`;
+  drawMSIraw();
+}
+function drawMSIraw() {
+  const p = MSI.p, q = MSI.q;
+  let ls = p.lines;
+  if (MSI.errOnly) { const set = new Set(p.errors); ls = ls.filter(l => set.has(l.trim())); }
+  if (q) ls = ls.filter(l => l.toLowerCase().includes(q));
+  ls = ls.slice(0, 4000);
+  $("#s-raw").innerHTML = ls.map(l => {
+    const e = /Return value 3\b|returned actual error \d|error status: [1-9]|MainEngineThread is returning [1-9]|Internal Error|Error \d{4}|fatal error/i.test(l);
+    return `<div class="msi-line${e?' err':''}">${esc(l)}</div>`;
+  }).join("") + (ls.length>=4000?`<div class="hint">…truncated to 4000 lines (use search to narrow)</div>`:"");
+}
+function tog(id){ const el=$("#"+id); el.classList.toggle("collapsed"); }
+</script>
+</body>
+</html>
