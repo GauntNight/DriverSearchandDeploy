@@ -25,8 +25,10 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -37,6 +39,13 @@ from autopackager.utils.version_comparison import compare_catalog_versions
 logger = get_logger(__name__)
 
 IS_WINDOWS = sys.platform == "win32"
+
+# Per-package installer logs (the robust, line-by-line MSI /l*v output + the
+# EXE/Burn bootstrapper logs auto-written to %TEMP%) are moved into the CENTRAL
+# log store — the same dir as the worker/dashboard/app logs — named
+# ``installer_<job>_<package>_<file>.log`` so an admin has total visibility of
+# every record in one place (and they survive %TEMP% being cleared).
+_INSTALL_LOG_DIR = Path("data/logs")
 
 # Registry roots we scan for an app's ARP (Add/Remove Programs) entry.
 _UNINSTALL_SUBPATH = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
@@ -175,6 +184,12 @@ class LocalInstallValidator:
         fired, fired_detail = (False, "")
         discovered = None
         chosen_cmd = None
+        # Per-package install-log dir: the installer's own verbose logs land here.
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", (installer.stem or "package"))[:60]
+        install_log_dir = _INSTALL_LOG_DIR
+        log_prefix = f"installer_{getattr(job, 'id', None) or 'na'}_{slug}_"
+        result["install_log_dir"] = str(install_log_dir)
+        install_started = time.time()
         for idx, cmd in enumerate(candidates, 1):
             result["install_attempts"] = idx
             # Give the first attempt the full budget (a legit slow installer);
@@ -183,7 +198,17 @@ class LocalInstallValidator:
             to = self.timeout if idx == 1 else min(self.timeout, 120)
             self.emit(f"Install validation: attempt {idx}/{len(candidates)} — "
                       f"installing {installer.name} silently…")
-            rc, out = self._run(cmd, cwd=installer.parent, timeout=to)
+            # For MSI, request a full verbose log (/l*v) into the package log dir
+            # — msiexec writes nothing by default. EXE/Burn installers auto-log to
+            # %TEMP% (collected after the loop by _capture_installer_logs).
+            run_cmd = cmd
+            if cmd.lower().startswith("msiexec"):
+                try:
+                    install_log_dir.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
+                run_cmd = f'{cmd} /l*v "{install_log_dir / (log_prefix + f"msi_install_attempt{idx}.log")}"'
+            rc, out = self._run(run_cmd, cwd=installer.parent, timeout=to)
             # A consumer stub (e.g. ChromeSetup) exits fast after detaching an
             # elevated updater; reap those so nothing lands quietly.
             result["reaped_detached"] = self._reap_detached_installers(before_pids)
@@ -223,6 +248,15 @@ class LocalInstallValidator:
             self.emit(
                 f"Attempt {idx}/{len(candidates)} ran but the app wasn't detected as "
                 "installed — trying a different silent switch…", "warn")
+
+        # Capture the installer's OWN robust logs (MSI /l*v + EXE/Burn %TEMP%
+        # bootstrapper logs) — for BOTH success and failure, so a packager has
+        # the real line-by-line install log when a build needs support.
+        result["install_logs"] = self._capture_installer_logs(
+            install_log_dir, log_prefix, install_started, installer)
+        if result["install_logs"]:
+            self.emit(f"Captured {len(result['install_logs'])} installer log(s) → "
+                      f"{install_log_dir}")
 
         # All silent-install strategies exhausted with nothing verifiable.
         if not result["installed"]:
@@ -767,6 +801,50 @@ class LocalInstallValidator:
         result["uninstalled"] = False
         result["log"].append(f"all {total} uninstall attempts failed")
         self.emit(f"All {total} uninstall strategies failed — manual cleanup may be needed.", "warn")
+
+    # -- installer log capture ---------------------------------------------
+
+    def _capture_installer_logs(self, log_dir: Path, prefix: str,
+                                since_ts: float, installer: Path) -> List[str]:
+        """Move the installer's own verbose logs into the CENTRAL ``log_dir``.
+
+        Covers both engines: the MSI ``/l*v`` log we already wrote into
+        ``log_dir`` (kept), and the EXE/Burn bootstrapper logs the installer
+        auto-writes to ``%TEMP%`` during the run (e.g. Snagit/PowerToys Burn
+        bundles → ``Snagit_2019_*.log`` + the inner ``*_SnagitInstallerX64.log``).
+        Selects ``%TEMP%`` ``*.log`` files written during this install window
+        that look installer-related and copies them in with the per-package
+        ``prefix`` so they sit alongside the rest of the logs for admin
+        visibility. Best-effort: never raises into validation.
+        """
+        captured: List[str] = []
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            captured += [p.name for p in log_dir.glob(f"{prefix}msi_install_attempt*.log")]
+            temp = Path(tempfile.gettempdir())
+            stem = (installer.stem or "").lower()
+            toks = [t for t in re.split(r"[^a-z0-9]+", stem) if len(t) >= 3]
+            for f in temp.glob("*.log"):
+                try:
+                    st = f.stat()
+                    if st.st_mtime < since_ts - 5:
+                        continue  # not from this install run
+                    nm = f.name.lower()
+                    looks_installer = (
+                        nm.startswith("msi") or nm.startswith("dd_")
+                        or "install" in nm or "setup" in nm
+                        or any(t in nm for t in toks)
+                    )
+                    if not looks_installer or st.st_size > 60 * 1024 * 1024:
+                        continue
+                    dest_name = f"{prefix}{f.name}"
+                    shutil.copy2(f, log_dir / dest_name)
+                    captured.append(dest_name)
+                except OSError:
+                    continue
+        except Exception as exc:  # noqa: BLE001 — log capture must never fail validation
+            logger.warning("installer log capture failed", error=str(exc))
+        return sorted(set(captured))
 
     # -- subprocess --------------------------------------------------------
 

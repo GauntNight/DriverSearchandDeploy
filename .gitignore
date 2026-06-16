@@ -43,6 +43,18 @@ data/test_msis/*.msi
 data/test_msis/*.exe
 data/test_msis/*.zip
 
+# Demo TLS cert for the vanity URL (https://demo.autopackager.com) — the private
+# key must NEVER be committed. Self-signed, regenerated locally on demand.
+data/demo_certs/
+*.pem
+
+# Demo runtime state (operator-/tenant-specific; regenerated at runtime).
+data/demo_lifecycle.json
+data/demo_clean_tracking.json
+data/demo_retire_state.json
+data/demo_cache/
+data/demo_sandbox/
+
 # Database
 *.db
 *.sqlite

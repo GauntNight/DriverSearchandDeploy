@@ -1,9 +1,15 @@
 """Logging Configuration"""
 
 import logging
+import logging.handlers
+from datetime import date
 import structlog
 from pathlib import Path
 from pythonjsonlogger import jsonlogger
+
+# Per-file size cap before rotation, and how many rotated files to keep.
+LOG_MAX_BYTES = 10 * 1024 * 1024   # 10 MB a run
+LOG_BACKUP_COUNT = 5
 
 
 def setup_logging(log_level="INFO", log_file=None):
@@ -20,9 +26,28 @@ def setup_logging(log_level="INFO", log_file=None):
         format="%(message)s"
     )
 
-    # Add file handler with JSON formatting if log file specified
+    # Add file handler with JSON formatting if log file specified.
+    # Logs are broken up PER DAY (date-stamped filename) and each file is capped
+    # at 10 MB with a few rotations retained, so a log can never grow unbounded
+    # (this replaced a plain FileHandler that had ballooned to 384 MB).
     if log_file:
-        file_handler = logging.FileHandler(log_file)
+        log_path = Path(log_file)
+        dated = log_path.with_name(
+            f"{log_path.stem}-{date.today().isoformat()}{log_path.suffix}"
+        )
+        # Drop any file handler a previous setup_logging() left on root before
+        # adding a fresh one — otherwise repeated calls stack handlers (each
+        # holding an open file), duplicating every log line and leaking fds.
+        for existing in list(logging.root.handlers):
+            if isinstance(existing, logging.FileHandler):
+                logging.root.removeHandler(existing)
+                existing.close()
+        file_handler = logging.handlers.RotatingFileHandler(
+            dated,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
         json_formatter = jsonlogger.JsonFormatter(
             '%(asctime)s %(name)s %(levelname)s %(message)s'
         )

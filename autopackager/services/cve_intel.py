@@ -456,6 +456,14 @@ def lookup(product: Optional[str] = None, *, cpe: Optional[str] = None,
             kept = [c for c in bridge if _affects(c, current_version, latest_version)]
             return _summarize(kept, "bridge", current_version, latest_version, cpe)
 
+    # Assessed-clean for a CPE-IDENTIFIED product: when we hold a precise CPE and
+    # none of the tiers surfaced an applicable CVE, report a definitive "no known
+    # CVEs" (cve_count 0, severity none) rather than a bare "no data" dash. This
+    # keeps the estate Risk column populated for every identified app — a CVE
+    # badge if exposed, "✓ no known CVEs" if not. A product with no CPE (we can't
+    # pin it to an NVD entry) still returns the no-data block ("—").
+    if cpe:
+        return _summarize([], "cache", current_version, latest_version, cpe)
     return empty_block()
 
 

@@ -1,6 +1,7 @@
 """Unit tests for utility modules (config, database, logger, graph_client)"""
 
 import pytest
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -336,23 +337,38 @@ class TestLoggerUtility:
 
     @patch('autopackager.utils.logger.logging.basicConfig')
     @patch('autopackager.utils.logger.structlog.configure')
-    @patch('autopackager.utils.logger.logging.FileHandler')
-    def test_setup_logging_with_file(self, mock_file_handler, mock_structlog_config, mock_basic_config, tmp_path):
-        """Test logging setup with file output"""
+    @patch('autopackager.utils.logger.logging.handlers.RotatingFileHandler')
+    def test_setup_logging_with_file(self, mock_rotating_handler, mock_structlog_config, mock_basic_config, tmp_path):
+        """Test logging setup with file output.
+
+        The file handler is a size-capped RotatingFileHandler writing to a
+        DATE-STAMPED filename (logs are broken up per day). Snapshot/restore the
+        root handlers so the mock handler this test adds can't leak into later
+        tests' root logger.
+        """
         log_file = tmp_path / "logs" / "test.log"
 
-        # Configure the mock to return a proper handler with a level attribute
         mock_handler_instance = Mock()
         mock_handler_instance.level = 20  # logging.INFO
-        mock_file_handler.return_value = mock_handler_instance
+        mock_rotating_handler.return_value = mock_handler_instance
 
-        setup_logging(log_level='INFO', log_file=str(log_file))
+        saved_handlers = list(logging.root.handlers)
+        try:
+            setup_logging(log_level='INFO', log_file=str(log_file))
+        finally:
+            logging.root.handlers = saved_handlers
 
-        # Verify directory was created
+        # Directory was created
         assert log_file.parent.exists()
 
-        # Verify file handler was created
-        mock_file_handler.assert_called_once_with(str(log_file))
+        # Rotating handler created once, with size cap + the date-stamped path.
+        mock_rotating_handler.assert_called_once()
+        call_args, call_kwargs = mock_rotating_handler.call_args
+        dated_path = Path(call_args[0])
+        assert dated_path.parent == log_file.parent
+        assert dated_path.name.startswith("test-")          # test-<YYYY-MM-DD>.log
+        assert dated_path.suffix == ".log"
+        assert call_kwargs["maxBytes"] == 10 * 1024 * 1024
 
     @patch('autopackager.utils.logger.logging.basicConfig')
     @patch('autopackager.utils.logger.structlog.configure')

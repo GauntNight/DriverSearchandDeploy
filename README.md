@@ -613,6 +613,11 @@ Be aware of the following before relying on AutoPackager in production:
 - ⬜ **Approval gates & approval screen** — configurable per-ring / per-app approval *policies* and a dedicated approval-review screen (queue of pending deployments with diff/impact, approve/reject with audit trail), replacing today's inline one-click Ring-0 gate. (The interim confirm pop-up was removed — clicking Approve is the decision.)
 - ⬜ **Tenant-wide lifecycle configuration** — central settings for the Cleaning / Retiring / Blocking behaviors (clean-window, auto-delete, block-on-CVE), instead of per-product toggles only.
 
+### Observability & Logging
+- ✅ **Per-day rotating logs (10 MB cap) + `cli.py logs export`** (delivered) — operational/INFO and package-build views by time window or `--job`; the validator captures each package's **robust MSI/EXE installer logs** (MSI `/l*v`, EXE/Burn `%TEMP%` logs) into the central log store for full admin visibility.
+- ✅ **Standalone HTML log viewer** (delivered) — a self-contained, drag-and-drop `log-viewer.html` that parses AutoPackager logs (filterable level/job timeline) and **summarizes MSI `/l*v` logs** (result, errors, failing action, key properties) for human readability; no server required, shareable as a single file.
+- ⬜ **`cli.py logs export --html`** — render the exported operational/package-build views (and MSI summaries) as a styled, filterable, self-contained HTML report directly from the CLI, so an admin gets a human-readable artifact in one command (folds the standalone viewer into the export flow).
+
 ## Success Metrics
 
 | Metric | Target |
