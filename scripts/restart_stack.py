@@ -47,6 +47,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = REPO_ROOT / "data" / "logs"
 
+# Optional HTTPS for the demo vanity URL (https://demo.autopackager.com). If both
+# the cert and key exist (generated out-of-band into data/demo_certs/), a second
+# uvicorn is brought up on 443 with TLS, serving the SAME app — native SSE, no
+# proxy in the middle. Binding 443 needs elevation. Absent → HTTPS is skipped.
+HTTPS_PORT = 443
+_CERT = REPO_ROOT / "data" / "demo_certs" / "demo.cert.pem"
+_KEY = REPO_ROOT / "data" / "demo_certs" / "demo.key.pem"
+
 # Canonical venv is ./venv (CLAUDE.md); fall back to the installer's ./.venv.
 _VENV = REPO_ROOT / "venv" / "Scripts" / "python.exe"
 _VENV_ALT = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
@@ -116,11 +124,12 @@ def _python_stack_pids() -> list[str]:
         )
         if is_stack and pid.isdigit():
             pids.append(pid)
-    # Fallback: whatever holds :8000 is our dashboard even if cmdline detection
-    # missed it (e.g. a differently-launched uvicorn).
-    p8000 = _pid_on_port(8000)
-    if p8000 and p8000 not in pids:
-        pids.append(p8000)
+    # Fallback: whatever holds :8000 / :443 is our dashboard even if cmdline
+    # detection missed it (e.g. a differently-launched uvicorn).
+    for port in (8000, HTTPS_PORT):
+        p = _pid_on_port(port)
+        if p and p not in pids:
+            pids.append(p)
     return pids
 
 
@@ -202,7 +211,7 @@ def start(*, worker: bool = True) -> None:
     else:
         print("  skipped Celery worker (--no-worker)")
 
-    # 3) FastAPI dashboard
+    # 3) FastAPI dashboard (HTTP on 8000)
     if _port_listening(8000):
         print("  Port 8000 already in use — not starting a second uvicorn")
     else:
@@ -212,14 +221,32 @@ def start(*, worker: bool = True) -> None:
         ])
         print("  started dashboard (uvicorn :8000)")
 
+    # 4) HTTPS dashboard (TLS on 443) — only if the demo cert exists.
+    if _CERT.exists() and _KEY.exists():
+        if _port_listening(HTTPS_PORT):
+            print(f"  Port {HTTPS_PORT} already in use — not starting a second HTTPS uvicorn")
+        else:
+            _spawn("dashboard-https", [
+                PYTHON, "-m", "uvicorn", "autopackager.web.api:app",
+                "--host", "0.0.0.0", "--port", str(HTTPS_PORT),
+                "--ssl-certfile", str(_CERT), "--ssl-keyfile", str(_KEY),
+            ])
+            print(f"  started HTTPS dashboard (uvicorn :{HTTPS_PORT} TLS)")
+    else:
+        print("  no demo cert — HTTPS skipped (run the cert-gen step to enable)")
+
 
 def _health() -> None:
     print("== Health ==")
     time.sleep(2)
     print(f"  Redis  (6379): {'UP' if _port_listening(6379) else 'down'}")
     print(f"  Dashbd (8000): {'UP' if _port_listening(8000) else 'starting…'}")
+    if _CERT.exists() and _KEY.exists():
+        print(f"  HTTPS   (443): {'UP' if _port_listening(HTTPS_PORT) else 'starting…'}")
     print(f"  Logs:          {LOG_DIR}")
     print("  Console:       http://localhost:8000/demo")
+    if _CERT.exists():
+        print("  Vanity URL:    https://demo.autopackager.com")
 
 
 def main() -> int:

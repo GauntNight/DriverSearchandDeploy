@@ -35,6 +35,13 @@ def setup_logging(log_level="INFO", log_file=None):
         dated = log_path.with_name(
             f"{log_path.stem}-{date.today().isoformat()}{log_path.suffix}"
         )
+        # Drop any file handler a previous setup_logging() left on root before
+        # adding a fresh one — otherwise repeated calls stack handlers (each
+        # holding an open file), duplicating every log line and leaking fds.
+        for existing in list(logging.root.handlers):
+            if isinstance(existing, logging.FileHandler):
+                logging.root.removeHandler(existing)
+                existing.close()
         file_handler = logging.handlers.RotatingFileHandler(
             dated,
             maxBytes=LOG_MAX_BYTES,
