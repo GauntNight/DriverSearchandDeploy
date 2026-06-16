@@ -68,7 +68,18 @@ discovery_schedule:
       current_version: "1.0.0"
 
 # Deployment Rings
+# Ordered progression: the pipeline publishes to the FIRST ring (index 0) and
+# promotion walks the list. "Local Test" is a pre-pilot ring containing only
+# ADMIN_BUILD_1 (via its owner JohannaL) — new packages land here first so an
+# Intune-delivered install + detection can be confirmed on one box before the
+# (broader) IT Pilot. A 1-device ring can never meet the auto-promotion install
+# threshold, so promotion off Local Test is a deliberate `jobs promote --force`
+# ("when we're done"), not automatic.
 deployment_rings:
+  - name: "Local Test"
+    ring_id: "localtest"
+    entra_group_id: "${RINGLOCALTEST_GROUP_ID}"
+    deferral_days: 0
   - name: "IT Pilot"
     ring_id: "ring0"
     entra_group_id: "${RING0_GROUP_ID}"

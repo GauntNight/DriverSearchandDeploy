@@ -908,7 +908,7 @@ def promote_deployment(deployment_id, force):
             console.print(f"  Eligibility: [bold green]✓ Eligible[/bold green] - {reason}\n")
 
         # Attempt promotion
-        result = deployment_agent.promote_to_next_ring(deployment_id)
+        result = deployment_agent.promote_to_next_ring(deployment_id, force=force)
 
         console.print(f"[bold green]✓[/bold green] Promotion successful!")
         console.print(f"  From: {result['from_ring']}")

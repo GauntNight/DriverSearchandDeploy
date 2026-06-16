@@ -1376,7 +1376,7 @@ class DeploymentAgent:
         next_ring = self.deployment_rings[current_ring_index + 1]
         return True, f"Eligible for promotion to {next_ring['name']} (success rate: {success_rate:.1f}%)"
 
-    def promote_to_next_ring(self, deployment_id: int) -> Dict[str, Any]:
+    def promote_to_next_ring(self, deployment_id: int, force: bool = False) -> Dict[str, Any]:
         """Promote deployment to next ring.
 
         Validates eligibility criteria, assigns the app to the next ring's
@@ -1384,6 +1384,11 @@ class DeploymentAgent:
 
         Args:
             deployment_id: ID of the deployment to promote
+            force: skip the eligibility gate (dwell time, install count, success
+                rate). Needed to promote off a tiny ring like "Local Test" where
+                a single device can never reach ``minimum_install_count``; the
+                operator promotes "when we're done" rather than on metrics. A
+                manual block (``promotion_blocked_reason``) is still honoured.
 
         Returns:
             Dict with promotion details: deployment_id, from_ring, to_ring, status
@@ -1392,7 +1397,11 @@ class DeploymentAgent:
             ValueError: If deployment not found or ineligible for promotion
             Exception: If assignment to next ring fails
         """
-        logger.info("Promoting deployment to next ring", deployment_id=deployment_id)
+        logger.info(
+            "Promoting deployment to next ring",
+            deployment_id=deployment_id,
+            force=force,
+        )
 
         # Get deployment record
         with db_session_scope() as session:
@@ -1404,15 +1413,30 @@ class DeploymentAgent:
             intune_app_id = deployment.intune_app_id
             current_ring_id = deployment.ring_id
 
-        # Check eligibility for promotion
+        # Check eligibility for promotion. A manual block is absolute — `force`
+        # overrides only the metric gates (dwell/install-count/success-rate),
+        # never an operator's explicit halt.
         eligible, reason = self.is_eligible_for_promotion(deployment)
         if not eligible:
+            if deployment.promotion_blocked_reason:
+                logger.warning(
+                    "Promotion manually blocked; refusing even with force",
+                    deployment_id=deployment_id,
+                    reason=reason,
+                )
+                raise ValueError(f"Deployment not eligible for promotion: {reason}")
+            if not force:
+                logger.warning(
+                    "Deployment not eligible for promotion",
+                    deployment_id=deployment_id,
+                    reason=reason
+                )
+                raise ValueError(f"Deployment not eligible for promotion: {reason}")
             logger.warning(
-                "Deployment not eligible for promotion",
+                "Forcing promotion past eligibility gate",
                 deployment_id=deployment_id,
-                reason=reason
+                reason=reason,
             )
-            raise ValueError(f"Deployment not eligible for promotion: {reason}")
 
         # Find current ring index
         current_ring_index = None
