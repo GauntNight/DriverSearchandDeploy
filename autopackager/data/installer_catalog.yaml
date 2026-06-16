@@ -253,33 +253,52 @@ entries:
     description: "Microsoft PowerToys: utilities to tune and streamline Windows."
     categories: ["Productivity"]
     min_os_version: "1607"
+    validation:
+      status: validated
+      version: "0.100.0"
+      date: "2026-06-15"
+      evidence: [published, install_confirmed, detection_fired]
+      note: "Built + local-install-validated + published to Ring 0 on ADMIN_BUILD_1, 2026-06-15. GUID DRIFT: on 0.100.0 the validator's hive-diff found the real Uninstall/Package-Cache GUID is {271EA371-94BF-4DD9-8F51-054B3DAAE2BA} (baseline rule below carries the 0.99 GUID {23F8E1BE-...}). The bundle GUID is version-specific -- do NOT hand-pin it; rely on the validator's self-correction. See packaging-knowledge/05."
     notes: "Microsoft Burn bundle, shipped as msft_bootstrapper (not wrapped_msi -- the --extract_msi/-extract_msi//extract_msi switches were probed live on 0.99.1 and all just launch the interactive installer, dropping no MSI). Inner MSI ProductCode {23F8E1BE-FE45-4FAD-B98C-1932DCDD0B70} and Burn bundle GUID {39FF9837-4722-49F9-92B9-051A50B1E36F} both register in the Uninstall hive (DisplayName 'PowerToys (Preview)'); verified by controlled install of 0.99.1 on 2026-06-02. Detection + uninstall key on the inner MSI ProductCode. /quiet /norestart confirmed exit 0 for both install and bundle /uninstall /quiet."
 
-  # ---- wrapped_msi example (Adobe Reader DC) ----------------------
-  # Adobe's self-extracting installer takes -sfx_o to specify the
-  # extraction destination and -sfx_ne to suppress launching the
-  # installer GUI after extraction. The inner MSI is AcroRead.msi.
+  # ---- Adobe Acrobat Reader DC: KNOWN GAP -- base-MSI + MSP, not single-MSI ----
+  # Probed live 2026-06-15 (build 2600121662). The "offline" installer
+  # (AcroRdrDC<build>_<lang>.exe) is an Adobe Self Extractor whose PE identity is
+  # Company "Adobe Systems Incorporated", Product "Adobe Self Extractor",
+  # OriginalFilename AdobeSelfExtractor.exe -- NOT "Adobe Acrobat" (the old guess
+  # never matched). Its documented -sfx_o/-sfx_ne switches are DEAD on the current
+  # build (exit 58, nothing extracted); 7-Zip unpacks it cleanly. Inside:
+  #   AcroRead.msi              -- BASE MSI, ProductName "Adobe Acrobat Reader DC",
+  #                                v15.007.20033 (circa 2015), ProductCode
+  #                                {AC76BA86-7AD7-1033-7B44-AC0F074E4100}
+  #   AcroRdrDCUpd<build>.msp    -- ~700MB cumulative patch to the current version
+  #   setup.exe + setup.ini      -- bootstrapper; setup.ini declares
+  #                                msi=AcroRead.msi, PATCH=AcroRdrDCUpd<build>.msp
+  # The CURRENT version (26.001.21662) is reached ONLY by installing the base MSI
+  # and applying the MSP -- publishing the single extracted AcroRead.msi would
+  # deploy a 10-year-old, vulnerable base. The single-MSI wrapped_msi model
+  # therefore CANNOT package Reader correctly, so this entry ESCALATES instead of
+  # publishing. Correct future recipe (custom EXE, payload = the extracted folder):
+  #   install:   setup.exe /sAll /rs /msi /norestart EULA_ACCEPT=YES
+  #   detect:    HKLM\...\Uninstall\{AC76BA86-7AD7-1033-7B44-AC0F074E4100}
+  #              DisplayVersion >= <current>  (ProductCode is STABLE across the DC
+  #              line; the MSP bumps DisplayVersion, not the ProductCode)
+  #   uninstall: msiexec /x {AC76BA86-7AD7-1033-7B44-AC0F074E4100} /qn /norestart
   - id: adobe-reader-dc
     type: exe
-    installer_family: wrapped_msi
-    distribution: standard  # Public Acrobat Reader DC download. The Adobe Customization Wizard / Enterprise pack would be a separate entry with distribution: enterprise.
+    installer_family: custom
+    distribution: standard  # Public Acrobat Reader DC. The Adobe Customization Wizard / Enterprise pack would be a separate entry with distribution: enterprise.
+    pe_company_name: "Adobe Systems Incorporated"
+    pe_product_name: "Adobe Self Extractor"
+    filename_pattern: "AcroRdrDC"
+    escalate_reason: "Adobe Acrobat Reader DC ships as a base MSI (AcroRead.msi v15.007.20033) + a ~700MB cumulative MSP; the current version is reached only by base+MSP, which the single-installer pipeline does not yet package. Publishing the extracted base MSI alone would deploy a decade-old, vulnerable Reader. Escalated for engineer review until base+MSP (setup.exe custom-EXE folder payload) support lands. Extraction note: the -sfx_o/-sfx_ne switches are dead (exit 58) -- use 7-Zip."
     supersedence:
-      line: adobe-reader-dc
-      mode: generic
-    pe_company_name: "Adobe"
-    pe_product_name: "Adobe Acrobat"
-    install_command_template: "msiexec /i {installer_filename} /qn /norestart"
-    extract_command_template: '"{installer_path}" -sfx_o"{extract_dir}" -sfx_ne'
-    extracted_msi_pattern: "AcroRead.msi"
-    detection_rules:
-      - kind: registry_exists
-        key: 'HKLM\Software\Adobe\Acrobat Reader\DC\Installer'
-        value_name: Path
+      mode: none
     information_url: "https://www.adobe.com/acrobat/pdf-reader.html"
-    description: "Adobe Acrobat Reader DC - PDF viewing and annotation."
+    description: "Adobe Acrobat Reader DC -- PDF viewing and annotation. NOT yet a managed-deployment target: needs base-MSI + MSP packaging (see escalate_reason); intake escalates for engineer review."
     categories: ["Productivity"]
     min_os_version: "1607"
-    notes: "wrapped_msi -- Adobe self-extractor. Versioned download URL pattern: ardownload2.adobe.com/pub/adobe/reader/win/AcrobatDC/<build>/AcroRdrDCx64<build>_en_US.exe. Unverified."
+    notes: "Versioned URL pattern: ardownload2.adobe.com/pub/adobe/reader/win/AcrobatDC/<build>/AcroRdrDC<build>_<lang>.exe (en-US build 2600121662 fetched + probed live 2026-06-15; build digits = version without dots, 26.001.21662 -> 2600121662). filename_pattern 'AcroRdrDC' matches both AcroRdrDC<build>_ and older AcroRdrDCx64<build>_ names. Inner base MSI ProductCode {AC76BA86-7AD7-1033-7B44-AC0F074E4100} is stable across the DC line. supersedence.mode=none until packageable. See packaging-knowledge/05 (Adobe base+MSP war story)."
 
   # ---- wrapped_zip example (Foxit PDF Reader) ---------------------
   # Foxit's enterprise distribution is a ZIP bundle containing the
@@ -443,7 +462,13 @@ entries:
     description: "Mozilla Firefox (Enterprise MSI) -- the supported managed-deployment build. Silent via msiexec /qn; UpgradeCode is stable across versions for supersedence."
     categories: ["Productivity"]
     min_os_version: "1607"
-    notes: "Enterprise MSI is the correct packaging target for Firefox. canonical_download_url is Mozilla's version-agnostic 'latest MSI' link; intake substitutes this for the consumer EXE (firefox-consumer)."
+    validation:
+      status: validated
+      version: "151.0.4.0"
+      date: "2026-06-15"
+      evidence: [published, install_confirmed, detection_fired]
+      note: "Built + local-install-validated (install/detect/uninstall) + published to Ring 0 on ADMIN_BUILD_1, 2026-06-15. Validator discovered the real uninstall is the QuietUninstallString helper.exe (see notes), not msiexec /x; both work for the MSI install."
+    notes: "Enterprise MSI is the correct packaging target for Firefox. canonical_download_url is Mozilla's version-agnostic 'latest MSI' link; intake substitutes this for the consumer EXE (firefox-consumer). Detection landed as a registry DisplayVersion rule on HKLM\\...\\Uninstall\\Mozilla Firefox. The validator-discovered uninstall is \"C:\\Program Files\\Mozilla Firefox\\uninstall\\helper.exe\" /VERYSILENT /NORESTART /SUPPRESSMSGBOXES; the msiexec /x {ProductCode} template above also works (kept as the version-robust default)."
 
   - id: firefox-consumer
     type: exe
@@ -884,11 +909,11 @@ entries:
     uninstall_command_template: '"C:\Program Files\R\R-4.6.0\unins000.exe" /VERYSILENT /NORESTART'
     detection_rules:
     - kind: registry_version
-      key: HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\R for Windows 4.6.0_is1
+      key: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\R for Windows 4.6.0_is1
       value_name: DisplayVersion
       operator: greaterThanOrEqual
       value: 0.0.0
-      check_32bit_on_64bit: true
+      check_32bit_on_64bit: false  # R 4.6.0 (64-bit installer) registers in the 64-bit Uninstall hive, NOT WOW6432Node — confirmed live on ADMIN_BUILD_1 2026-06-15 (IME EnforcementErrorCode -2016345060 NotDetected with the old WOW6432Node+true rule).
     information_url: "https://cran.r-project.org/bin/windows/base/"
     description: "R statistical computing environment for Windows (Inno Setup, per-machine)."
     categories: ["Developer Tools"]
@@ -928,13 +953,14 @@ entries:
     pe_company_name: "Posit Software, PBC"
     pe_product_name: "RStudio"
     install_command_template: "{installer_filename} /S"
-    uninstall_command_template: '"C:\Program Files\RStudio\Uninstall RStudio.exe" /S'
+    uninstall_command_template: '"C:\Program Files\RStudio\Uninstall.exe" /S'
     detection_rules:
     - kind: registry_version
       key: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RStudio
       value_name: DisplayVersion
       operator: greaterThanOrEqual
       value: 0.0.0
+      check_32bit_on_64bit: true  # RStudio (Electron/NSIS) registers its Uninstall key in WOW6432Node (32-bit hive) even on x64 — confirmed live on ADMIN_BUILD_1 2026-06-15 (real key DisplayVersion 2026.05.0+218; old 64-bit rule gave NotDetected). uninstall is Uninstall.exe (capital U, no space).
     information_url: "https://posit.co/download/rstudio-desktop/"
     description: "RStudio (Posit) Desktop IDE for R -- Electron build (NSIS, per-machine)."
     categories: ["Developer Tools"]
@@ -962,11 +988,11 @@ entries:
     uninstall_command_template: '"C:\Program Files\Microsoft VS Code\unins000.exe" /VERYSILENT /NORESTART'
     detection_rules:
     - kind: registry_version
-      key: HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{EA457B21-F73E-494C-ACAB-524FDE069978}_is1
+      key: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{EA457B21-F73E-494C-ACAB-524FDE069978}_is1
       value_name: DisplayVersion
       operator: greaterThanOrEqual
       value: 0.0.0
-      check_32bit_on_64bit: true
+      check_32bit_on_64bit: false  # VS Code SYSTEM build registers its {EA457B21}_is1 Uninstall key in the 64-bit hive, NOT WOW6432Node — confirmed live on ADMIN_BUILD_1 2026-06-15 (real DisplayVersion 1.124.2; old WOW6432Node+true rule gave NotDetected). (User build is a different AppId {771FD6B0}_is1 in HKCU.)
     canonical_download_url: "https://update.code.visualstudio.com/latest/win32-x64/stable"
     information_url: "https://code.visualstudio.com/docs/setup/windows"
     description: "Visual Studio Code (per-machine SYSTEM build) -- the managed-deployment target. Installs for all users; disable auto-update via policy ('update.mode': 'none')."
