@@ -234,6 +234,7 @@ entries:
   # standard Burn silent switches.
   - id: powertoys
     type: exe
+    cpe: cpe:2.3:a:microsoft:powertoys
     installer_family: msft_bootstrapper
     distribution: standard
     supersedence:
@@ -446,6 +447,7 @@ entries:
   # "Consumer-vs-enterprise" section in packaging-knowledge/02.
   - id: firefox-msi
     type: msi
+    cpe: cpe:2.3:a:mozilla:firefox
     upgrade_code: "{3118AB4C-B433-4FBB-B9FA-8F9CA4B5C103}"
     product_code: "{1294A4C5-9977-480F-9497-C0EA1E630130}"
     product_name_pattern: "Mozilla Firefox"
@@ -500,6 +502,7 @@ entries:
   # packaging-knowledge/02 (taxonomy) and /05 (Chrome war story).
   - id: chrome-enterprise
     type: msi
+    cpe: cpe:2.3:a:google:chrome
     upgrade_code: "{C1DFDF69-5945-32F2-A35E-EE94C99C7CF4}"
     product_code: "{E916724D-4DCC-367B-A13C-A98DBE5B923D}"
     product_name_pattern: "Google Chrome"
@@ -587,6 +590,7 @@ entries:
 
   - id: aws-cli-v2
     type: msi
+    cpe: cpe:2.3:a:amazon:aws_cli
     installer_family: msi
     distribution: standard
     upgrade_code: "{E1C1971C-384E-4D6D-8D02-F1AC48281CF8}"
@@ -607,6 +611,7 @@ entries:
 
   - id: microsoft-edge
     type: msi
+    cpe: cpe:2.3:a:microsoft:edge
     installer_family: msi
     distribution: enterprise
     upgrade_code: "{883C2625-37F7-357F-A0F4-DFAF391B2B9C}"
@@ -627,6 +632,7 @@ entries:
 
   - id: cmake
     type: msi
+    cpe: cpe:2.3:a:kitware:cmake
     installer_family: msi
     distribution: standard
     upgrade_code: "{8FFD1D72-B7F1-11E2-8EE5-00238BCA4991}"
@@ -646,6 +652,7 @@ entries:
 
   - id: temurin-jdk-21
     type: msi
+    cpe: cpe:2.3:a:oracle:jdk
     installer_family: msi
     distribution: enterprise
     upgrade_code: "{C7371D5C-29EB-0885-C0E4-F8E3B955271F}"
@@ -672,6 +679,7 @@ entries:
   # rule into this baseline afterward.
   - id: winscp
     type: exe
+    cpe: cpe:2.3:a:winscp:winscp
     installer_family: inno_setup
     distribution: standard
     pe_company_name: "Martin Prikryl"
@@ -697,6 +705,7 @@ entries:
 
   - id: greenshot
     type: exe
+    cpe: cpe:2.3:a:greenshot:greenshot
     installer_family: inno_setup
     distribution: standard
     pe_company_name: "Greenshot"
@@ -723,6 +732,7 @@ entries:
 
   - id: audacity
     type: exe
+    cpe: cpe:2.3:a:audacityteam:audacity
     installer_family: inno_setup
     distribution: standard
     pe_company_name: "Audacity Team"
@@ -748,6 +758,7 @@ entries:
 
   - id: aws-session-manager-plugin
     type: exe
+    cpe: cpe:2.3:a:amazon:session_manager_plugin
     installer_family: wix_burn
     distribution: standard
     pe_company_name: "Amazon Web Services"
@@ -773,6 +784,7 @@ entries:
 
   - id: dbeaver-ce
     type: exe
+    cpe: cpe:2.3:a:dbeaver:dbeaver
     installer_family: nsis
     distribution: standard
     pe_company_name: "DBeaver Corp"
@@ -798,6 +810,7 @@ entries:
 
   - id: power-bi-desktop
     type: exe
+    cpe: cpe:2.3:a:microsoft:power_bi_desktop
     installer_family: custom
     distribution: standard
     pe_company_name: "Microsoft Corporation"
@@ -823,6 +836,7 @@ entries:
 
   - id: postman
     type: exe
+    cpe: cpe:2.3:a:postman:postman
     installer_family: custom
     distribution: standard
     install_context: user
@@ -849,6 +863,7 @@ entries:
 
   - id: insomnia
     type: exe
+    cpe: cpe:2.3:a:kong:insomnia
     installer_family: custom
     distribution: standard
     install_context: user
@@ -875,6 +890,7 @@ entries:
 
   - id: brave-browser
     type: exe
+    cpe: cpe:2.3:a:brave:brave
     installer_family: custom
     distribution: standard
     install_context: user
@@ -901,6 +917,7 @@ entries:
 
   - id: r-for-windows
     type: exe
+    cpe: cpe:2.3:a:r-project:r
     installer_family: inno_setup
     distribution: standard
     pe_company_name: "R Core Team"
@@ -925,6 +942,7 @@ entries:
 
   - id: git-for-windows
     type: exe
+    cpe: cpe:2.3:a:git:git
     installer_family: inno_setup
     distribution: standard
     pe_company_name: "The Git Development Community"
@@ -948,6 +966,7 @@ entries:
 
   - id: rstudio-desktop
     type: exe
+    cpe: cpe:2.3:a:posit:rstudio
     installer_family: nsis
     distribution: standard
     pe_company_name: "Posit Software, PBC"
@@ -980,6 +999,7 @@ entries:
   # target and catches the system installer + the substitution-fetched file.
   - id: code-system
     type: exe
+    cpe: cpe:2.3:a:microsoft:visual_studio_code
     installer_family: inno_setup
     distribution: enterprise
     pe_company_name: "Microsoft Corporation"
@@ -1081,6 +1101,7 @@ entries:
     notes: "NSIS .exe (no VS_VERSIONINFO). Matched by filename, detected via the installed vlc.exe file version. Win64 install path; the win32 build lands in Program Files (x86)."
   - id: node-js
     type: msi
+    cpe: cpe:2.3:a:nodejs:node.js
     install_command_template: msiexec /i {installer_filename} /qn /norestart
     uninstall_command_template: msiexec /x {8E3EF5A2-585E-453B-B16C-B46E05A62DAC} /qn /norestart
     distribution: standard
@@ -1103,6 +1124,7 @@ entries:
     notes: Auto-added by create-software-job (task fde2ddbd-4e68-4969-b427-3f38b097a599)
   - id: putty-release-0-83--64-bit
     type: msi
+    cpe: cpe:2.3:a:putty:putty
     install_command_template: msiexec /i {installer_filename} /qn /norestart
     uninstall_command_template: msiexec /x {ED41CD4E-33BB-400C-AB20-B09388DC83EF} /qn /norestart
     distribution: standard
@@ -1126,6 +1148,7 @@ entries:
     notes: Auto-added by create-software-job (task 546962ee-1768-44cf-9cc0-33611ebec9b3)
   - id: keepass-2-61-1
     type: msi
+    cpe: cpe:2.3:a:keepass:keepass
     install_command_template: msiexec /i {installer_filename} /qn /norestart
     uninstall_command_template: msiexec /x {33F0E718-1110-4F95-A59B-230A62C02DE5} /qn /norestart
     distribution: standard
@@ -1148,6 +1171,7 @@ entries:
     notes: Auto-added by create-software-job (task 66f3523b-9610-4074-bf48-221e1dc9f5e0)
   - id: powershell-7-x64
     type: msi
+    cpe: cpe:2.3:a:microsoft:powershell
     install_command_template: msiexec /i {installer_filename} /qn /norestart
     uninstall_command_template: msiexec /x {7DB6AE45-EA0D-4E0A-A65A-2ECD74328B1E} /qn /norestart
     distribution: standard
@@ -1170,6 +1194,7 @@ entries:
     notes: Auto-added by create-software-job (task 32ee3a86-16e5-4407-8b5c-7030b950b2f9)
   - id: zoom-workplace--64-bit
     type: msi
+    cpe: cpe:2.3:a:zoom:zoom
     install_command_template: msiexec /i {installer_filename} /qn /norestart
     uninstall_command_template: msiexec /x {3DC6B3F0-0AD7-4B51-AFA2-59605590EAC5} /qn /norestart
     distribution: standard
