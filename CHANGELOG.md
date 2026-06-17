@@ -1,5 +1,31 @@
 ## [Unreleased]
 
+## [1.13.1] - 2026-06-17
+
+Wrapper-packaging robustness fixes, found by validating the generated scripts end-to-end on a real
+(hardened) endpoint. The wrapper runtime is now verified: a Wireshark + PuTTY wrapper installs both
+components via the generated `install.cmd`, both detection rules fire, and `uninstall.cmd` removes
+both.
+
+### Fixed
+
+- **Wrapper scripts had doubled `CR CR LF` line endings.** `_render_wrapper_script` emits `\r\n`, but
+  `Path.write_text` then re-translated each `\n` to `\r\n` (Windows text mode), producing `\r\r\n`,
+  which corrupts `cmd` parsing (`cd /d "%~dp0"` fails with "The system cannot find the path
+  specified"). Now written with `newline=''`.
+- **Wrapper scripts failed on hardened/Intune-managed endpoints where the cwd is not searched for
+  executables** (`NoDefaultCurrentDirectoryInExePath=1`). A bare installer-exe name in the script was
+  "not recognized". The generated script now prepends the package root to `PATH`
+  (`set "PATH=%~dp0;%PATH%"`) so both EXE and MSI steps resolve. (Also removed an over-corrective
+  `start /wait` — `cmd` already waits for a directly-invoked installer, GUI or console.)
+
+### Notes
+
+- **Free Npcap confirms no silent install** (empirically: `npcap-1.88.exe /S` pops a UI and installs
+  nothing). The Wireshark wrapper therefore still requires a licensed **Npcap OEM** installer in
+  `data/wrapper_components/`; the free edition's 5-system allowance is a usage right, not a
+  silent-install unlock.
+
 ## [1.13.0] - 2026-06-17
 
 EXE catalog expansion + multi-component (wrapper) packaging. Four new EXE baseline entries were
