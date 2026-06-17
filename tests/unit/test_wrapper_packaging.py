@@ -82,10 +82,16 @@ def test_render_install_script_runs_each_step_in_order():
         kind="install",
     )
     assert 'cd /d "%~dp0"' in script
-    # both steps present, primary before component
+    # package root on PATH so bare installer names resolve when the cwd is not
+    # searched (NoDefaultCurrentDirectoryInExePath on hardened endpoints)
+    assert 'set "PATH=%~dp0;%PATH%"' in script
+    # both steps present, primary before component, invoked directly (no `start`,
+    # so cmd waits for each installer to finish)
     assert script.index("Wireshark.exe /S") < script.index("npcap-oem.exe /S")
-    # 3010 (reboot) treated as success alongside 0
+    assert "start " not in script
+    # 0 / 3010 (soft reboot) / 1641 (hard reboot) treated as success
     assert '"%RC%"=="3010"' in script
+    assert '"%RC%"=="1641"' in script
     assert script.rstrip().endswith("exit /b 0")
     # CRLF line endings for a .cmd
     assert "\r\n" in script
@@ -177,8 +183,13 @@ def test_component_present_is_staged_and_scripts_written(tmp_path):
     # scripts written + Win32 commands point at them
     assert (package_dir / "install.cmd").exists()
     assert (package_dir / "uninstall.cmd").exists()
-    assert install_cmd == "cmd /c install.cmd"
-    assert uninstall_cmd == "cmd /c uninstall.cmd"
+    assert install_cmd == r"cmd /c .\install.cmd"
+    assert uninstall_cmd == r"cmd /c .\uninstall.cmd"
+
+    # proper CRLF line endings, NOT doubled CR CR LF (which corrupts cmd parsing)
+    raw = (package_dir / "install.cmd").read_bytes()
+    assert b"\r\n" in raw
+    assert b"\r\r\n" not in raw
 
     install_txt = (package_dir / "install.cmd").read_text()
     assert "Wireshark.exe /S" in install_txt

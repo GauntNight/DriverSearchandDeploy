@@ -474,22 +474,36 @@ exit 0
         uninstall_steps = [(name, uc) for name, _, uc in reversed(steps) if uc]
         uninstall_script = self._render_wrapper_script(uninstall_steps, kind='uninstall')
 
-        (package_dir / 'install.cmd').write_text(install_script, encoding='ascii', errors='replace')
-        (package_dir / 'uninstall.cmd').write_text(uninstall_script, encoding='ascii', errors='replace')
+        # newline='' so the explicit CRLF in the rendered script is NOT doubled to
+        # CR CR LF by Windows text-mode translation (which corrupts cmd parsing).
+        (package_dir / 'install.cmd').write_text(install_script, encoding='ascii', errors='replace', newline='')
+        (package_dir / 'uninstall.cmd').write_text(uninstall_script, encoding='ascii', errors='replace', newline='')
         logger.info("Generated wrapper scripts", components=len(steps) - 1, entry=catalog_entry.id)
 
-        return package_dir / 'install.cmd', 'cmd /c install.cmd', 'cmd /c uninstall.cmd'
+        # `.\` makes the script reference explicit so the IME / validator can run
+        # it even when the cwd is not searched (NoDefaultCurrentDirectoryInExePath).
+        return package_dir / 'install.cmd', r'cmd /c .\install.cmd', r'cmd /c .\uninstall.cmd'
 
     @staticmethod
     def _render_wrapper_script(steps: list, kind: str) -> str:
         """Build an install.cmd / uninstall.cmd that runs each (filename, command)
-        from the package root. 0 and 3010 (reboot) count as success; any other
+        from the package root, in order. cmd waits for each directly-invoked
+        program to finish (GUI installers like NSIS/Inno included — cmd blocks on
+        a directly-run child regardless of subsystem; only ``start`` without
+        ``/wait`` would race ahead, so we deliberately do NOT use ``start``).
+        Success codes 0 / 3010 (soft reboot) / 1641 (hard reboot) pass; any other
         non-zero aborts with that code so a failed component fails the whole app.
         """
         lines = [
             '@echo off',
             'setlocal EnableExtensions',
             'cd /d "%~dp0"',
+            # Put the package root on PATH so bare installer-exe names resolve even
+            # when NoDefaultCurrentDirectoryInExePath is set (common on hardened /
+            # Intune-managed endpoints, where cmd does NOT search the cwd for
+            # executables). msiexec is on the system PATH and resolves its .msi
+            # argument relative to the cwd, so this covers both EXE and MSI steps.
+            'set "PATH=%~dp0;%PATH%"',
             f'rem Auto-generated wrapper {kind} script (AutoPackager)',
             '',
         ]
@@ -499,7 +513,7 @@ exit 0
             lines.append(f'echo [AutoPackager] {kind}: {name}')
             lines.append(cmd)
             lines.append('set "RC=%ERRORLEVEL%"')
-            lines.append('if not "%RC%"=="0" if not "%RC%"=="3010" '
+            lines.append('if not "%RC%"=="0" if not "%RC%"=="3010" if not "%RC%"=="1641" '
                          f'( echo [AutoPackager] {kind} step "{name}" failed RC=%RC% ^& exit /b %RC% )')
             lines.append('')
         lines.append('exit /b 0')
