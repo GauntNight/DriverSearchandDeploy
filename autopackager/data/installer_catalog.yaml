@@ -72,6 +72,16 @@
 #                         ignore /ALLUSERS like Greenshot) -- a system-context
 #                         publish of those only detects/uninstalls for the
 #                         profile that ran the install.
+#   extra_components   -- Wrapper / multi-component packaging. A list of
+#                         ADDITIONAL installers bundled with the primary into a
+#                         single .intunewin behind a generated install.cmd (the
+#                         canonical case is Wireshark + the Npcap OEM driver).
+#                         Detection is the AND of the primary's + every
+#                         component's rules. Each item: id, filename_hint,
+#                         source/acquisition, install_command_template,
+#                         uninstall_command_template, detection_rules, required,
+#                         license_note. A missing required component ESCALATES
+#                         (no half-publish). See the dataclass docstring + KB 02.
 #
 # distribution         -- REQUIRED for new entries. One of:
 #                          standard, enterprise (see DISTRIBUTION_KINDS
@@ -756,6 +766,101 @@ entries:
       mode: generic
     notes: "Inno Setup, 64-bit (HKLM 64-bit Uninstall key Audacity_is1; installs per-machine to Program Files\\Audacity when run elevated). canonical_download_url is the official GitHub release (tag Audacity-<ver>, asset audacity-win-<ver>-64bit.exe); bump on new releases. Verified live on ADMIN_BUILD_1 (v3.7.7, 2026-06-10): detection (Audacity_is1) fired uncorrected per-machine; uninstall corrected to unins000.exe /SILENT; published + Ring-0 assigned."
 
+  - id: wireshark
+    type: exe
+    cpe: cpe:2.3:a:wireshark:wireshark
+    installer_family: nsis
+    distribution: standard
+    pe_company_name: "Wireshark development team"
+    pe_product_name: "Wireshark"
+    install_command_template: "{installer_filename} /S"
+    uninstall_command_template: '"C:\Program Files\Wireshark\uninstall-wireshark.exe" /S'
+    detection_rules:
+    - kind: registry_version
+      key: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Wireshark
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://2.na.dl.wireshark.org/win64/Wireshark-4.6.6-x64.exe"
+    information_url: "https://www.wireshark.org/download.html"
+    description: "Wireshark -- network protocol analyzer / packet capture (NSIS, per-machine 64-bit). INCOMPLETE AS A STANDALONE DEPLOY: silent /S installs the app but NOT the Npcap capture driver, so live capture does not work -- a full deployment must ALSO deliver Npcap (OEM), see notes."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    extra_components:
+    - id: npcap-oem
+      filename_hint: npcap-oem
+      acquisition: operator_supplied
+      license_note: "Npcap OEM license REQUIRED -- the FREE Npcap installer has no silent /S (OEM-only feature) and a 5-system usage cap. Drop the licensed OEM installer (filename containing 'npcap-oem') in data/wrapper_components/; without it the wrapper build ESCALATES rather than shipping a capture-less Wireshark."
+      install_command_template: "{installer_filename} /S /winpcap_mode=yes /loopback_support=yes /admin_only=no"
+      uninstall_command_template: '"C:\Program Files\Npcap\Uninstall.exe" /S'
+      detection_rules:
+      - kind: registry_version
+        key: HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\NpcapInst
+        value_name: DisplayVersion
+        operator: greaterThanOrEqual
+        value: 0.0.0
+        check_32bit_on_64bit: true
+      required: true
+    supersedence:
+      line: wireshark
+      mode: generic
+    notes: "NSIS, per-machine 64-bit. Verified live on ADMIN_BUILD_1 (v4.6.6, 2026-06-17, under a VM snapshot): /S installs the Wireshark APP silently to C:\\Program Files\\Wireshark; detection HKLM Uninstall\\Wireshark (DisplayVersion) fired uncorrected; the validator CORRECTED the uninstaller name to 'uninstall-wireshark.exe' (NOT the NSIS-generic 'uninstall.exe' -- it is uninstall-wireshark.exe /S). NPCAP CAVEAT (important): bare /S installs Wireshark but does NOT install the bundled Npcap kernel capture driver -- after the validation install, no NpcapInst Uninstall key was present, so the SYSTEM-context /S deploy gives users the Wireshark UI WITHOUT packet-capture capability. The bundled Npcap installer is launched only in INTERACTIVE mode. NPCAP LICENSING WALL (confirmed npcap.com 2026): the FREE Npcap installer has NO silent install -- '/S' is an Npcap OEM-only feature, and the free edition also carries a 5-system usage cap; WinPcap is EOL and won't load under modern driver-signing. So there is NO way to silently deliver the capture driver with the free edition. A FUNCTIONAL Wireshark deployment requires an Npcap OEM license (Internal-Use to lift the 5-system cap + get the silent installer, or Redistribution to bundle it) and ONE of these multi-component patterns (NEITHER wired in the pipeline today -- this is a real gap, same class as Adobe's extracted-folder+bootstrapper payload): (1) WRAPPER PACKAGE -- a .intunewin containing Wireshark.exe + npcap-oem.exe + an install.cmd that runs 'wireshark /S' then 'npcap-oem /S', with detection on BOTH; or (2) DEPENDENCY -- publish Npcap-OEM as its own Win32 app and set Wireshark to DEPEND on it (Intune app-dependency relationship -> IME installs Npcap first). As published TODAY this entry is APP-ONLY (capture-less) -- treat as incomplete until the Npcap-OEM component is added. canonical_download_url is VERSION-PINNED (Wireshark's win64 path is versioned; no clean 'latest' redirect) -- bump on new releases."
+
+  - id: treesize-free
+    type: exe
+    cpe: cpe:2.3:a:jam-software:treesize_free
+    installer_family: inno_setup
+    distribution: standard
+    pe_company_name: "JAM Software"
+    pe_product_name: "TreeSize Free"
+    install_command_template: "{installer_filename} /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-"
+    uninstall_command_template: '"%LOCALAPPDATA%\Programs\JAM Software\TreeSize Free\unins000.exe" /VERYSILENT /NORESTART'
+    install_context: user
+    detection_rules:
+    - kind: registry_version
+      key: HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TreeSize Free_is1
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://downloads.jam-software.de/treesize_free/TreeSizeFreeSetup.exe"
+    information_url: "https://www.jam-software.com/treesize_free"
+    description: "TreeSize Free -- disk-space visualization / folder-size scanner (JAM Software, Inno Setup, 64-bit). PER-USER installer."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    supersedence:
+      line: treesize-free
+      mode: generic
+    notes: "Inno Setup, 64-bit. Silent /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-. PER-USER LANDMINE (verified live on ADMIN_BUILD_1, v4.8.1, 2026-06-16): TreeSize FREE installs to %LOCALAPPDATA%\\Programs\\JAM Software\\TreeSize Free with an HKCU Uninstall key 'TreeSize Free_is1' EVEN WHEN RUN ELEVATED -- so it must be an Intune user-context Win32 app (install_context: user). The validator hive-diffed and self-corrected detection HKLM->HKCU on first publish; published SYSTEM-context first (wrong, installs into the SYSTEM profile), then republished user-context. The validator records the uninstall as an absolute user-profile path; baseline carries the generalized %LOCALAPPDATA% form. canonical_download_url is JAM Software's stable 'latest' link (x64; *_x86.exe is legacy 32-bit). NOTE: TreeSize Professional (paid) is a separate MSI/per-machine product -- different entry if ever needed."
+
+  - id: beyond-compare
+    type: exe
+    cpe: cpe:2.3:a:scootersoftware:beyond_compare
+    installer_family: inno_setup
+    distribution: standard
+    pe_company_name: "Scooter Software"
+    pe_product_name: "Beyond Compare 5"
+    install_command_template: "{installer_filename} /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-"
+    uninstall_command_template: '"%LOCALAPPDATA%\Programs\Beyond Compare 5\unins000.exe" /SILENT'
+    install_context: user
+    detection_rules:
+    - kind: registry_version
+      key: HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\BeyondCompare5_is1
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://www.scootersoftware.com/files/BCompare-5.2.2.32209.exe"
+    information_url: "https://www.scootersoftware.com/download"
+    description: "Beyond Compare 5 -- file/folder comparison, diff & merge tool (Scooter Software, Inno Setup). Commercial; installs unlicensed (30-day trial) until a license key is applied -- packaging/detection are unaffected by licensing. PER-USER installer."
+    categories: ["Productivity"]
+    min_os_version: "1607"
+    supersedence:
+      line: beyond-compare
+      mode: generic
+    notes: "Inno Setup. PE product name is version-major-bound ('Beyond Compare 5') so this matches all BC5.x builds; a future BC6 needs a new entry (same pattern as snagit). Silent recipe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- (the /SP- guards the BC installer's custom intro page). PER-USER LANDMINE (verified live on ADMIN_BUILD_1, v5.2.2.32209, 2026-06-16): the installer installs to %LOCALAPPDATA%\\Programs\\Beyond Compare 5 with an HKCU Uninstall key BeyondCompare5_is1 (note: NO spaces in the AppId) EVEN WHEN RUN ELEVATED -- so it must be an Intune user-context Win32 app (install_context: user). Published SYSTEM-context first (wrong); the validator self-corrected detection to the HKCU key but a SYSTEM publish would install into the SYSTEM profile, so republished with install_context=user. The validator records the uninstall as an absolute user-profile path; baseline carries the generalized %LOCALAPPDATA% form (same greenshot-class limitation). canonical_download_url is VERSION-PINNED (Scooter has no clean 'latest' redirect) -- bump the build on new releases. Per-machine /ALLUSERS install is UNTESTED (would give HKLM + Program Files); per-user is the proven path."
+
   - id: aws-session-manager-plugin
     type: exe
     cpe: cpe:2.3:a:amazon:session_manager_plugin
@@ -807,6 +912,32 @@ entries:
       line: dbeaver-ce
       mode: generic
     notes: "NSIS, 64-bit (bundles its own JRE since v23 -- no external Java dependency). canonical_download_url is DBeaver's stable 'latest' link. SILENT SWITCH GOTCHA: DBeaver's NSIS installer requires '/S /allusers' (per-machine) -- bare /S is insufficient and /VERYSILENT pops the UI (don't use). Uninstaller is 'Uninstaller.exe' (capital U). Verified live on ADMIN_BUILD_1 (v26.1.0, 2026-06-10): /S /allusers installs silently per-machine, detection (HKLM\\...\\Uninstall\\DBeaver) fired uncorrected, published + Ring-0 assigned. Per DBeaver Windows-Silent-Install wiki."
+
+  - id: intellij-idea
+    type: exe
+    cpe: cpe:2.3:a:jetbrains:intellij_idea
+    installer_family: nsis
+    distribution: standard
+    pe_company_name: "JetBrains s.r.o."
+    pe_product_name: "IntelliJ IDEA"
+    install_command_template: "{installer_filename} /S"
+    uninstall_command_template: '"C:\Program Files\JetBrains\IntelliJ IDEA 2025.3\bin\Uninstall.exe" /S'
+    detection_rules:
+    - kind: registry_version
+      key: HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\IntelliJ IDEA 2025.3
+      value_name: DisplayVersion
+      operator: greaterThanOrEqual
+      value: 0.0.0
+      check_32bit_on_64bit: false
+    canonical_download_url: "https://download.jetbrains.com/product?code=IIC&latest&distribution=windows"
+    information_url: "https://www.jetbrains.com/idea/download/"
+    description: "IntelliJ IDEA -- JetBrains Java/Kotlin/polyglot IDE (NSIS installer). As of 2025.3 JetBrains ships a UNIFIED IDEA build (Community features free; Ultimate via license) -- the 'code=IIC' (Community) download now resolves to idea-<ver>.exe, not a separate ideaIC-*. ~1.06 GB installer."
+    categories: ["Developer Tools"]
+    min_os_version: "1607"
+    supersedence:
+      line: intellij-idea
+      mode: generic
+    notes: "NSIS, 64-bit. Silent install is bare /S (JetBrains NSIS; optional /CONFIG=<file> for component/shortcut choices and /D=<dir> for a custom path -- defaults are fine for a managed deploy). VERSION-SPECIFIC DETECTION (JetBrains landmine): both the Uninstall registry KEY NAME and the install PATH embed the version (e.g. '...\\Uninstall\\IntelliJ IDEA 2025.3', 'C:\\Program Files\\JetBrains\\IntelliJ IDEA 2025.3\\bin'), so there is NO version-stable detection rule -- the baseline key is a best-guess for the current build and the local validator hive-diffs and self-corrects the exact key + uninstall QuietUninstallString on every publish; each version is its own publish anyway. canonical_download_url is the JetBrains 'latest' redirect (302 -> download-cdn idea-<ver>.exe). PENDING device-confirm on ADMIN_BUILD_1."
 
   - id: power-bi-desktop
     type: exe

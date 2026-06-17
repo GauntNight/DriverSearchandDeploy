@@ -676,6 +676,31 @@ class CatalogEntry:
     #   install. With 'user', Intune installs in the logged-on user's context and
     #   evaluates HKCU detection per-user. Default (None) -> 'system'.
     install_context: Optional[str] = None
+    # ---- Wrapper / multi-component packaging (AGNOSTIC, baseline-eligible) ----
+    # extra_components -- a list of ADDITIONAL installers that must be deployed
+    #   alongside the primary installer to make the app FUNCTIONAL, packaged into
+    #   a single Win32 app (.intunewin) driven by a generated install.cmd that runs
+    #   the primary then each component silently. Use when one Intune app must
+    #   deliver more than one installer (the canonical case: Wireshark + the Npcap
+    #   capture driver; Npcap free has no silent installer, so the component is the
+    #   OEM build the operator supplies). Detection is the AND of the primary's
+    #   detection_rules + every component's detection_rules (Intune requires all
+    #   detection rules to pass), so the app is "installed" only when every piece is.
+    #   Each component dict:
+    #     id                          -- short slug (folder/label)
+    #     filename_hint               -- substring used to locate the operator-supplied
+    #                                    installer file (when there's no public source)
+    #     source                      -- optional canonical_download_url or local path;
+    #                                    omit for operator_supplied (e.g. licensed OEM)
+    #     acquisition                 -- 'url' | 'operator_supplied' (default url if
+    #                                    source set, else operator_supplied)
+    #     install_command_template    -- rendered with {installer_filename} = the file
+    #     uninstall_command_template  -- rendered likewise (reverse order at uninstall)
+    #     detection_rules             -- catalog-native rules (same shape as the entry's)
+    #     required                    -- bool (default True); a missing required
+    #                                    component ESCALATES the job (no half-publish)
+    #     license_note                -- optional free-text (e.g. OEM licensing)
+    extra_components: Optional[list] = None
     # ---- CVE / vulnerability intelligence key (AGNOSTIC, baseline-eligible) ----
     # cpe -- the vendor:product half of an NVD CPE 2.3 name, WITHOUT a version,
     #   e.g. 'cpe:2.3:a:videolan:vlc_media_player'. AGNOSTIC curated knowledge
@@ -745,6 +770,13 @@ class CatalogEntry:
         committed baseline). Distinct from "currently published in this tenant",
         which is what verified_versions tracks."""
         return bool(self.validation and self.validation.get('status') == 'validated')
+
+    @property
+    def is_wrapper(self) -> bool:
+        """True when this entry bundles additional installers (extra_components)
+        into a single Win32 app via a generated install.cmd. See the
+        ``extra_components`` field docs."""
+        return bool(self.extra_components)
 
     def render_install_command(self, installer_filename: str) -> str:
         return self.install_command_template.format(installer_filename=installer_filename)

@@ -1,5 +1,40 @@
 ## [Unreleased]
 
+## [1.13.0] - 2026-06-17
+
+EXE catalog expansion + multi-component (wrapper) packaging. Four new EXE baseline entries were
+packaged through the live pipeline to Ring 0, and the pipeline gained the ability to deliver more
+than one installer in a single Win32 app. The deterministic four-stage pipeline is unchanged. Full
+suite: 920 tests passing (+ the known `created_at` ordering flake, which passes in isolation).
+
+### Added
+
+- **Multi-component (wrapper) packaging — `CatalogEntry.extra_components`.** A catalog entry can now
+  bundle a primary installer **plus additional installers** into one `.intunewin`. At package time
+  `PackagingAgent` stages every component (downloaded from a `source` URL or found by `filename_hint`
+  in `data/wrapper_components/`), generates `install.cmd` / `uninstall.cmd` that run each silently
+  from the package root (reboot-aware; components uninstall in reverse), sets the Win32 install/
+  uninstall commands to `cmd /c install.cmd` / `cmd /c uninstall.cmd`, and **merges detection** —
+  the primary's rules plus every component's rules. Intune ANDs detection rules, so the app reports
+  "installed" only when every piece is present. A missing `required` component **escalates** at
+  packaging (no half-publish). The canonical case is **Wireshark + the Npcap capture driver** (the
+  `wireshark` baseline entry carries an `npcap-oem` component). 8 unit tests in
+  `tests/unit/test_wrapper_packaging.py`.
+- **Four new EXE catalog entries** (live-validated to Ring 0 on `ADMIN_BUILD_1`): `beyond-compare`
+  (Inno, per-user), `treesize-free` (Inno, per-user), `intellij-idea` (NSIS, per-machine; 2025.3
+  unified build), `wireshark` (NSIS, per-machine; modeled as a wrapper pending the Npcap OEM file).
+
+### Notes
+
+- **Per-user Inno installers.** Beyond Compare 5 and TreeSize Free install per-user (HKCU `_is1` key,
+  `%LOCALAPPDATA%`) **even when the installer runs elevated**, so their entries set
+  `install_context: user`; a system-context publish of a per-user app installs into the SYSTEM
+  profile and never detects for the real user.
+- **Wireshark needs Npcap OEM for capture.** The free Npcap installer has no silent install (`/S` is
+  OEM-only) and a 5-system cap, so a functional Wireshark deployment requires a licensed Npcap OEM
+  installer dropped in `data/wrapper_components/`; until then the wrapper build escalates rather than
+  shipping a capture-less app.
+
 ## [1.12.0] - 2026-06-14
 
 Application lifecycle management for general (COTS) software — the center panel now reads as a
