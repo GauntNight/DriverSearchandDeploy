@@ -23,6 +23,10 @@ Some vendors ship an MSI inside an outer wrapper. The catalog's `installer_famil
 
 When `cli.py create-software-job` sees a wrapped catalog hit, `autopackager/utils/extractors.py::extract_wrapped` runs the extraction into `data/downloads/extracted/<entry-id>/`, picks the largest MSI matching the pattern (defends against accessory MSIs bundled alongside the main product), and substitutes the installer path before the rest of the command runs. By the time the pipeline kicks off, the job is a regular MSI job — Discovery / Packaging / Testing / Deployment treat the extracted MSI exactly like any other.
 
+### Multi-component (wrapper) packaging (`extra_components`)
+
+Distinct from `wrapped_*` (which unwraps **one** installer): an entry whose `extra_components` list is set bundles a primary installer **plus additional installers** into a single Win32 app. During the Packaging stage `PackagingAgent._stage_wrapper_components` stages each component into the package source folder (downloaded from a `source` URL, or located by `filename_hint` in `data/wrapper_components/`), generates an `install.cmd` / `uninstall.cmd` that runs each silently from the package root (reboot-aware; components uninstall in reverse), and merges detection — the primary's `detection_rules` plus every component's. Intune ANDs detection rules, so the app reports "installed" only when every piece is present. A missing `required` component raises at packaging (the job fails rather than publishing a half-app). Canonical case: **Wireshark + the Npcap capture driver**.
+
 Each stage is a separate Celery task that:
 - Updates job state in the database before execution
 - Performs its specialized work (finding updates, downloading installers, running tests, etc.)

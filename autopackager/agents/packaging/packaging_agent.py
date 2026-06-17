@@ -68,8 +68,19 @@ class PackagingAgent:
         # Generate installation commands
         install_cmd, uninstall_cmd = self._generate_install_commands(job, installer_dest)
 
+        # Wrapper packages bundle additional installers (e.g. Wireshark + the
+        # Npcap capture driver) behind a generated install.cmd, so a single Win32
+        # app delivers every piece. The .intunewin setup file becomes the script
+        # and the install/uninstall commands invoke it.
+        setup_file = installer_dest
+        catalog_entry = self._catalog_entry_for_job(job)
+        if catalog_entry and catalog_entry.is_wrapper:
+            setup_file, install_cmd, uninstall_cmd = self._stage_wrapper_components(
+                job, package_dir, installer_dest, install_cmd, uninstall_cmd, catalog_entry
+            )
+
         # Create .intunewin package
-        intunewin_path = self._create_intunewin_package(package_dir, installer_dest)
+        intunewin_path = self._create_intunewin_package(package_dir, setup_file)
 
         # Generate detection rules
         detection_rules = self._generate_detection_rules(job)
@@ -365,6 +376,135 @@ exit 0
 
         return script_name
 
+    def _wrapper_component_search_dirs(self) -> list:
+        """Directories searched for an operator-supplied wrapper component file
+        (e.g. a licensed Npcap OEM installer with no public download)."""
+        data_root = self.downloads_path.parent
+        return [
+            data_root / 'wrapper_components',
+            data_root / 'test_msis',
+            self.downloads_path,
+        ]
+
+    def _resolve_component_file(self, component: dict, package_dir: Path) -> Path:
+        """Locate (download or find) one wrapper component's installer and copy
+        it into the package source folder. Raises ValueError (escalation) when a
+        required component cannot be found -- never publish a half-complete app.
+        """
+        cid = component.get('id', '<unnamed>')
+        source = component.get('source')
+        acquisition = component.get('acquisition') or ('url' if source else 'operator_supplied')
+
+        local_src = None
+        if acquisition == 'url' and source:
+            if str(source).lower().startswith(('http://', 'https://')):
+                # download directly (job-less): stream to the downloads dir
+                filename = str(source).split('/')[-1] or f'{cid}.exe'
+                dest = self.downloads_path / filename
+                resp = requests.get(source, stream=True, timeout=300)
+                resp.raise_for_status()
+                with open(dest, 'wb') as fh:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        fh.write(chunk)
+                local_src = dest
+            else:
+                cand = Path(source)
+                if cand.exists():
+                    local_src = cand
+        if local_src is None:
+            # operator_supplied (or url miss): search known dirs by filename_hint
+            hint = (component.get('filename_hint') or cid).lower()
+            for d in self._wrapper_component_search_dirs():
+                if not d.exists():
+                    continue
+                for f in sorted(d.iterdir()):
+                    if f.is_file() and hint in f.name.lower():
+                        local_src = f
+                        break
+                if local_src is not None:
+                    break
+
+        if local_src is None:
+            lic = component.get('license_note')
+            raise ValueError(
+                f"Wrapper component '{cid}' installer not found -- cannot build a "
+                f"complete package. Supply the installer (filename containing "
+                f"'{component.get('filename_hint') or cid}') in data/wrapper_components/."
+                + (f" LICENSE: {lic}" if lic else "")
+            )
+
+        dest = package_dir / local_src.name
+        if local_src.resolve() != dest.resolve():
+            shutil.copy2(local_src, dest)
+        logger.info("Staged wrapper component", component=cid, file=dest.name)
+        return dest
+
+    def _stage_wrapper_components(
+        self, job, package_dir: Path, primary_installer: Path,
+        primary_install_cmd: str, primary_uninstall_cmd: str, catalog_entry,
+    ) -> tuple:
+        """Stage every extra_component installer into the package folder and
+        generate install.cmd / uninstall.cmd that run the primary then each
+        component silently (from the package root via %~dp0). Returns
+        (setup_file_path, install_command, uninstall_command) for the Win32 app.
+        Detection is merged separately in _generate_detection_rules (Intune ANDs
+        all rules, so the app is 'installed' only when every piece is present).
+        """
+        steps = [(primary_installer.name, primary_install_cmd, primary_uninstall_cmd)]
+        for comp in catalog_entry.extra_components or []:
+            required = comp.get('required', True)
+            try:
+                comp_file = self._resolve_component_file(comp, package_dir)
+            except ValueError:
+                if required:
+                    raise
+                logger.warning("Optional wrapper component missing -- skipping",
+                               component=comp.get('id'))
+                continue
+            ci = (comp.get('install_command_template') or '').format(installer_filename=comp_file.name)
+            cu = comp.get('uninstall_command_template') or ''
+            if cu:
+                cu = cu.format(installer_filename=comp_file.name) if '{installer_filename}' in cu else cu
+            steps.append((comp_file.name, ci.strip(), cu.strip()))
+
+        install_script = self._render_wrapper_script(
+            [(name, ic) for name, ic, _ in steps], kind='install'
+        )
+        # Uninstall in REVERSE order (components first, then the primary).
+        uninstall_steps = [(name, uc) for name, _, uc in reversed(steps) if uc]
+        uninstall_script = self._render_wrapper_script(uninstall_steps, kind='uninstall')
+
+        (package_dir / 'install.cmd').write_text(install_script, encoding='ascii', errors='replace')
+        (package_dir / 'uninstall.cmd').write_text(uninstall_script, encoding='ascii', errors='replace')
+        logger.info("Generated wrapper scripts", components=len(steps) - 1, entry=catalog_entry.id)
+
+        return package_dir / 'install.cmd', 'cmd /c install.cmd', 'cmd /c uninstall.cmd'
+
+    @staticmethod
+    def _render_wrapper_script(steps: list, kind: str) -> str:
+        """Build an install.cmd / uninstall.cmd that runs each (filename, command)
+        from the package root. 0 and 3010 (reboot) count as success; any other
+        non-zero aborts with that code so a failed component fails the whole app.
+        """
+        lines = [
+            '@echo off',
+            'setlocal EnableExtensions',
+            'cd /d "%~dp0"',
+            f'rem Auto-generated wrapper {kind} script (AutoPackager)',
+            '',
+        ]
+        for name, cmd in steps:
+            if not cmd:
+                continue
+            lines.append(f'echo [AutoPackager] {kind}: {name}')
+            lines.append(cmd)
+            lines.append('set "RC=%ERRORLEVEL%"')
+            lines.append('if not "%RC%"=="0" if not "%RC%"=="3010" '
+                         f'( echo [AutoPackager] {kind} step "{name}" failed RC=%RC% ^& exit /b %RC% )')
+            lines.append('')
+        lines.append('exit /b 0')
+        return '\r\n'.join(lines) + '\r\n'
+
     def _create_intunewin_package(self, package_dir: Path, installer_path: Path) -> Path:
         """Create .intunewin package using IntuneWinAppUtil.exe"""
         logger.info("Creating .intunewin package")
@@ -440,9 +580,17 @@ exit 0
             )]
 
         catalog_entry = self._catalog_entry_for_job(job)
-        if catalog_entry and catalog_entry.detection_rules:
+        if catalog_entry and (catalog_entry.detection_rules or catalog_entry.is_wrapper):
+            # Collect the primary entry's rules, then (for a wrapper package) every
+            # component's rules. Intune requires ALL detection rules to pass, so the
+            # app reports "installed" only when the primary AND every bundled
+            # component (e.g. Wireshark AND the Npcap driver) are present.
+            raw_rules = list(catalog_entry.detection_rules or [])
+            if catalog_entry.is_wrapper:
+                for comp in catalog_entry.extra_components or []:
+                    raw_rules.extend(comp.get('detection_rules') or [])
             converted = []
-            for raw_rule in catalog_entry.detection_rules:
+            for raw_rule in raw_rules:
                 try:
                     converted.append(detection_rule_to_graph(raw_rule))
                 except ValueError as exc:
